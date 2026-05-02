@@ -1,0 +1,84 @@
+name: build-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        type: choice
+        options: [stable, dev]
+        default: dev
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build-${{ github.event.inputs.channel }}-${{ matrix.arch }}
+    strategy:
+      matrix:
+        # armhf code paths exist but firmware package set has not been
+        # adapted for dual-arch yet; keep the matrix at arm64 until a
+        # follow-up step adds armhf-specific firmware/kernel handling.
+        arch: [arm64]
+      fail-fast: false
+    concurrency:
+      group: image-build-${{ github.event.inputs.channel }}-${{ matrix.arch }}-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load channel config
+        run: |
+          set -a
+          # shellcheck disable=SC1090
+          source "config-${{ github.event.inputs.channel }}"
+          set +a
+          {
+            echo "AIRPLANES_FEED_REPO=$AIRPLANES_FEED_REPO"
+            echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_BRANCH"
+            echo "AIRPLANES_READSB_REPO=$AIRPLANES_READSB_REPO"
+            echo "AIRPLANES_READSB_BRANCH=$AIRPLANES_READSB_BRANCH"
+            echo "CHANNEL=$CHANNEL"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: airplanes-live/feed
+          ref: ${{ env.AIRPLANES_FEED_BRANCH }}
+          path: feed
+
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af || true
+
+      - name: Install qemu + binfmt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support xz-utils
+
+      - name: Build
+        env:
+          ARCH: ${{ matrix.arch }}
+          IMG_NAME: airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}
+          ARCHIVE_FILENAME: airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}
+          DEPLOY_COMPRESSION: xz
+          IMG_SUFFIX: ""
+        run: sudo -E ./build.sh -c "config-${{ github.event.inputs.channel }}"
+
+      - name: Per-cell rootfs smoke
+        env:
+          AIRPLANES_IMAGE_PATH: deploy/airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}.img.xz
+          AIRPLANES_IMAGE_CONTRACT: new
+        run: sudo -E feed/test/image-release-rootfs-smoke.sh
+
+      - name: First-run chroot smoke
+        run: sudo -E scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}.img.xz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ github.event.inputs.channel }}-${{ matrix.arch }}
+          path: deploy/
+          if-no-files-found: error
