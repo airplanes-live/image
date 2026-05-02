@@ -57,11 +57,20 @@ jobs:
       - name: Install pi-gen build dependencies
         run: |
           sudo apt-get update
+          # On Ubuntu noble, qemu-user-static conflicts with qemu-user-binfmt;
+          # we need the static build for chroot smoke (cross-arch chroot needs
+          # the static binary copied into the rootfs). pi-gen's depends file
+          # checks for the bare `qemu-arm` command which qemu-user-static does
+          # not provide — symlink qemu-arm-static below to satisfy the check.
           sudo apt-get install -y --no-install-recommends \
-              quilt parted qemu-user-static qemu-user-binfmt debootstrap \
+              quilt parted qemu-user-static debootstrap \
               zerofree zip dosfstools libarchive-tools libcap2-bin rsync \
               xz-utils file bc qemu-utils kpartx gpg pigz xxd arch-test \
               binfmt-support
+          sudo ln -sf /usr/bin/qemu-arm-static /usr/local/bin/qemu-arm
+          sudo ln -sf /usr/bin/qemu-aarch64-static /usr/local/bin/qemu-aarch64
+          sudo update-binfmts --enable qemu-aarch64 || true
+          sudo update-binfmts --enable qemu-arm || true
 
       - name: Build
         env:
