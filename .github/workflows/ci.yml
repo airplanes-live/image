@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main, master, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: shellcheck
+        run: |
+          shopt -s globstar nullglob
+          mapfile -d '' files < <(
+            find scripts stage-airplanes -type f \
+              \( -name '*.sh' -o -name 'systemctl-stub' -o -name 'airplanes-first-run' \) \
+              -print0
+          )
+          if (( ${#files[@]} == 0 )); then
+            echo "no scripts to check" >&2
+            exit 1
+          fi
+          shellcheck "${files[@]}"
+
+      - name: bash -n
+        run: |
+          shopt -s globstar nullglob
+          for f in scripts/systemctl-stub scripts/*.sh \
+                   stage-airplanes/**/*.sh \
+                   stage-airplanes/**/files/**/airplanes-first-run; do
+            [[ -e "$f" ]] || continue
+            bash -n "$f"
+          done
