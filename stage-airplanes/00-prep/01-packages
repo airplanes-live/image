@@ -1,0 +1,5 @@
+git
+ca-certificates
+curl
+jq
+util-linux
