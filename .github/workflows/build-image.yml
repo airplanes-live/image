@@ -85,10 +85,10 @@ jobs:
         env:
           AIRPLANES_IMAGE_PATH: deploy/airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}.img.xz
           AIRPLANES_IMAGE_CONTRACT: new
-        run: sudo -E feed/test/image-release-rootfs-smoke.sh
+        run: sudo -E bash feed/test/image-release-rootfs-smoke.sh
 
       - name: First-run chroot smoke
-        run: sudo -E scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}.img.xz"
+        run: sudo -E bash scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}.img.xz"
 
       - uses: actions/upload-artifact@v4
         with:
