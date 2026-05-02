@@ -1,0 +1,137 @@
+#!/bin/bash
+# First-boot setup for the airplanes.live feeder image.
+#
+# Runs once (gated on /var/lib/airplanes/first-run-done) to:
+#   1. Generate /etc/airplanes/feeder-id via the feed-shipped create-uuid.sh
+#   2. Merge user-set values from /boot/firmware/airplanes-config.txt into
+#      /etc/airplanes/feed.env (atomic, flock-protected, sentinel-tolerant)
+#   3. Drop the done marker so subsequent boots are no-ops
+#
+# Failures in step 1 or 2 are logged and tolerated so a partially-edited
+# config doesn't trap the feeder in a boot loop. The marker is dropped
+# unconditionally because retries on subsequent boots cannot improve anything
+# the user hasn't fixed in the boot config.
+
+set -u
+
+FEED_ENV="/etc/airplanes/feed.env"
+BOOT_CONFIG="/boot/firmware/airplanes-config.txt"
+LOCK_FILE="/var/lock/airplanes-feed-env.lock"
+DONE_MARKER="/var/lib/airplanes/first-run-done"
+CREATE_UUID="/usr/local/share/airplanes/git/create-uuid.sh"
+
+# Sentinel values map to "user has not configured this" — they exist so the
+# template parses, not so they get propagated into feed.env.
+declare -A SENTINELS=(
+	[LATITUDE]=0
+	[LONGITUDE]=0
+	[ALTITUDE]=0m
+	[USER]=changeme
+	[DUMP978]=no
+)
+
+log() {
+	if command -v logger >/dev/null 2>&1; then
+		logger -t airplanes-first-run -- "$*"
+	else
+		echo "airplanes-first-run: $*" >&2
+	fi
+}
+
+generate_feeder_id() {
+	if [[ ! -f "$CREATE_UUID" ]]; then
+		log "create-uuid.sh missing at $CREATE_UUID; skipping feeder-id generation"
+		return 1
+	fi
+	if ! bash "$CREATE_UUID"; then
+		log "create-uuid.sh exited non-zero"
+		return 1
+	fi
+}
+
+# parse_boot_config FILE -> populates the BOOT_CFG associative array.
+# Tolerates UTF-8 BOM, CRLF line endings, KEY=value, KEY="value", blank lines,
+# and #-prefixed comments. Refuses to source the file (untrusted input).
+declare -A BOOT_CFG=()
+parse_boot_config() {
+	local file="$1" first=1 line key value
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		line="${line%$'\r'}"
+		if (( first )); then
+			line="${line#$'\xef\xbb\xbf'}"
+			first=0
+		fi
+		[[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+		if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+			key="${BASH_REMATCH[1]}"
+			value="${BASH_REMATCH[2]}"
+			if [[ "$value" =~ ^\"(.*)\"$ ]]; then
+				value="${BASH_REMATCH[1]}"
+			fi
+			[[ -z "$value" ]] && continue
+			if [[ -v "SENTINELS[$key]" && "${SENTINELS[$key]}" == "$value" ]]; then
+				continue
+			fi
+			BOOT_CFG[$key]="$value"
+		fi
+	done < "$file"
+}
+
+# Atomic merge under flock: write a tmp file in the target directory, fsync
+# it, rename onto feed.env, then sync the parent directory. The flock makes
+# concurrent webconfig writes impossible during first-run.
+merge_feed_env() {
+	(
+		flock -x 9
+		local feed_env_dir tmp_env emitted=""
+		feed_env_dir="$(dirname "$FEED_ENV")"
+		tmp_env="$(mktemp "${feed_env_dir}/feed.env.tmp.XXXXXX")"
+
+		if [[ -f "$FEED_ENV" ]]; then
+			local line key
+			while IFS= read -r line || [[ -n "$line" ]]; do
+				if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+					key="${BASH_REMATCH[1]}"
+					if [[ -v "BOOT_CFG[$key]" ]]; then
+						printf '%s="%s"\n' "$key" "${BOOT_CFG[$key]}" >> "$tmp_env"
+						emitted+=" $key "
+						continue
+					fi
+				fi
+				printf '%s\n' "$line" >> "$tmp_env"
+			done < "$FEED_ENV"
+		fi
+
+		local key
+		for key in "${!BOOT_CFG[@]}"; do
+			if [[ "$emitted" != *" $key "* ]]; then
+				printf '%s="%s"\n' "$key" "${BOOT_CFG[$key]}" >> "$tmp_env"
+			fi
+		done
+
+		sync -d "$tmp_env" 2>/dev/null || sync
+		mv "$tmp_env" "$FEED_ENV"
+		sync "$feed_env_dir" 2>/dev/null || sync
+	) 9>"$LOCK_FILE"
+}
+
+main() {
+	generate_feeder_id || true
+
+	if [[ -f "$BOOT_CONFIG" ]]; then
+		if ! parse_boot_config "$BOOT_CONFIG"; then
+			log "failed to parse $BOOT_CONFIG; leaving feed.env untouched"
+		elif (( ${#BOOT_CFG[@]} > 0 )); then
+			if ! merge_feed_env; then
+				log "failed to merge boot config into $FEED_ENV"
+			fi
+		fi
+	fi
+
+	mkdir -p "$(dirname "$DONE_MARKER")"
+	: > "$DONE_MARKER"
+	sync
+	return 0
+}
+
+main "$@"

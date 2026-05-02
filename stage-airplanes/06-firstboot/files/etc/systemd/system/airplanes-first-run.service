@@ -1,0 +1,13 @@
+[Unit]
+Description=airplanes.live first-run setup
+ConditionPathExists=!/var/lib/airplanes/first-run-done
+After=local-fs.target network.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/airplanes-first-run
+
+[Install]
+WantedBy=multi-user.target

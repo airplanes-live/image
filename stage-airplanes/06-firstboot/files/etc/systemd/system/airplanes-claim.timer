@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry airplanes.live feeder claim registration
+ConditionPathExists=!/etc/airplanes/feeder-claim-secret
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+Unit=airplanes-claim.service
+
+[Install]
+WantedBy=timers.target
