@@ -1,0 +1,8 @@
+export CHANNEL=stable
+export STAGE_LIST="${BASE_DIR}/stage0 ${BASE_DIR}/stage1 ${BASE_DIR}/stage2 ${BASE_DIR}/stage-airplanes"
+export DEPLOY_COMPRESSION=xz
+export IMG_SUFFIX=""
+export AIRPLANES_FEED_REPO="https://github.com/airplanes-live/feed.git"
+export AIRPLANES_FEED_BRANCH=main
+export AIRPLANES_READSB_REPO="https://github.com/airplanes-live/readsb.git"
+export AIRPLANES_READSB_BRANCH=main

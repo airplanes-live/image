@@ -9,16 +9,22 @@ bootstrap(){
 
 	export http_proxy=${APT_PROXY}
 
-	BOOTSTRAP_ARGS+=(--arch arm64)
+	BOOTSTRAP_ARGS+=(--arch "${ARCH}")
 	BOOTSTRAP_ARGS+=(--include gnupg)
 	BOOTSTRAP_ARGS+=(--components "main,contrib,non-free")
-	#BOOTSTRAP_ARGS+=(--keyring "${STAGE_DIR}/files/raspberrypi.gpg")
+	if [[ "${ARCH}" == "armhf" ]]; then
+		BOOTSTRAP_ARGS+=(--keyring "${STAGE_DIR}/files/raspberrypi.gpg")
+	fi
 	BOOTSTRAP_ARGS+=(--exclude=info,ifupdown)
 	BOOTSTRAP_ARGS+=(--include=ca-certificates)
 	BOOTSTRAP_ARGS+=("$@")
 	printf -v BOOTSTRAP_STR '%q ' "${BOOTSTRAP_ARGS[@]}"
 
-	capsh $CAPSH_ARG -- -c "'${BOOTSTRAP_CMD}' $BOOTSTRAP_STR" || true
+	if [[ "${ARCH}" == "armhf" ]]; then
+		setarch linux32 capsh $CAPSH_ARG -- -c "'${BOOTSTRAP_CMD}' $BOOTSTRAP_STR" || true
+	else
+		capsh $CAPSH_ARG -- -c "'${BOOTSTRAP_CMD}' $BOOTSTRAP_STR" || true
+	fi
 
 	# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1050719
 	rm -f wget-log*
