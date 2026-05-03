@@ -12,8 +12,6 @@
 # unconditionally because retries on subsequent boots cannot improve anything
 # the user hasn't fixed in the boot config.
 
-set -u
-
 FEED_ENV="/etc/airplanes/feed.env"
 BOOT_CONFIG="/boot/firmware/airplanes-config.txt"
 LOCK_FILE="/var/lock/airplanes-feed-env.lock"
@@ -22,7 +20,7 @@ CREATE_UUID="/usr/local/share/airplanes/git/create-uuid.sh"
 
 # Sentinel values map to "user has not configured this" — they exist so the
 # template parses, not so they get propagated into feed.env.
-declare -A SENTINELS=(
+declare -gA SENTINELS=(
 	[LATITUDE]=0
 	[LONGITUDE]=0
 	[ALTITUDE]=0m
@@ -52,8 +50,9 @@ generate_feeder_id() {
 # parse_boot_config FILE -> populates the BOOT_CFG associative array.
 # Tolerates UTF-8 BOM, CRLF line endings, KEY=value, KEY="value", blank lines,
 # and #-prefixed comments. Refuses to source the file (untrusted input).
-declare -A BOOT_CFG=()
+declare -gA BOOT_CFG=()
 parse_boot_config() {
+	BOOT_CFG=()
 	local file="$1" first=1 line key value
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		line="${line%$'\r'}"
@@ -67,9 +66,16 @@ parse_boot_config() {
 			value="${BASH_REMATCH[2]}"
 			if [[ "$value" =~ ^\"(.*)\"$ ]]; then
 				value="${BASH_REMATCH[1]}"
+			else
+				value="${value#"${value%%[![:space:]]*}"}"
+				value="${value%"${value##*[![:space:]]}"}"
 			fi
 			[[ -z "$value" ]] && continue
 			if [[ -v "SENTINELS[$key]" && "${SENTINELS[$key]}" == "$value" ]]; then
+				continue
+			fi
+			if [[ "$value" == *[\"\\\$\`]* ]]; then
+				log "rejecting unsafe value for $key in boot config"
 				continue
 			fi
 			BOOT_CFG[$key]="$value"
@@ -116,6 +122,7 @@ merge_feed_env() {
 }
 
 main() {
+	set -u
 	generate_feeder_id || true
 
 	if [[ -f "$BOOT_CONFIG" ]]; then
@@ -134,4 +141,6 @@ main() {
 	return 0
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi

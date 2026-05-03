@@ -67,3 +67,31 @@ jobs:
 
       - name: Run overlay smoke
         run: bash test/overlay-smoke.sh feed
+
+  unit-files:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage units in temp root with stub binaries
+        run: |
+          ROOT="$RUNNER_TEMP/unit-root"
+          mkdir -p "$ROOT/etc/systemd/system" "$ROOT/usr/local/sbin" "$ROOT/usr/local/bin"
+          install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.service \
+              "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.timer \
+              "$ROOT/etc/systemd/system/"
+          # Stub binaries so ExecStart= path checks resolve.
+          install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-first-run"
+          install -m 0755 /dev/null "$ROOT/usr/local/bin/apl-feed"
+          echo "UNIT_ROOT=$ROOT" >> "$GITHUB_ENV"
+
+      - name: systemd-analyze verify
+        # --recursive-errors=no silences "unit not found" warnings for
+        # external targets (sysinit.target, network-online.target, etc.) that
+        # the temp root doesn't contain. Real syntax errors still fail the run.
+        run: |
+          systemd-analyze verify --root="$UNIT_ROOT" --recursive-errors=no \
+              airplanes-first-run.service \
+              airplanes-claim.service \
+              airplanes-claim.timer
