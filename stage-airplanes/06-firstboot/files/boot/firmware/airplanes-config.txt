@@ -17,6 +17,9 @@ ALTITUDE=0m
 USER=changeme
 
 # Enable 978 MHz UAT (US-only; second SDR required). yes|no.
+# Convention: flash the 978 dongle's serial via:
+#   sudo apt install rtl-sdr && rtl_eeprom -s 00000978
+# Override DUMP978_SDR_SERIAL below if you provisioned a different serial.
 DUMP978=no
 
 # Optional overrides. Uncomment and set if you know what you are doing.
@@ -24,3 +27,11 @@ DUMP978=no
 #INPUT=127.0.0.1:30005
 #INPUT_TYPE=beast
 #GAIN=auto
+
+# Multi-SDR provisioning: set the 1090 dongle's serial here if you have more
+# than one non-978 SDR. Single-SDR setups can leave this unset.
+#READSB_SDR_SERIAL=
+
+# 978 UAT options (only consulted when DUMP978=yes).
+#DUMP978_SDR_SERIAL=978
+#DUMP978_GAIN=42.1

@@ -2,7 +2,16 @@ export CHANNEL=dev
 export STAGE_LIST="${BASE_DIR}/stage0 ${BASE_DIR}/stage1 ${BASE_DIR}/stage2 ${BASE_DIR}/stage-airplanes"
 export DEPLOY_COMPRESSION=xz
 export IMG_SUFFIX=""
+
+# Branch-tracking on dev — moving target by design, catches upstream drift early.
 export AIRPLANES_FEED_REPO="https://github.com/airplanes-live/feed.git"
 export AIRPLANES_FEED_BRANCH=dev
+
 export AIRPLANES_READSB_REPO="https://github.com/airplanes-live/readsb.git"
 export AIRPLANES_READSB_BRANCH=dev
+
+export AIRPLANES_READSB_DECODER_REPO="https://github.com/wiedehopf/readsb.git"
+export AIRPLANES_READSB_DECODER_BRANCH=dev
+
+export AIRPLANES_DUMP978_REPO="https://github.com/flightaware/dump978.git"
+export AIRPLANES_DUMP978_BRANCH=master

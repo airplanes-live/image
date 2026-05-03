@@ -76,14 +76,23 @@ jobs:
       - name: Stage units in temp root with stub binaries
         run: |
           ROOT="$RUNNER_TEMP/unit-root"
-          mkdir -p "$ROOT/etc/systemd/system" "$ROOT/usr/local/sbin" "$ROOT/usr/local/bin"
+          mkdir -p "$ROOT/etc/systemd/system" \
+                   "$ROOT/usr/local/sbin" \
+                   "$ROOT/usr/local/bin" \
+                   "$ROOT/usr/local/share/airplanes" \
+                   "$ROOT/usr/bin"
           install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.timer \
               "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/02-install-decoder/files/etc/systemd/system/*.service \
+              "$ROOT/etc/systemd/system/"
           # Stub binaries so ExecStart= path checks resolve.
           install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-first-run"
           install -m 0755 /dev/null "$ROOT/usr/local/bin/apl-feed"
+          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/readsb.sh"
+          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/airplanes-978.sh"
+          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/dump978-fa.sh"
           echo "UNIT_ROOT=$ROOT" >> "$GITHUB_ENV"
 
       - name: systemd-analyze verify
@@ -94,4 +103,7 @@ jobs:
           systemd-analyze verify --root="$UNIT_ROOT" --recursive-errors=no \
               airplanes-first-run.service \
               airplanes-claim.service \
-              airplanes-claim.timer
+              airplanes-claim.timer \
+              readsb.service \
+              dump978-fa.service \
+              airplanes-978.service

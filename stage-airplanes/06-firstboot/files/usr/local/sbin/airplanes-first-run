@@ -121,6 +121,21 @@ merge_feed_env() {
 	) 9>"$LOCK_FILE"
 }
 
+# Enable + start (non-blocking) the 978 services iff DUMP978=yes (literal). The
+# units are After=airplanes-first-run.service, so a blocking `enable --now`
+# would deadlock — start jobs queue and run after this script exits.
+toggle_978_services() {
+	[[ "${BOOT_CFG[DUMP978]:-no}" != "yes" ]] && return 0
+	if ! systemctl enable dump978-fa.service airplanes-978.service; then
+		log "failed to enable 978 services"
+		return 1
+	fi
+	if ! systemctl start --no-block dump978-fa.service airplanes-978.service; then
+		log "failed to queue 978 service starts"
+		return 1
+	fi
+}
+
 main() {
 	set -u
 	generate_feeder_id || true
@@ -133,6 +148,7 @@ main() {
 				log "failed to merge boot config into $FEED_ENV"
 			fi
 		fi
+		toggle_978_services || true
 	fi
 
 	mkdir -p "$(dirname "$DONE_MARKER")"
