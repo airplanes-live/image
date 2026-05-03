@@ -100,3 +100,68 @@ write_log() {
     run bash "$SCRIPT"
     [ "$status" -ne 0 ]
 }
+
+@test "log with allowlisted restart (tar1090) passes" {
+    write_log \
+        "[2026-05-03T12:00:00Z] systemctl enable readsb.service" \
+        "[2026-05-03T12:00:01Z] systemctl restart tar1090.service"
+    run bash "$SCRIPT" "$ROOT"
+    [ "$status" -eq 0 ]
+    [ -f "$FINGERPRINT" ]
+}
+
+@test "log with allowlisted restart (graphs1090) passes" {
+    write_log "[2026-05-03T12:00:00Z] systemctl restart graphs1090.service"
+    run bash "$SCRIPT" "$ROOT"
+    [ "$status" -eq 0 ]
+}
+
+@test "log with allowlisted restart (collectd) passes" {
+    write_log "[2026-05-03T12:00:00Z] systemctl restart collectd.service"
+    run bash "$SCRIPT" "$ROOT"
+    [ "$status" -eq 0 ]
+}
+
+@test "log with allowlisted restart (lighttpd) passes" {
+    write_log "[2026-05-03T12:00:00Z] systemctl restart lighttpd.service"
+    run bash "$SCRIPT" "$ROOT"
+    [ "$status" -eq 0 ]
+}
+
+@test "log with non-allowlisted restart (ssh) still fails" {
+    write_log "[2026-05-03T12:00:00Z] systemctl restart ssh.service"
+    run bash "$SCRIPT" "$ROOT"
+    [ "$status" -ne 0 ]
+}
+
+@test "log with non-allowlisted restart (readsb) still fails" {
+    write_log "[2026-05-03T12:00:00Z] systemctl restart readsb.service"
+    run bash "$SCRIPT" "$ROOT"
+    [ "$status" -ne 0 ]
+}
+
+@test "log mixing allowlisted and forbidden lines fails on the forbidden one" {
+    write_log \
+        "[2026-05-03T12:00:00Z] systemctl restart tar1090.service" \
+        "[2026-05-03T12:00:01Z] systemctl restart airplanes-feed.service"
+    run bash "$SCRIPT" "$ROOT"
+    [ "$status" -ne 0 ]
+}
+
+@test "log with allowlisted bare unit name (no .service suffix) passes" {
+    # Upstream tar1090/graphs1090 install scripts call systemctl with bare
+    # unit names: `systemctl restart tar1090` rather than `tar1090.service`.
+    write_log \
+        "[2026-05-03T12:00:00Z] systemctl stop tar1090" \
+        "[2026-05-03T12:00:01Z] systemctl restart collectd" \
+        "[2026-05-03T12:00:02Z] systemctl restart lighttpd" \
+        "[2026-05-03T12:00:03Z] systemctl restart graphs1090"
+    run bash "$SCRIPT" "$ROOT"
+    [ "$status" -eq 0 ]
+}
+
+@test "bare-name allowlist still rejects non-allowlisted bare names" {
+    write_log "[2026-05-03T12:00:00Z] systemctl restart ssh"
+    run bash "$SCRIPT" "$ROOT"
+    [ "$status" -ne 0 ]
+}

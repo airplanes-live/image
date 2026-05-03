@@ -24,6 +24,8 @@ args=(
 	--max-range 600
 	--aircraft-update-interval 0.5
 	--json-location-accuracy 2
+	--write-json-globe-index
+	--globe-history-dir /var/globe_history
 )
 
 if [[ "$DUMP1090" == "no" ]]; then

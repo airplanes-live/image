@@ -19,3 +19,9 @@ rtl-sdr
 librtlsdr0
 libusb-1.0-0
 soapysdr-module-rtlsdr
+lighttpd
+rrdtool
+collectd-core
+unzip
+wget
+bash-builtins

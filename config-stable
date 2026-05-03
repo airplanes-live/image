@@ -9,6 +9,9 @@ export IMG_SUFFIX=""
 #   gh api repos/airplanes-live/readsb/commits/dev --jq .sha
 #   gh api repos/wiedehopf/readsb/commits/dev --jq .sha
 #   gh api repos/flightaware/dump978/commits/master --jq .sha
+#   gh api repos/wiedehopf/tar1090/commits/master --jq .sha
+#   gh api repos/wiedehopf/tar1090-db/commits/master --jq .sha
+#   gh api repos/wiedehopf/graphs1090/commits/master --jq .sha
 
 export AIRPLANES_FEED_REPO="https://github.com/airplanes-live/feed.git"
 export AIRPLANES_FEED_BRANCH=9318d02efd70488f831cbcb84ca3ec4cb9cc9ece
@@ -21,3 +24,12 @@ export AIRPLANES_READSB_DECODER_BRANCH=caf2c5a6dccf1e079d0ae63d2b7dd45d568de265
 
 export AIRPLANES_DUMP978_REPO="https://github.com/flightaware/dump978.git"
 export AIRPLANES_DUMP978_BRANCH=e827042420ac615f9b9993a21535fd7def21f974
+
+export AIRPLANES_TAR1090_REPO="https://github.com/wiedehopf/tar1090.git"
+export AIRPLANES_TAR1090_BRANCH=c2ebe61910d2e06860c849a66077455d2635f9e9
+
+export AIRPLANES_TAR1090_DB_REPO="https://github.com/wiedehopf/tar1090-db.git"
+export AIRPLANES_TAR1090_DB_BRANCH=758ddafab66fb997de2a81d2d5a317db55aaf9be
+
+export AIRPLANES_GRAPHS1090_REPO="https://github.com/wiedehopf/graphs1090.git"
+export AIRPLANES_GRAPHS1090_BRANCH=426c70c61889de2a8f63f2b40133ea72a08537ce

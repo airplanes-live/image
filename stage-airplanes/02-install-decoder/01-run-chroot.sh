@@ -1,4 +1,7 @@
-#!/bin/bash -e
+#!/bin/bash
+# Explicit `set -e` (not just shebang) — pi-gen invokes via `bash 01-run-chroot.sh`,
+# which ignores the shebang's flags.
+set -e
 
 # Stub catches systemctl daemon-reload / start / restart / is-active that some
 # install scripts call directly; legitimate enable/disable/mask pass through.
@@ -30,12 +33,17 @@ if ldd /usr/bin/dump978-fa | grep -q 'not found'; then
 	exit 1
 fi
 
-# 3. readsb user (idempotent under repeated overlay-smoke runs / CONTINUE=1).
+# 3. readsb user + same-named group (idempotent under repeated overlay-smoke
+# runs / CONTINUE=1). `--group` is required so /var/globe_history can be
+# chgrp'd to readsb below.
 if ! getent passwd readsb >/dev/null; then
-	adduser --system --home /usr/local/share/readsb --no-create-home --quiet readsb
+	adduser --system --group --home /usr/local/share/readsb --no-create-home --quiet readsb
 fi
 adduser readsb plugdev || true
 adduser readsb dialout || true
+
+# tar1090's heatmap + coverage history reads from --globe-history-dir.
+install -d -m 0755 -o readsb -g readsb /var/globe_history
 
 # 4. Enable readsb. 978 services stay disabled (first-run enables on DUMP978=yes).
 systemctl enable readsb.service
