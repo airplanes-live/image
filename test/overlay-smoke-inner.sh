@@ -64,6 +64,24 @@ echo "==> stage-airplanes/02-install-decoder/01-run-chroot.sh (compile + install
 echo "==> stage-airplanes/02-install-decoder/02-run.sh (cleanup build dirs)"
 ( cd /image/stage-airplanes/02-install-decoder && bash 02-run.sh )
 
+echo "==> stage-airplanes/03-install-tar1090/00-run.sh (clone tar1090 + tar1090-db)"
+( cd /image/stage-airplanes/03-install-tar1090 && bash 00-run.sh )
+
+echo "==> stage-airplanes/03-install-tar1090/01-run-chroot.sh (run tar1090 install)"
+( cd /image/stage-airplanes/03-install-tar1090 && bash 01-run-chroot.sh )
+
+echo "==> stage-airplanes/03-install-tar1090/02-run.sh (cleanup tar1090 build dir)"
+( cd /image/stage-airplanes/03-install-tar1090 && bash 02-run.sh )
+
+echo "==> stage-airplanes/04-install-graphs1090/00-run.sh (clone graphs1090)"
+( cd /image/stage-airplanes/04-install-graphs1090 && bash 00-run.sh )
+
+echo "==> stage-airplanes/04-install-graphs1090/01-run-chroot.sh (run graphs1090 install + 978 wiring)"
+( cd /image/stage-airplanes/04-install-graphs1090 && bash 01-run-chroot.sh )
+
+echo "==> stage-airplanes/04-install-graphs1090/02-run.sh (cleanup graphs1090 git dir)"
+( cd /image/stage-airplanes/04-install-graphs1090 && bash 02-run.sh )
+
 echo "==> stage-airplanes/06-firstboot/00-run.sh"
 # pi-gen runs on_chroot via its own helper; we stub that at the top of this
 # script. The stage's `install` commands take relative `files/` paths.
@@ -144,6 +162,65 @@ have_enable_link dump978-fa.service \
     && fail "dump978-fa.service unexpectedly enabled at build time"
 have_enable_link airplanes-978.service \
     && fail "airplanes-978.service unexpectedly enabled at build time"
+
+# Stage 02 fuller-features wiring (consumed by tar1090 heatmap/coverage).
+grep -q -- '--write-json-globe-index' /usr/local/share/airplanes/readsb.sh \
+    || fail "readsb.sh missing --write-json-globe-index"
+grep -q -- '--globe-history-dir' /usr/local/share/airplanes/readsb.sh \
+    || fail "readsb.sh missing --globe-history-dir"
+[[ -d /var/globe_history ]] || fail "/var/globe_history not created"
+[[ "$(stat -c %U /var/globe_history)" == "readsb" ]] || fail "/var/globe_history not owned by readsb"
+
+# Stage 03 outputs (tar1090).
+[[ -d /usr/local/share/tar1090 ]] || fail "tar1090 install dir missing"
+[[ -f /usr/local/share/tar1090/html/index.html ]] || fail "tar1090 html/index.html missing"
+[[ -f /lib/systemd/system/tar1090.service ]] || fail "tar1090.service missing"
+[[ -f /etc/default/tar1090 ]] || fail "/etc/default/tar1090 missing"
+grep -q '^ENABLE_978=yes' /etc/default/tar1090 \
+    || fail "/etc/default/tar1090 ENABLE_978 not patched to yes"
+[[ -L /etc/lighttpd/conf-enabled/89-airplanes-978.conf ]] \
+    || fail "89-airplanes-978.conf not enabled"
+[[ ! -L /etc/lighttpd/conf-enabled/95-tar1090-otherport.conf ]] \
+    || fail "tar1090 otherport listener should be removed"
+[[ -s /etc/airplanes/.build-tar1090-sha ]] || fail ".build-tar1090-sha missing or empty"
+[[ -s /etc/airplanes/.build-tar1090-db-sha ]] || fail ".build-tar1090-db-sha missing or empty"
+# Pinning held: tar1090-db's actual HEAD matches the SHA we captured at fetch.
+[[ "$(git -C /usr/local/share/tar1090/git-db rev-parse HEAD)" \
+    == "$(cat /etc/airplanes/.build-tar1090-db-sha)" ]] \
+    || fail "tar1090-db SHA pinning was clobbered by upstream installer"
+[[ ! -d /usr/local/src/airplanes-tar1090-build ]] || fail "tar1090 build dir not cleaned up"
+have_enable_link tar1090.service || fail "tar1090.service enable symlink missing"
+
+# Stage 04 outputs (graphs1090).
+[[ -d /usr/share/graphs1090 ]] || fail "graphs1090 install dir missing"
+[[ -f /lib/systemd/system/graphs1090.service ]] || fail "graphs1090.service missing"
+[[ -f /etc/collectd/collectd.conf ]] || fail "collectd.conf missing"
+grep -E -q '^URL_978 "file:///usr/share/graphs1090/978-symlink"' /etc/collectd/collectd.conf \
+    || fail "collectd.conf URL_978 not patched"
+[[ -L /usr/share/graphs1090/978-symlink/data ]] || fail "978-symlink/data missing"
+[[ "$(readlink /usr/share/graphs1090/978-symlink/data)" == "/run/airplanes-978" ]] \
+    || fail "978-symlink/data points at wrong target"
+[[ -L /etc/lighttpd/conf-enabled/88-graphs1090.conf ]] \
+    || fail "graphs1090 lighttpd snippet not enabled"
+[[ ! -L /etc/lighttpd/conf-enabled/95-graphs1090-otherport.conf ]] \
+    || fail "graphs1090 otherport listener should be removed"
+[[ -s /etc/airplanes/.build-graphs1090-sha ]] || fail ".build-graphs1090-sha missing or empty"
+[[ ! -d /usr/share/graphs1090/git ]] || fail "graphs1090 git dir not cleaned up"
+have_enable_link graphs1090.service || fail "graphs1090.service enable symlink missing"
+have_enable_link collectd.service || fail "collectd.service enable symlink missing"
+# Interface lines normalized to canonical Pi names; no build-host leakage.
+grep -q 'Interface "eth0"' /etc/collectd/collectd.conf || fail "collectd missing Interface eth0"
+grep -q 'Interface "end0"' /etc/collectd/collectd.conf || fail "collectd missing Interface end0"
+grep -q 'Interface "wlan0"' /etc/collectd/collectd.conf || fail "collectd missing Interface wlan0"
+# Build-host interfaces (commonly eno*, ens*, enX*, wlxXX*) must not leak.
+if grep -E -q 'Interface "(eno|ens|wlx|enx)[^"]*"' /etc/collectd/collectd.conf; then
+    grep -E 'Interface "(eno|ens|wlx|enx)[^"]*"' /etc/collectd/collectd.conf >&2
+    fail "build-host network interface name leaked into collectd.conf"
+fi
+
+# lighttpd config syntax check (catches broken alias.url snippets etc.)
+lighttpd -tt -f /etc/lighttpd/lighttpd.conf >/dev/null \
+    || fail "lighttpd config-test failed"
 
 # Stage 06 outputs.
 [[ -x /usr/local/sbin/airplanes-first-run ]] || fail "airplanes-first-run entrypoint missing"

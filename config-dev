@@ -15,3 +15,12 @@ export AIRPLANES_READSB_DECODER_BRANCH=dev
 
 export AIRPLANES_DUMP978_REPO="https://github.com/flightaware/dump978.git"
 export AIRPLANES_DUMP978_BRANCH=master
+
+export AIRPLANES_TAR1090_REPO="https://github.com/wiedehopf/tar1090.git"
+export AIRPLANES_TAR1090_BRANCH=master
+
+export AIRPLANES_TAR1090_DB_REPO="https://github.com/wiedehopf/tar1090-db.git"
+export AIRPLANES_TAR1090_DB_BRANCH=master
+
+export AIRPLANES_GRAPHS1090_REPO="https://github.com/wiedehopf/graphs1090.git"
+export AIRPLANES_GRAPHS1090_BRANCH=master

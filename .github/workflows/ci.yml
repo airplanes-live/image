@@ -73,6 +73,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load tar1090/graphs1090 SHAs from config-dev
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          . config-dev
+          set +a
+          {
+            echo "AIRPLANES_TAR1090_REPO=$AIRPLANES_TAR1090_REPO"
+            echo "AIRPLANES_TAR1090_BRANCH=$AIRPLANES_TAR1090_BRANCH"
+            echo "AIRPLANES_GRAPHS1090_REPO=$AIRPLANES_GRAPHS1090_REPO"
+            echo "AIRPLANES_GRAPHS1090_BRANCH=$AIRPLANES_GRAPHS1090_BRANCH"
+          } >> "$GITHUB_ENV"
+
+      - name: Fetch tar1090 + graphs1090 unit files
+        run: |
+          set -e
+          UNITS_DIR="$RUNNER_TEMP/upstream-units"
+          mkdir -p "$UNITS_DIR"
+          # tar1090 ships its unit as a template named `tar1090.service` with
+          # SOURCE_DIR / SERVICE placeholders the installer sed-substitutes.
+          # Substitute the same defaults the chroot install uses so the unit
+          # is verifiable.
+          curl -fsSL \
+            "https://raw.githubusercontent.com/wiedehopf/tar1090/$AIRPLANES_TAR1090_BRANCH/tar1090.service" \
+            -o "$UNITS_DIR/tar1090.service.in"
+          sed -e 's?SOURCE_DIR?/run/readsb?g' -e 's?SERVICE?tar1090?g' \
+            "$UNITS_DIR/tar1090.service.in" > "$UNITS_DIR/tar1090.service"
+          curl -fsSL \
+            "https://raw.githubusercontent.com/wiedehopf/graphs1090/$AIRPLANES_GRAPHS1090_BRANCH/service.service" \
+            -o "$UNITS_DIR/graphs1090.service"
+          echo "UPSTREAM_UNITS_DIR=$UNITS_DIR" >> "$GITHUB_ENV"
+
       - name: Stage units in temp root with stub binaries
         run: |
           ROOT="$RUNNER_TEMP/unit-root"
@@ -80,6 +112,8 @@ jobs:
                    "$ROOT/usr/local/sbin" \
                    "$ROOT/usr/local/bin" \
                    "$ROOT/usr/local/share/airplanes" \
+                   "$ROOT/usr/local/share/tar1090" \
+                   "$ROOT/usr/share/graphs1090" \
                    "$ROOT/usr/bin"
           install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
@@ -87,12 +121,24 @@ jobs:
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/02-install-decoder/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
+          install -m 0644 "$UPSTREAM_UNITS_DIR/tar1090.service" \
+              "$ROOT/etc/systemd/system/tar1090.service"
+          install -m 0644 "$UPSTREAM_UNITS_DIR/graphs1090.service" \
+              "$ROOT/etc/systemd/system/graphs1090.service"
           # Stub binaries so ExecStart= path checks resolve.
           install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-first-run"
           install -m 0755 /dev/null "$ROOT/usr/local/bin/apl-feed"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/readsb.sh"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/airplanes-978.sh"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/dump978-fa.sh"
+          # tar1090 + graphs1090 ExecStart targets (placeholder shell scripts the
+          # upstream installers normally drop in)
+          install -m 0755 /dev/null "$ROOT/usr/local/share/tar1090/tar1090.sh"
+          install -m 0755 /dev/null "$ROOT/usr/share/graphs1090/service.sh"
+          install -m 0755 /dev/null "$ROOT/usr/share/graphs1090/service-graphs1090.sh"
+          # Default env files referenced by EnvironmentFile=
+          mkdir -p "$ROOT/etc/default"
+          : > "$ROOT/etc/default/tar1090"
           echo "UNIT_ROOT=$ROOT" >> "$GITHUB_ENV"
 
       - name: systemd-analyze verify
@@ -106,4 +152,6 @@ jobs:
               airplanes-claim.timer \
               readsb.service \
               dump978-fa.service \
-              airplanes-978.service
+              airplanes-978.service \
+              tar1090.service \
+              graphs1090.service
