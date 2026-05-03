@@ -36,6 +36,9 @@ QEMU_COPIED=""
 
 cleanup() {
 	set +e
+	if mountpoint -q "$ROOT_MNT/dev"; then umount -R "$ROOT_MNT/dev"; fi
+	if mountpoint -q "$ROOT_MNT/sys"; then umount -R "$ROOT_MNT/sys"; fi
+	if mountpoint -q "$ROOT_MNT/proc"; then umount "$ROOT_MNT/proc"; fi
 	if mountpoint -q "$ROOT_MNT/boot/firmware"; then umount "$ROOT_MNT/boot/firmware"; fi
 	if mountpoint -q "$ROOT_MNT"; then umount "$ROOT_MNT"; fi
 	if [[ -n "$LOOP_DEV" ]]; then losetup -d "$LOOP_DEV"; fi
@@ -66,6 +69,13 @@ mount "${LOOP_DEV}p1" "$ROOT_MNT/boot/firmware"
 echo "==> staging $QEMU_BIN"
 QEMU_COPIED="$ROOT_MNT/usr/bin/$QEMU_BIN"
 cp "/usr/bin/$QEMU_BIN" "$QEMU_COPIED"
+
+# create-uuid.sh inside the chroot reads /proc/sys/kernel/random/uuid; without
+# /proc mounted it falls back to no-uuid and feeder-id never gets written.
+echo "==> bind-mounting /proc /sys /dev into chroot"
+mount -t proc proc "$ROOT_MNT/proc"
+mount --rbind /sys "$ROOT_MNT/sys"
+mount --rbind /dev "$ROOT_MNT/dev"
 
 echo "==> running airplanes-first-run inside chroot"
 chroot "$ROOT_MNT" /usr/local/sbin/airplanes-first-run
