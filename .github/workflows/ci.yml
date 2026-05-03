@@ -21,7 +21,7 @@ jobs:
         run: |
           shopt -s globstar nullglob
           mapfile -d '' files < <(
-            find scripts stage-airplanes -type f \
+            find scripts stage-airplanes test -type f \
               \( -name '*.sh' -o -name 'systemctl-stub' -o -name 'airplanes-first-run' \) \
               -print0
           )
@@ -36,7 +36,8 @@ jobs:
           shopt -s globstar nullglob
           for f in scripts/systemctl-stub scripts/*.sh \
                    stage-airplanes/**/*.sh \
-                   stage-airplanes/**/files/**/airplanes-first-run; do
+                   stage-airplanes/**/files/**/airplanes-first-run \
+                   test/*.sh; do
             [[ -e "$f" ]] || continue
             bash -n "$f"
           done
@@ -51,3 +52,18 @@ jobs:
 
       - name: bats test/
         run: bats test/
+
+  overlay-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: airplanes-live/feed
+          ref: dev
+          path: feed
+
+      - name: Run overlay smoke
+        run: bash test/overlay-smoke.sh feed
