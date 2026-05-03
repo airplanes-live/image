@@ -16,6 +16,7 @@ curl
 xxd
 file
 git
+jq
 lsmod:kmod
 bc
 gpg
