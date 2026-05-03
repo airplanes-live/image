@@ -13,6 +13,7 @@
 set -u
 
 LOG="${AIRPLANES_STUB_LOG:-/var/log/airplanes-systemctl-stub.log}"
+REAL_SYSTEMCTL="${AIRPLANES_REAL_SYSTEMCTL:-/bin/systemctl}"
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 
 basename_self="$(basename "$0")"
@@ -37,7 +38,7 @@ esac
 verb="${1:-}"
 case "$verb" in
 	enable|disable|mask|unmask|is-enabled|preset|preset-all|reenable|link)
-		exec /bin/systemctl "$@"
+		exec "$REAL_SYSTEMCTL" "$@"
 		;;
 	daemon-reload|daemon-reexec)
 		exit 0
@@ -50,6 +51,6 @@ case "$verb" in
 		;;
 	*)
 		# Read-only verbs (cat, list-units, show, status, ...) pass through.
-		exec /bin/systemctl "$@"
+		exec "$REAL_SYSTEMCTL" "$@"
 		;;
 esac

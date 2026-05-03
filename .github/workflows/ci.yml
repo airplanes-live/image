@@ -40,3 +40,14 @@ jobs:
             [[ -e "$f" ]] || continue
             bash -n "$f"
           done
+
+  bats:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats
+
+      - name: bats test/
+        run: bats test/
