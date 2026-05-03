@@ -240,3 +240,52 @@ EOF
     [ "$USER" = "Dave Display" ]
     [ "$LATITUDE" = "51.5" ]
 }
+
+# Helper: install a PATH-prepended mock systemctl that records argv.
+mock_systemctl() {
+    SYSCTL_LOG="$TMP/sysctl.log"
+    : > "$SYSCTL_LOG"
+    mkdir -p "$TMP/bin"
+    cat > "$TMP/bin/systemctl" <<EOF
+#!/bin/bash
+echo "\$@" >> "$SYSCTL_LOG"
+EOF
+    chmod +x "$TMP/bin/systemctl"
+    PATH="$TMP/bin:$PATH"
+}
+
+@test "33: toggle_978_services with DUMP978=yes invokes enable + start --no-block" {
+    mock_systemctl
+    BOOT_CFG=([DUMP978]=yes)
+    toggle_978_services
+    grep -Fxq 'enable dump978-fa.service airplanes-978.service' "$SYSCTL_LOG"
+    grep -Fxq 'start --no-block dump978-fa.service airplanes-978.service' "$SYSCTL_LOG"
+}
+
+@test "34: toggle_978_services with DUMP978=no is a no-op" {
+    mock_systemctl
+    BOOT_CFG=([DUMP978]=no)
+    toggle_978_services
+    [ ! -s "$SYSCTL_LOG" ]
+}
+
+@test "35: toggle_978_services with DUMP978=YES (uppercase) is a no-op (literal-yes only)" {
+    mock_systemctl
+    BOOT_CFG=([DUMP978]=YES)
+    toggle_978_services
+    [ ! -s "$SYSCTL_LOG" ]
+}
+
+@test "36: toggle_978_services with DUMP978=true is a no-op (literal-yes only)" {
+    mock_systemctl
+    BOOT_CFG=([DUMP978]=true)
+    toggle_978_services
+    [ ! -s "$SYSCTL_LOG" ]
+}
+
+@test "37: toggle_978_services with DUMP978 unset is a no-op" {
+    mock_systemctl
+    BOOT_CFG=()
+    toggle_978_services
+    [ ! -s "$SYSCTL_LOG" ]
+}

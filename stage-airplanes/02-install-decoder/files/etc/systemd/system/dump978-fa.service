@@ -1,0 +1,16 @@
+[Unit]
+Description=dump978-fa 978 MHz UAT receiver
+After=airplanes-first-run.service network.target
+Wants=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/airplanes/feed.env
+ExecStart=/usr/local/share/airplanes/dump978-fa.sh
+SyslogIdentifier=dump978-fa
+Restart=always
+RestartSec=15
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

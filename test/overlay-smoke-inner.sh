@@ -14,9 +14,17 @@ export -f on_chroot
 export ROOTFS_DIR=/
 export BASE_DIR=/image
 
-# Channel config exports these in production. Mirror for the smoke.
+# Source config-dev so all decoder + feed repo/branch env vars are in scope —
+# avoids drifting between the smoke and what production builds actually use.
+# (shellcheck can't follow runtime-container path; values come from configured envs.)
+set -a
+# shellcheck disable=SC1091
+. /image/config-dev
+set +a
+# Override AIRPLANES_FEED_REPO to the bind-mounted local checkout. Other repos
+# (readsb decoder, dump978) are fetched from GitHub during the smoke, same as
+# the real build — that's what we're trying to validate.
 export AIRPLANES_FEED_REPO="file:///feed"
-export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-dev}"
 
 echo "==> apt update + stage-00-prep packages"
 apt-get update -qq
@@ -46,6 +54,15 @@ echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (install.sh --build-m
 
 echo "==> stage-airplanes/01-install-feed/02-run.sh (cleanup staged feed)"
 ( cd /image/stage-airplanes/01-install-feed && bash 02-run.sh )
+
+echo "==> stage-airplanes/02-install-decoder/00-run.sh (clone readsb + dump978)"
+( cd /image/stage-airplanes/02-install-decoder && bash 00-run.sh )
+
+echo "==> stage-airplanes/02-install-decoder/01-run-chroot.sh (compile + install)"
+( cd /image/stage-airplanes/02-install-decoder && bash 01-run-chroot.sh )
+
+echo "==> stage-airplanes/02-install-decoder/02-run.sh (cleanup build dirs)"
+( cd /image/stage-airplanes/02-install-decoder && bash 02-run.sh )
 
 echo "==> stage-airplanes/06-firstboot/00-run.sh"
 # pi-gen runs on_chroot via its own helper; we stub that at the top of this
@@ -96,6 +113,37 @@ have_enable_link airplanes-mlat.service || fail "airplanes-mlat enable symlink m
 # Stage 00-prep outputs (relative-path install commands; previously silent
 # failures masked by absolute-path commands picking up the slack).
 [[ -x /usr/sbin/policy-rc.d ]] || fail "policy-rc.d missing (00-prep relative path?)"
+
+# Stage 02 outputs (decoder + 978).
+[[ -x /usr/bin/readsb ]] || fail "readsb binary missing"
+[[ -x /usr/bin/viewadsb ]] || fail "viewadsb binary missing"
+[[ -x /usr/bin/airplanes-978 ]] || fail "airplanes-978 binary missing"
+[[ -x /usr/bin/dump978-fa ]] || fail "dump978-fa binary missing"
+# airplanes-978 is a hardlink of readsb (same inode).
+[[ "$(stat -c %i /usr/bin/readsb)" == "$(stat -c %i /usr/bin/airplanes-978)" ]] \
+    || fail "airplanes-978 is not a hardlink of readsb"
+# No unresolved boost/soapy/usb libs at build time.
+if ldd /usr/bin/dump978-fa | grep -q 'not found'; then
+    ldd /usr/bin/dump978-fa | grep 'not found' >&2
+    fail "dump978-fa has unresolved shared libraries"
+fi
+[[ -x /usr/local/share/airplanes/readsb.sh ]] || fail "readsb.sh wrapper missing"
+[[ -x /usr/local/share/airplanes/airplanes-978.sh ]] || fail "airplanes-978.sh wrapper missing"
+[[ -x /usr/local/share/airplanes/dump978-fa.sh ]] || fail "dump978-fa.sh wrapper missing"
+[[ -f /etc/systemd/system/readsb.service ]] || fail "readsb.service missing"
+[[ -f /etc/systemd/system/dump978-fa.service ]] || fail "dump978-fa.service missing"
+[[ -f /etc/systemd/system/airplanes-978.service ]] || fail "airplanes-978.service missing"
+[[ -s /etc/airplanes/.build-readsb-decoder-sha ]] || fail ".build-readsb-decoder-sha missing or empty"
+[[ -s /etc/airplanes/.build-dump978-sha ]] || fail ".build-dump978-sha missing or empty"
+[[ ! -d /usr/local/src/airplanes-readsb-build ]] || fail "readsb build dir not cleaned up"
+[[ ! -d /usr/local/src/airplanes-dump978-build ]] || fail "dump978 build dir not cleaned up"
+# readsb enabled; 978 services explicitly NOT enabled (first-run flips them on
+# DUMP978=yes, not at image-build time).
+have_enable_link readsb.service || fail "readsb.service enable symlink missing"
+have_enable_link dump978-fa.service \
+    && fail "dump978-fa.service unexpectedly enabled at build time"
+have_enable_link airplanes-978.service \
+    && fail "airplanes-978.service unexpectedly enabled at build time"
 
 # Stage 06 outputs.
 [[ -x /usr/local/sbin/airplanes-first-run ]] || fail "airplanes-first-run entrypoint missing"
