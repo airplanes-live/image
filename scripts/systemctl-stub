@@ -1,0 +1,56 @@
+#!/bin/bash
+# PATH-prepended shim invoked in place of systemctl/service/deb-systemd-invoke
+# inside the pi-gen chroot. Symlinks at /usr/local/sbin/{systemctl,service,
+# deb-systemd-invoke} point here. Stage 07 removes the symlinks and the stub.
+#
+# Build-mode install.sh / update.sh only call `systemctl enable airplanes-feed`
+# and `systemctl enable airplanes-mlat` (other verbs are gated behind
+# airplanes_is_build_mode). enable is a symlink edit and works fine in chroot,
+# so it passes through. start/restart/stop/daemon-reload/is-active are no-ops
+# (stop/restart cannot run without a live PID 1; is-active returning failure
+# keeps installers on the "service is not running, set it up" path).
+
+set -u
+
+LOG="${AIRPLANES_STUB_LOG:-/var/log/airplanes-systemctl-stub.log}"
+REAL_SYSTEMCTL="${AIRPLANES_REAL_SYSTEMCTL:-/bin/systemctl}"
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+
+basename_self="$(basename "$0")"
+
+log_invocation() {
+	{
+		printf '[%s] %s' "$(date -u +%FT%TZ 2>/dev/null || echo '?')" "$basename_self"
+		for arg in "$@"; do printf ' %q' "$arg"; done
+		printf '\n'
+	} >> "$LOG" 2>/dev/null || true
+}
+
+log_invocation "$@"
+
+case "$basename_self" in
+	service|deb-systemd-invoke)
+		# Any service/deb-systemd-invoke call during build is a no-op.
+		exit 0
+		;;
+esac
+
+verb="${1:-}"
+case "$verb" in
+	enable|disable|mask|unmask|is-enabled|preset|preset-all|reenable|link)
+		exec "$REAL_SYSTEMCTL" "$@"
+		;;
+	daemon-reload|daemon-reexec)
+		exit 0
+		;;
+	start|restart|stop|reload|try-restart|reload-or-restart|kill)
+		exit 0
+		;;
+	is-active|is-failed)
+		exit 1
+		;;
+	*)
+		# Read-only verbs (cat, list-units, show, status, ...) pass through.
+		exec "$REAL_SYSTEMCTL" "$@"
+		;;
+esac

@@ -1,0 +1,9 @@
+[Unit]
+Description=airplanes.live feeder claim registration
+ConditionPathExists=!/etc/airplanes/feeder-claim-secret
+After=airplanes-first-run.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/apl-feed claim register

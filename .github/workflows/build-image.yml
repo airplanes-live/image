@@ -7,13 +7,27 @@ on:
         type: choice
         options: [stable, dev]
         default: dev
+  pull_request:
+    paths:
+      - 'stage0/**'
+      - 'stage1/**'
+      - 'stage2/**'
+      - 'stage-airplanes/**'
+      - 'scripts/**'
+      - 'config-dev'
+      - 'build.sh'
+      - 'depends'
+      - '.github/workflows/build-image.yml'
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: build-${{ github.event.inputs.channel }}-${{ matrix.arch }}
+    # Don't run the 75-minute privileged build for forks. Same-repo PRs and
+    # workflow_dispatch are trusted; everything else gets nothing here.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    name: build-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}
     strategy:
       matrix:
         # armhf code paths exist but firmware package set has not been
@@ -22,7 +36,7 @@ jobs:
         arch: [arm64]
       fail-fast: false
     concurrency:
-      group: image-build-${{ github.event.inputs.channel }}-${{ matrix.arch }}-${{ github.ref }}
+      group: image-build-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}-${{ github.ref }}
       cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -33,7 +47,7 @@ jobs:
         run: |
           set -a
           # shellcheck disable=SC1090
-          source "config-${{ github.event.inputs.channel }}"
+          source "config-${{ github.event.inputs.channel || 'dev' }}"
           set +a
           {
             echo "AIRPLANES_FEED_REPO=$AIRPLANES_FEED_REPO"
@@ -54,31 +68,44 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af || true
 
-      - name: Install qemu + binfmt
+      - name: Install pi-gen build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support xz-utils
+          # On Ubuntu noble, qemu-user-static conflicts with qemu-user-binfmt;
+          # we need the static build for chroot smoke (cross-arch chroot needs
+          # the static binary copied into the rootfs). pi-gen's depends file
+          # checks for the bare `qemu-arm` command which qemu-user-static does
+          # not provide — symlink qemu-arm-static below to satisfy the check.
+          sudo apt-get install -y --no-install-recommends \
+              quilt parted qemu-user-static debootstrap \
+              zerofree zip dosfstools libarchive-tools libcap2-bin rsync \
+              xz-utils file bc qemu-utils kpartx gpg pigz xxd arch-test \
+              binfmt-support
+          sudo ln -sf /usr/bin/qemu-arm-static /usr/local/bin/qemu-arm
+          sudo ln -sf /usr/bin/qemu-aarch64-static /usr/local/bin/qemu-aarch64
+          sudo update-binfmts --enable qemu-aarch64 || true
+          sudo update-binfmts --enable qemu-arm || true
 
       - name: Build
         env:
           ARCH: ${{ matrix.arch }}
-          IMG_NAME: airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}
-          ARCHIVE_FILENAME: airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}
+          IMG_NAME: airplanes-feeder-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}
+          ARCHIVE_FILENAME: airplanes-feeder-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}
           DEPLOY_COMPRESSION: xz
           IMG_SUFFIX: ""
-        run: sudo -E ./build.sh -c "config-${{ github.event.inputs.channel }}"
+        run: sudo -E ./build.sh -c "config-${{ github.event.inputs.channel || 'dev' }}"
 
       - name: Per-cell rootfs smoke
         env:
-          AIRPLANES_IMAGE_PATH: deploy/airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}.img.xz
+          AIRPLANES_IMAGE_PATH: deploy/airplanes-feeder-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}.img.xz
           AIRPLANES_IMAGE_CONTRACT: new
-        run: sudo -E feed/test/image-release-rootfs-smoke.sh
+        run: sudo -E bash feed/test/image-release-rootfs-smoke.sh
 
       - name: First-run chroot smoke
-        run: sudo -E scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ github.event.inputs.channel }}-${{ matrix.arch }}.img.xz"
+        run: sudo -E bash scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}.img.xz"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: image-${{ github.event.inputs.channel }}-${{ matrix.arch }}
+          name: image-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}
           path: deploy/
           if-no-files-found: error
