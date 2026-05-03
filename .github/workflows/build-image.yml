@@ -1,5 +1,14 @@
 name: build-image
 
+# Triggers:
+#   workflow_dispatch — manual; --ref selects branch. Use this to validate a
+#       feature branch / PR before merging:
+#         gh workflow run build-image.yml -R airplanes-live/image \
+#             -f channel=dev --ref <pr-branch>
+#   push to dev — post-merge validation. Every merge to dev rebuilds.
+#   push to a stable/v* tag — release build with channel=stable. Cut a tag
+#       on main: `git tag stable/v0.1.0 && git push origin stable/v0.1.0`.
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,27 +16,16 @@ on:
         type: choice
         options: [stable, dev]
         default: dev
-  pull_request:
-    paths:
-      - 'stage0/**'
-      - 'stage1/**'
-      - 'stage2/**'
-      - 'stage-airplanes/**'
-      - 'scripts/**'
-      - 'config-dev'
-      - 'build.sh'
-      - 'depends'
-      - '.github/workflows/build-image.yml'
+  push:
+    branches: [dev]
+    tags: ['stable/v*']
 
 permissions:
   contents: read
 
 jobs:
   build:
-    # Don't run the 75-minute privileged build for forks. Same-repo PRs and
-    # workflow_dispatch are trusted; everything else gets nothing here.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
-    name: build-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}
+    name: build-${{ github.event.inputs.channel || (startsWith(github.ref, 'refs/tags/stable/') && 'stable') || 'dev' }}-${{ matrix.arch }}
     strategy:
       matrix:
         # armhf code paths exist but firmware package set has not been
@@ -36,10 +34,12 @@ jobs:
         arch: [arm64]
       fail-fast: false
     concurrency:
-      group: image-build-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}-${{ github.ref }}
+      group: image-build-${{ github.event.inputs.channel || (startsWith(github.ref, 'refs/tags/stable/') && 'stable') || 'dev' }}-${{ matrix.arch }}-${{ github.ref }}
       cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    env:
+      CHANNEL: ${{ github.event.inputs.channel || (startsWith(github.ref, 'refs/tags/stable/') && 'stable') || 'dev' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,7 +47,7 @@ jobs:
         run: |
           set -a
           # shellcheck disable=SC1090
-          source "config-${{ github.event.inputs.channel || 'dev' }}"
+          source "config-$CHANNEL"
           set +a
           {
             echo "AIRPLANES_FEED_REPO=$AIRPLANES_FEED_REPO"
@@ -89,23 +89,23 @@ jobs:
       - name: Build
         env:
           ARCH: ${{ matrix.arch }}
-          IMG_NAME: airplanes-feeder-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}
-          ARCHIVE_FILENAME: airplanes-feeder-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}
+          IMG_NAME: airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}
+          ARCHIVE_FILENAME: airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}
           DEPLOY_COMPRESSION: xz
           IMG_SUFFIX: ""
-        run: sudo -E ./build.sh -c "config-${{ github.event.inputs.channel || 'dev' }}"
+        run: sudo -E ./build.sh -c "config-$CHANNEL"
 
       - name: Per-cell rootfs smoke
         env:
-          AIRPLANES_IMAGE_PATH: deploy/airplanes-feeder-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}.img.xz
+          AIRPLANES_IMAGE_PATH: deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz
           AIRPLANES_IMAGE_CONTRACT: new
         run: sudo -E bash feed/test/image-release-rootfs-smoke.sh
 
       - name: First-run chroot smoke
-        run: sudo -E bash scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}.img.xz"
+        run: sudo -E bash scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: image-${{ github.event.inputs.channel || 'dev' }}-${{ matrix.arch }}
+          name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
           path: deploy/
           if-no-files-found: error
