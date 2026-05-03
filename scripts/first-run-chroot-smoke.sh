@@ -77,6 +77,18 @@ mount -t proc proc "$ROOT_MNT/proc"
 mount --rbind /sys "$ROOT_MNT/sys"
 mount --rbind /dev "$ROOT_MNT/dev"
 
+echo "==> seeding airplanes-config.txt with real values"
+# Overwrite the shipped sentinel template with realistic values so we can
+# assert the merge into feed.env actually lands user-set keys (not just
+# "feed.env still parses"). DUMP978=no is the sentinel, must NOT propagate.
+cat > "$ROOT_MNT/boot/firmware/airplanes-config.txt" <<'CFG'
+LATITUDE=51.5
+LONGITUDE=-0.1
+ALTITUDE=42m
+USER=ci-smoke
+DUMP978=no
+CFG
+
 echo "==> running airplanes-first-run inside chroot"
 chroot "$ROOT_MNT" /usr/local/sbin/airplanes-first-run
 
@@ -91,9 +103,14 @@ echo "==> asserting first-run-done marker exists"
 [[ -f "$ROOT_MNT/var/lib/airplanes/first-run-done" ]] \
 	|| { echo "first-run-done marker missing"; exit 1; }
 
-echo "==> asserting feed.env still parses"
+echo "==> asserting feed.env merged the seeded boot config"
+unset LATITUDE LONGITUDE ALTITUDE USER
 # shellcheck source=/dev/null
-( set -a; source "$ROOT_MNT/etc/airplanes/feed.env"; set +a ) \
-	|| { echo "feed.env failed to parse after merge"; exit 1; }
+( set -a; source "$ROOT_MNT/etc/airplanes/feed.env"; set +a; \
+	[[ "$LATITUDE" == "51.5" ]] || { echo "LATITUDE not merged: $LATITUDE"; exit 1; }; \
+	[[ "$LONGITUDE" == "-0.1" ]] || { echo "LONGITUDE not merged: $LONGITUDE"; exit 1; }; \
+	[[ "$ALTITUDE" == "42m" ]] || { echo "ALTITUDE not merged: $ALTITUDE"; exit 1; }; \
+	[[ "$USER" == "ci-smoke" ]] || { echo "USER not merged: $USER"; exit 1; } \
+) || { echo "feed.env merge assertions failed"; exit 1; }
 
-echo "OK: feeder-id=$FEEDER_ID"
+echo "OK: feeder-id=$FEEDER_ID, boot-config merge confirmed"

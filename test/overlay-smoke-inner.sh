@@ -35,16 +35,22 @@ apt-get install -y --no-install-recommends systemd
 git config --system --add safe.directory '*'
 
 echo "==> stage-airplanes/00-prep/00-run.sh"
-bash /image/stage-airplanes/00-prep/00-run.sh
+# Run from the stage dir so relative `files/` paths inside 00-run.sh resolve.
+( cd /image/stage-airplanes/00-prep && bash 00-run.sh )
 
 echo "==> stage-airplanes/01-install-feed/00-run.sh (clone feed)"
-bash /image/stage-airplanes/01-install-feed/00-run.sh
+( cd /image/stage-airplanes/01-install-feed && bash 00-run.sh )
 
 echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (install.sh --build-mode)"
-bash /image/stage-airplanes/01-install-feed/01-run-chroot.sh
+( cd /image/stage-airplanes/01-install-feed && bash 01-run-chroot.sh )
 
 echo "==> stage-airplanes/01-install-feed/02-run.sh (cleanup staged feed)"
-bash /image/stage-airplanes/01-install-feed/02-run.sh
+( cd /image/stage-airplanes/01-install-feed && bash 02-run.sh )
+
+echo "==> stage-airplanes/06-firstboot/00-run.sh"
+# pi-gen runs on_chroot via its own helper; we stub that at the top of this
+# script. The stage's `install` commands take relative `files/` paths.
+( cd /image/stage-airplanes/06-firstboot && bash 00-run.sh )
 
 echo "==> check-stub-log.sh"
 bash /image/scripts/check-stub-log.sh /
@@ -86,5 +92,20 @@ have_enable_link() {
 }
 have_enable_link airplanes-feed.service || fail "airplanes-feed enable symlink missing"
 have_enable_link airplanes-mlat.service || fail "airplanes-mlat enable symlink missing"
+
+# Stage 00-prep outputs (relative-path install commands; previously silent
+# failures masked by absolute-path commands picking up the slack).
+[[ -x /usr/sbin/policy-rc.d ]] || fail "policy-rc.d missing (00-prep relative path?)"
+
+# Stage 06 outputs.
+[[ -x /usr/local/sbin/airplanes-first-run ]] || fail "airplanes-first-run entrypoint missing"
+[[ -f /etc/systemd/system/airplanes-first-run.service ]] || fail "airplanes-first-run.service missing"
+[[ -f /etc/systemd/system/airplanes-claim.service ]] || fail "airplanes-claim.service missing"
+[[ -f /etc/systemd/system/airplanes-claim.timer ]] || fail "airplanes-claim.timer missing"
+[[ -f /boot/firmware/airplanes-config.txt ]] || fail "boot-config template missing"
+[[ -L /etc/systemd/system/multi-user.target.wants/airplanes-first-run.service ]] \
+    || fail "airplanes-first-run.service enable symlink missing"
+[[ -L /etc/systemd/system/timers.target.wants/airplanes-claim.timer ]] \
+    || fail "airplanes-claim.timer enable symlink missing"
 
 echo "overlay smoke passed"
