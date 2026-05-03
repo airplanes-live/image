@@ -5,6 +5,11 @@
 # cleanup wipes the log it is asserting against.
 bash "${BASE_DIR}/scripts/check-stub-log.sh" "${ROOTFS_DIR}"
 
+# Generate /etc/airplanes/build-manifest.json. Must come AFTER check-stub-log.sh
+# (which writes the fingerprint the manifest folds in) and BEFORE the rm -f
+# cleanup so the manifest is part of the shipped rootfs.
+bash "${BASE_DIR}/scripts/manifest-generator.sh" "${ROOTFS_DIR}"
+
 rm -f "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
 rm -f "${ROOTFS_DIR}/usr/local/sbin/airplanes-systemctl-stub"
 rm -f "${ROOTFS_DIR}/usr/local/sbin/systemctl"

@@ -26,6 +26,12 @@ set +a
 # the real build — that's what we're trying to validate.
 export AIRPLANES_FEED_REPO="file:///feed"
 
+# Stage 07 invokes manifest-generator.sh which requires ARCH. The smoke runs
+# in a debian:trixie-slim container regardless of host arch — pick arm64 to
+# match config-dev's primary target. CHANNEL=dev comes from the config-dev
+# source above.
+export ARCH=arm64
+
 echo "==> apt update + stage-00-prep packages"
 apt-get update -qq
 # Install only what stage-00-prep declares; install.sh fetches its own
@@ -86,9 +92,6 @@ echo "==> stage-airplanes/06-firstboot/00-run.sh"
 # pi-gen runs on_chroot via its own helper; we stub that at the top of this
 # script. The stage's `install` commands take relative `files/` paths.
 ( cd /image/stage-airplanes/06-firstboot && bash 00-run.sh )
-
-echo "==> check-stub-log.sh"
-bash /image/scripts/check-stub-log.sh /
 
 echo "==> contract assertions"
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -232,5 +235,40 @@ lighttpd -tt -f /etc/lighttpd/lighttpd.conf >/dev/null \
     || fail "airplanes-first-run.service enable symlink missing"
 [[ -L /etc/systemd/system/timers.target.wants/airplanes-claim.timer ]] \
     || fail "airplanes-claim.timer enable symlink missing"
+
+# Build-manifest sentinels written by stages 00 + 01 (rest are checked above).
+[[ -s /etc/airplanes/.build-pi-gen-sha ]] || fail ".build-pi-gen-sha missing or empty"
+[[ -s /etc/airplanes/.build-airplanes-readsb-sha ]] || fail ".build-airplanes-readsb-sha missing or empty"
+
+echo "==> stage-airplanes/07-finalize/00-run.sh (stub-check + manifest + cleanup)"
+( cd /image/stage-airplanes/07-finalize && bash 00-run.sh )
+
+echo "==> post-finalize assertions"
+[[ -s /etc/airplanes/build-manifest.json ]] || fail "build-manifest.json missing or empty"
+jq -e '.schema_version == 1
+    and .channel == "dev"
+    and .arch == "arm64"
+    and (.pi_gen | test("^([0-9a-f]{40}(-dirty)?|unknown)$"))
+    and (.components | keys | length == 7)
+    and (.components.airplanes_feed | test("^[0-9a-f]{40}$"))
+    and (.components.airplanes_readsb | test("^[0-9a-f]{40}$"))
+    and (.components.wiedehopf_readsb | test("^[0-9a-f]{40}$"))
+    and (.components.wiedehopf_tar1090 | test("^[0-9a-f]{40}$"))
+    and (.components.wiedehopf_tar1090_db | test("^[0-9a-f]{40}$"))
+    and (.components.wiedehopf_graphs1090 | test("^[0-9a-f]{40}$"))
+    and (.components.flightaware_dump978 | test("^[0-9a-f]{40}$"))
+    and (.stub_fingerprint.invocations | type) == "number"
+    and (.stub_fingerprint.enables | type) == "number"
+    and (.stub_fingerprint.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' \
+    /etc/airplanes/build-manifest.json > /dev/null \
+    || { jq . /etc/airplanes/build-manifest.json >&2; fail "build-manifest.json contract"; }
+
+# Build-only state must be gone.
+[[ ! -e /usr/sbin/policy-rc.d ]] || fail "policy-rc.d still present after finalize"
+[[ ! -e /usr/local/sbin/airplanes-systemctl-stub ]] || fail "systemctl-stub still present after finalize"
+[[ ! -e /usr/local/sbin/systemctl ]] || fail "systemctl symlink still present after finalize"
+[[ ! -e /usr/local/sbin/service ]] || fail "service symlink still present after finalize"
+[[ ! -e /usr/local/sbin/deb-systemd-invoke ]] || fail "deb-systemd-invoke symlink still present after finalize"
+[[ ! -e /var/log/airplanes-systemctl-stub.log ]] || fail "stub log still present after finalize"
 
 echo "overlay smoke passed"
