@@ -1,26 +1,26 @@
-export CHANNEL=dev
-export STAGE_LIST="${BASE_DIR}/stage0 ${BASE_DIR}/stage1 ${BASE_DIR}/stage2 ${BASE_DIR}/stage-airplanes"
-export DEPLOY_COMPRESSION=xz
-export IMG_SUFFIX=""
+export CHANNEL="${CHANNEL:-dev}"
+export STAGE_LIST="${STAGE_LIST:-${BASE_DIR:-.}/stage0 ${BASE_DIR:-.}/stage1 ${BASE_DIR:-.}/stage2 ${BASE_DIR:-.}/stage-airplanes}"
+export DEPLOY_COMPRESSION="${DEPLOY_COMPRESSION:-xz}"
+export IMG_SUFFIX="${IMG_SUFFIX:-}"
 
 # Branch-tracking on dev — moving target by design, catches upstream drift early.
-export AIRPLANES_FEED_REPO="https://github.com/airplanes-live/feed.git"
-export AIRPLANES_FEED_BRANCH=dev
+export AIRPLANES_FEED_REPO="${AIRPLANES_FEED_REPO:-https://github.com/airplanes-live/feed.git}"
+export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-dev}"
 
-export AIRPLANES_READSB_REPO="https://github.com/airplanes-live/readsb.git"
-export AIRPLANES_READSB_BRANCH=dev
+export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
+export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-dev}"
 
-export AIRPLANES_READSB_DECODER_REPO="https://github.com/wiedehopf/readsb.git"
-export AIRPLANES_READSB_DECODER_BRANCH=dev
+export AIRPLANES_READSB_DECODER_REPO="${AIRPLANES_READSB_DECODER_REPO:-https://github.com/wiedehopf/readsb.git}"
+export AIRPLANES_READSB_DECODER_BRANCH="${AIRPLANES_READSB_DECODER_BRANCH:-dev}"
 
-export AIRPLANES_DUMP978_REPO="https://github.com/flightaware/dump978.git"
-export AIRPLANES_DUMP978_BRANCH=master
+export AIRPLANES_DUMP978_REPO="${AIRPLANES_DUMP978_REPO:-https://github.com/flightaware/dump978.git}"
+export AIRPLANES_DUMP978_BRANCH="${AIRPLANES_DUMP978_BRANCH:-master}"
 
-export AIRPLANES_TAR1090_REPO="https://github.com/wiedehopf/tar1090.git"
-export AIRPLANES_TAR1090_BRANCH=master
+export AIRPLANES_TAR1090_REPO="${AIRPLANES_TAR1090_REPO:-https://github.com/wiedehopf/tar1090.git}"
+export AIRPLANES_TAR1090_BRANCH="${AIRPLANES_TAR1090_BRANCH:-master}"
 
-export AIRPLANES_TAR1090_DB_REPO="https://github.com/wiedehopf/tar1090-db.git"
-export AIRPLANES_TAR1090_DB_BRANCH=master
+export AIRPLANES_TAR1090_DB_REPO="${AIRPLANES_TAR1090_DB_REPO:-https://github.com/wiedehopf/tar1090-db.git}"
+export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-master}"
 
-export AIRPLANES_GRAPHS1090_REPO="https://github.com/wiedehopf/graphs1090.git"
-export AIRPLANES_GRAPHS1090_BRANCH=master
+export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
+export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-master}"
