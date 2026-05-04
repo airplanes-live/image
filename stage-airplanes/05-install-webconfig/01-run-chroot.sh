@@ -14,6 +14,16 @@ adduser --system --no-create-home --group airplanes-webconfig
 chown -R airplanes-webconfig:airplanes-webconfig /var/lib/airplanes-webconfig
 chown -R airplanes-webconfig:airplanes-webconfig /etc/airplanes/webconfig
 
+# Lock down the sudoers snippet (0440 root:root is what visudo accepts) and
+# verify the merged sudoers parses before we exit the stage.
+chmod 0440 /etc/sudoers.d/010_airplanes-webconfig
+chown root:root /etc/sudoers.d/010_airplanes-webconfig
+visudo -cf /etc/sudoers.d/010_airplanes-webconfig
+
+# /api/log/{unit} streams journalctl as the webconfig user. Adding it to
+# systemd-journal grants read access to the system journal without sudo.
+adduser airplanes-webconfig systemd-journal
+
 # Enable mod_proxy via lighttpd's helper (handles dedup if another snippet
 # already loaded it) and link our snippet into conf-enabled.
 lighttpd-enable-mod proxy
