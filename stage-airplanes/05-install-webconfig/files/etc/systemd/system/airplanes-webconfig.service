@@ -15,7 +15,12 @@ RestartSec=5s
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/lib/airplanes-webconfig /etc/airplanes/webconfig
+# /etc/airplanes is in ReadWritePaths so the sudo child running apply-config
+# (as root) can write feed.env. Webconfig itself has no perms on
+# /etc/airplanes (mode 0755 root:root) — only the helper, mediated by the
+# sudoers entry, can mutate it. /run/airplanes is the tmpfiles-managed lock
+# directory.
+ReadWritePaths=/var/lib/airplanes-webconfig /etc/airplanes /etc/airplanes/webconfig /run/airplanes
 
 # Webconfig invokes `sudo -n systemctl ...` for service restart, so
 # NoNewPrivileges must stay false. The sudoers entry constrains the

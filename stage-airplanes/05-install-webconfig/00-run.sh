@@ -33,6 +33,17 @@ WEBCONFIG_VERSION="$(git -C "${BASE_DIR}" rev-parse --short HEAD 2>/dev/null || 
 
 chmod 0755 "${WEBCONFIG_BIN}"
 
+# Cross-build the apply-config helper alongside webconfig. The helper is the
+# only writer of /etc/airplanes/feed.env; webconfig invokes it via sudo.
+APPLY_CONFIG_BIN="${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig/apply-config"
+install -d -m 0755 "${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig"
+( cd "${WEBCONFIG_SRC}" && go build \
+	-trimpath -buildvcs=false \
+	-ldflags "-s -w" \
+	-o "${APPLY_CONFIG_BIN}" \
+	./cmd/apply-config )
+chmod 0755 "${APPLY_CONFIG_BIN}"
+
 # Lighttpd reverse-proxy snippet — symlinked into conf-enabled in the chroot.
 install -D -m 0644 files/etc/lighttpd/conf-available/40-airplanes-webconfig.conf \
 	"${ROOTFS_DIR}/etc/lighttpd/conf-available/40-airplanes-webconfig.conf"
@@ -53,6 +64,12 @@ install -D -m 0755 files/usr/local/lib/airplanes-webconfig/reset \
 # accepts them at runtime.
 install -D -m 0644 files/etc/sudoers.d/010_airplanes-webconfig \
 	"${ROOTFS_DIR}/etc/sudoers.d/010_airplanes-webconfig"
+
+# tmpfiles.d snippet creates /run/airplanes/ at boot for the feed-env lock
+# (root-owned 0755, world-readable but writable only by root). apply-config
+# locks /run/airplanes/feed-env.lock here.
+install -D -m 0644 files/usr/lib/tmpfiles.d/airplanes-webconfig.conf \
+	"${ROOTFS_DIR}/usr/lib/tmpfiles.d/airplanes-webconfig.conf"
 
 # Per-user state dir; chowned in the chroot once the airplanes-webconfig user
 # exists. Mode 0700 so only that user (and root) can read session secrets.
