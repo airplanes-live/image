@@ -37,9 +37,17 @@ chmod 0755 "${WEBCONFIG_BIN}"
 install -D -m 0644 files/etc/lighttpd/conf-available/40-airplanes-webconfig.conf \
 	"${ROOTFS_DIR}/etc/lighttpd/conf-available/40-airplanes-webconfig.conf"
 
-# Systemd unit.
+# Systemd units: webconfig itself plus the root-owned reset oneshot.
 install -D -m 0644 files/etc/systemd/system/airplanes-webconfig.service \
 	"${ROOTFS_DIR}/etc/systemd/system/airplanes-webconfig.service"
+install -D -m 0644 files/etc/systemd/system/airplanes-webconfig-reset.service \
+	"${ROOTFS_DIR}/etc/systemd/system/airplanes-webconfig-reset.service"
+
+# Reset script — invoked by airplanes-webconfig-reset.service when the SD-card
+# marker /boot/firmware/airplanes-reset-password exists. Runs as root (no
+# sandbox) so it can rm under /boot/firmware, which webconfig itself can't.
+install -D -m 0755 files/usr/local/lib/airplanes-webconfig/reset \
+	"${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig/reset"
 
 # Per-user state dir; chowned in the chroot once the airplanes-webconfig user
 # exists. Mode 0700 so only that user (and root) can read session secrets.

@@ -24,5 +24,8 @@ ln -sfn /etc/lighttpd/conf-available/40-airplanes-webconfig.conf \
 lighttpd -tt -f /etc/lighttpd/lighttpd.conf >/dev/null
 
 # Enable webconfig.service. The stub catches `enable` and forwards to the real
-# systemctl, which is a symlink edit and works inside the chroot.
+# systemctl, which is a symlink edit and works inside the chroot. The reset
+# oneshot is enabled with WantedBy=airplanes-webconfig.service so enabling
+# webconfig pulls in the reset wants symlink as well.
+systemctl enable airplanes-webconfig-reset.service
 systemctl enable airplanes-webconfig.service
