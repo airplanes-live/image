@@ -4,55 +4,8 @@
 
 set -euo pipefail
 
-# Pi-gen helpers expected by stage scripts: on_chroot wraps a heredoc to run
-# inside the chroot. We're already inside the rootfs (the container), so
-# just execute the heredoc body in the current shell.
-on_chroot() { bash; }
-export -f on_chroot
-
-# Stage scripts read ROOTFS_DIR / BASE_DIR from pi-gen. Map to container root.
-export ROOTFS_DIR=/
-export BASE_DIR=/image
-
-# Source config-dev so all decoder + feed repo/branch env vars are in scope —
-# avoids drifting between the smoke and what production builds actually use.
-# (shellcheck can't follow runtime-container path; values come from configured envs.)
-set -a
-# shellcheck disable=SC1091
-. /image/config-dev
-set +a
-# Override AIRPLANES_FEED_REPO to the bind-mounted local checkout. Other repos
-# (readsb decoder, dump978) are fetched from GitHub during the smoke, same as
-# the real build — that's what we're trying to validate.
-export AIRPLANES_FEED_REPO="file:///feed"
-
-# Stage 07 invokes manifest-generator.sh which requires ARCH. The smoke runs
-# in a debian:trixie-slim container regardless of host arch — pick arm64 to
-# match config-dev's primary target. CHANNEL=dev comes from the config-dev
-# source above.
-export ARCH=arm64
-
-echo "==> apt update + stage-00-prep packages"
-apt-get update -qq
-# Install only what stage-00-prep declares; install.sh fetches its own
-# bootstrap deps inside the chroot via airplanes_install_update_deps.
-mapfile -t stage00_packages < <(grep -v '^#' /image/stage-airplanes/00-prep/01-packages)
-apt-get install -y --no-install-recommends "${stage00_packages[@]}"
-# systemd provides /bin/systemctl. The stub passes 'enable' through to it;
-# without /bin/systemctl, enables silently no-op and leave no symlink under
-# target.wants/, so post-install assertions can't tell whether enable worked.
-apt-get install -y --no-install-recommends systemd
-
-# Stage 05 cross-builds the webconfig Go binary on the build host before
-# entering the chroot. golang-go is in image/depends; install it here too so
-# the smoke exercises the same cross-build path production uses. `file` is
-# used downstream to assert the cross-built ELF matches ARCH.
-apt-get install -y --no-install-recommends golang-go file
-
-# git refuses to operate on bind-mounted feed checkout owned by a different
-# uid (runner host vs. root in container); mirror feed/test/installer-smoke's
-# fix. Has to run after git is installed.
-git config --system --add safe.directory '*'
+# shellcheck source=lib/overlay-common.sh
+. /image/test/lib/overlay-common.sh
 
 echo "==> stage-airplanes/00-prep/00-run.sh"
 # Run from the stage dir so relative `files/` paths inside 00-run.sh resolve.
