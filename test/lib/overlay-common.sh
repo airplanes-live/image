@@ -21,9 +21,17 @@ export BASE_DIR=/image
 
 # Source config-dev so all decoder + feed repo/branch env vars are in scope —
 # avoids drifting between the smoke and what production builds actually use.
+# Capture caller-supplied AIRPLANES_FEED_BRANCH first so config-dev's default
+# (dev) doesn't clobber it; the feed-CI gate runs the smoke against a PR head
+# branch, while image-CI runs it against feed/dev.
+caller_feed_branch="${AIRPLANES_FEED_BRANCH:-}"
 set -a
 . /image/config-dev
 set +a
+if [[ -n "$caller_feed_branch" ]]; then
+    export AIRPLANES_FEED_BRANCH="$caller_feed_branch"
+fi
+unset caller_feed_branch
 
 # Override AIRPLANES_FEED_REPO to the bind-mounted local checkout. Other repos
 # (readsb decoder, dump978) are fetched from GitHub during the smoke, same as
