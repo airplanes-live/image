@@ -43,6 +43,12 @@ apt-get install -y --no-install-recommends "${stage00_packages[@]}"
 # target.wants/, so post-install assertions can't tell whether enable worked.
 apt-get install -y --no-install-recommends systemd
 
+# Stage 05 cross-builds the webconfig Go binary on the build host before
+# entering the chroot. golang-go is in image/depends; install it here too so
+# the smoke exercises the same cross-build path production uses. `file` is
+# used downstream to assert the cross-built ELF matches ARCH.
+apt-get install -y --no-install-recommends golang-go file
+
 # git refuses to operate on bind-mounted feed checkout owned by a different
 # uid (runner host vs. root in container); mirror feed/test/installer-smoke's
 # fix. Has to run after git is installed.
@@ -87,6 +93,15 @@ echo "==> stage-airplanes/04-install-graphs1090/01-run-chroot.sh (run graphs1090
 
 echo "==> stage-airplanes/04-install-graphs1090/02-run.sh (cleanup graphs1090 git dir)"
 ( cd /image/stage-airplanes/04-install-graphs1090 && bash 02-run.sh )
+
+echo "==> stage-airplanes/05-install-webconfig/00-run.sh (cross-build webconfig)"
+( cd /image/stage-airplanes/05-install-webconfig && bash 00-run.sh )
+
+echo "==> stage-airplanes/05-install-webconfig/01-run-chroot.sh (user + lighttpd + enable)"
+( cd /image/stage-airplanes/05-install-webconfig && bash 01-run-chroot.sh )
+
+echo "==> stage-airplanes/05-install-webconfig/02-run.sh (no-op)"
+( cd /image/stage-airplanes/05-install-webconfig && bash 02-run.sh )
 
 echo "==> stage-airplanes/06-firstboot/00-run.sh"
 # pi-gen runs on_chroot via its own helper; we stub that at the top of this
@@ -224,6 +239,42 @@ fi
 # lighttpd config syntax check (catches broken alias.url snippets etc.)
 lighttpd -tt -f /etc/lighttpd/lighttpd.conf >/dev/null \
     || fail "lighttpd config-test failed"
+
+# Stage 05 outputs (webconfig plumbing).
+[[ -x /usr/local/bin/airplanes-webconfig ]] || fail "airplanes-webconfig binary missing"
+# Cross-build target matches ARCH (arm64); the smoke runs on amd64 so it must
+# NOT be a host-arch binary.
+file /usr/local/bin/airplanes-webconfig | grep -q 'ARM aarch64' \
+    || fail "airplanes-webconfig is not an arm64 binary"
+[[ -f /etc/systemd/system/airplanes-webconfig.service ]] || fail "airplanes-webconfig.service missing"
+grep -q '^User=airplanes-webconfig' /etc/systemd/system/airplanes-webconfig.service \
+    || fail "airplanes-webconfig.service not running as airplanes-webconfig user"
+grep -q '^After=.*airplanes-first-run.service' /etc/systemd/system/airplanes-webconfig.service \
+    || fail "airplanes-webconfig.service missing After=airplanes-first-run.service"
+[[ -f /etc/lighttpd/conf-available/40-airplanes-webconfig.conf ]] \
+    || fail "lighttpd conf-available/40-airplanes-webconfig.conf missing"
+[[ -L /etc/lighttpd/conf-enabled/40-airplanes-webconfig.conf ]] \
+    || fail "lighttpd conf-enabled/40-airplanes-webconfig.conf symlink missing"
+# mod_proxy enabled by lighttpd-enable-mod (debian helper writes a
+# 10-proxy.conf symlink into conf-enabled).
+[[ -e /etc/lighttpd/conf-enabled/10-proxy.conf ]] \
+    || fail "lighttpd mod_proxy not enabled (no 10-proxy.conf in conf-enabled)"
+have_enable_link airplanes-webconfig.service || fail "airplanes-webconfig.service enable symlink missing"
+# airplanes-webconfig user exists with matching primary group.
+getent passwd airplanes-webconfig >/dev/null \
+    || fail "airplanes-webconfig user missing"
+getent group airplanes-webconfig >/dev/null \
+    || fail "airplanes-webconfig group missing"
+[[ -d /var/lib/airplanes-webconfig ]] || fail "/var/lib/airplanes-webconfig missing"
+[[ "$(stat -c %a /var/lib/airplanes-webconfig)" == "700" ]] \
+    || fail "/var/lib/airplanes-webconfig perms != 0700"
+[[ "$(stat -c %U /var/lib/airplanes-webconfig)" == "airplanes-webconfig" ]] \
+    || fail "/var/lib/airplanes-webconfig owner != airplanes-webconfig"
+[[ -d /etc/airplanes/webconfig ]] || fail "/etc/airplanes/webconfig missing"
+[[ "$(stat -c %a /etc/airplanes/webconfig)" == "700" ]] \
+    || fail "/etc/airplanes/webconfig perms != 0700"
+[[ "$(stat -c %U /etc/airplanes/webconfig)" == "airplanes-webconfig" ]] \
+    || fail "/etc/airplanes/webconfig owner != airplanes-webconfig"
 
 # Stage 06 outputs.
 [[ -x /usr/local/sbin/airplanes-first-run ]] || fail "airplanes-first-run entrypoint missing"
