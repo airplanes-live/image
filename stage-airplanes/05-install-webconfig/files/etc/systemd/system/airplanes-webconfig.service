@@ -1,0 +1,26 @@
+[Unit]
+Description=airplanes.live webconfig
+Documentation=https://github.com/airplanes-live/image
+After=network.target lighttpd.service airplanes-first-run.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=airplanes-webconfig
+Group=airplanes-webconfig
+ExecStart=/usr/local/bin/airplanes-webconfig --listen 127.0.0.1:8080
+Restart=on-failure
+RestartSec=5s
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/airplanes-webconfig /etc/airplanes/webconfig
+
+# Webconfig invokes `sudo -n systemctl ...` for service restart in PR-4 and
+# beyond, so NoNewPrivileges must stay false. Sudoers (also PR-4) constrains
+# the elevated argv to a hard-coded allowlist.
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target
