@@ -46,3 +46,21 @@ mv /etc/collectd/collectd.conf.new /etc/collectd/collectd.conf
 
 # Drop graphs1090's :8542 alternative listener; we expose graphs1090 only via :80.
 rm -f /etc/lighttpd/conf-enabled/95-graphs1090-otherport.conf
+
+# graphs1090's install.sh invokes `collectd 2>&1 | grep -oE 'libpython...'`
+# to detect the python version, and (per upstream's own comment) this can
+# leave collectd running. Upstream's own `pkill -9 collectd` cleanup is
+# intercepted by our pkill stub above to avoid host-process collateral
+# damage, so the leaked collectd survives this script and ultimately holds
+# /dev open at pi-gen's export-image unmount step.
+#
+# Targeted kill: inside a chroot, a process's /proc/$pid/root resolves to
+# the chroot's host-side path (a non-"/" string); host processes (visible
+# via bind-mounted /proc) resolve to "/". Killing only the non-"/" set
+# leaves any host collectd alone.
+for pid in $(pgrep -fx '/usr/sbin/collectd' 2>/dev/null); do
+    proc_root="$(readlink "/proc/$pid/root" 2>/dev/null || true)"
+    if [[ -n "$proc_root" && "$proc_root" != "/" ]]; then
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+done
