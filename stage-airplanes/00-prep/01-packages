@@ -2,6 +2,7 @@ git
 ca-certificates
 curl
 jq
+sudo
 util-linux
 build-essential
 pkg-config

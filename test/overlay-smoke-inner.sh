@@ -270,6 +270,21 @@ have_enable_link airplanes-webconfig.service || fail "airplanes-webconfig.servic
 [[ -L /etc/systemd/system/airplanes-webconfig.service.wants/airplanes-webconfig-reset.service ]] \
     || fail "reset wants symlink missing under airplanes-webconfig.service.wants/"
 
+# Sudoers (PR-3): file exists, mode 0440, owned root:root, visudo accepts.
+[[ -f /etc/sudoers.d/010_airplanes-webconfig ]] \
+    || fail "sudoers snippet missing"
+[[ "$(stat -c %a /etc/sudoers.d/010_airplanes-webconfig)" == "440" ]] \
+    || fail "sudoers snippet perms != 0440"
+[[ "$(stat -c %U:%G /etc/sudoers.d/010_airplanes-webconfig)" == "root:root" ]] \
+    || fail "sudoers snippet not owned root:root"
+visudo -cf /etc/sudoers.d/010_airplanes-webconfig >/dev/null \
+    || fail "visudo rejects sudoers snippet"
+
+# airplanes-webconfig in systemd-journal group (so /api/log/{unit} can read
+# the journal without sudo).
+id -nG airplanes-webconfig | tr ' ' '\n' | grep -qx systemd-journal \
+    || fail "airplanes-webconfig not in systemd-journal group"
+
 # airplanes-webconfig user exists with matching primary group.
 getent passwd airplanes-webconfig >/dev/null \
     || fail "airplanes-webconfig user missing"

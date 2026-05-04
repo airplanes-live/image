@@ -1,0 +1,7 @@
+# /etc/sudoers.d/010_airplanes-webconfig
+#
+# Allow the airplanes-webconfig service account to invoke a tightly-scoped
+# set of privileged commands without a password. Every line must be a fixed
+# argv — no wildcards, no env passthrough, no shell quoting holes.
+
+airplanes-webconfig ALL=(airplanes) NOPASSWD: /usr/local/bin/apl-feed claim show

@@ -49,6 +49,11 @@ install -D -m 0644 files/etc/systemd/system/airplanes-webconfig-reset.service \
 install -D -m 0755 files/usr/local/lib/airplanes-webconfig/reset \
 	"${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig/reset"
 
+# Sudoers entries — installed at 0440 in the chroot step so visudo
+# accepts them at runtime.
+install -D -m 0644 files/etc/sudoers.d/010_airplanes-webconfig \
+	"${ROOTFS_DIR}/etc/sudoers.d/010_airplanes-webconfig"
+
 # Per-user state dir; chowned in the chroot once the airplanes-webconfig user
 # exists. Mode 0700 so only that user (and root) can read session secrets.
 install -d -m 0700 "${ROOTFS_DIR}/var/lib/airplanes-webconfig"
