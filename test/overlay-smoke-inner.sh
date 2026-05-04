@@ -260,6 +260,16 @@ grep -q '^After=.*airplanes-first-run.service' /etc/systemd/system/airplanes-web
 [[ -e /etc/lighttpd/conf-enabled/10-proxy.conf ]] \
     || fail "lighttpd mod_proxy not enabled (no 10-proxy.conf in conf-enabled)"
 have_enable_link airplanes-webconfig.service || fail "airplanes-webconfig.service enable symlink missing"
+
+# Reset oneshot: unit installed, script executable, WantedBy symlink under
+# airplanes-webconfig.service.wants/ exists.
+[[ -f /etc/systemd/system/airplanes-webconfig-reset.service ]] \
+    || fail "airplanes-webconfig-reset.service missing"
+[[ -x /usr/local/lib/airplanes-webconfig/reset ]] \
+    || fail "/usr/local/lib/airplanes-webconfig/reset missing or not executable"
+[[ -L /etc/systemd/system/airplanes-webconfig.service.wants/airplanes-webconfig-reset.service ]] \
+    || fail "reset wants symlink missing under airplanes-webconfig.service.wants/"
+
 # airplanes-webconfig user exists with matching primary group.
 getent passwd airplanes-webconfig >/dev/null \
     || fail "airplanes-webconfig user missing"
