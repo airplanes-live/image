@@ -218,3 +218,25 @@ jobs:
               graphs1090.service \
               airplanes-webconfig.service \
               airplanes-webconfig-reset.service
+
+  update-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/feed
+          ref: dev
+          path: feed
+
+      - name: Run update-regression smoke
+        run: bash test/update-regression-smoke.sh feed
+
+      - name: Upload regression artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: update-regression-artifacts
+          path: ${{ runner.temp }}/update-regression
