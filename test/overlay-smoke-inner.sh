@@ -285,6 +285,46 @@ visudo -cf /etc/sudoers.d/010_airplanes-webconfig >/dev/null \
 id -nG airplanes-webconfig | tr ' ' '\n' | grep -qx systemd-journal \
     || fail "airplanes-webconfig not in systemd-journal group"
 
+# apply-config (PR-4): root-owned helper that mediates feed.env writes.
+[[ -x /usr/local/lib/airplanes-webconfig/apply-config ]] \
+    || fail "apply-config binary missing or not executable"
+file /usr/local/lib/airplanes-webconfig/apply-config | grep -q 'ARM aarch64' \
+    || fail "apply-config is not an arm64 binary"
+
+# tmpfiles.d snippet for /run/airplanes (the feed-env lock dir).
+[[ -f /usr/lib/tmpfiles.d/airplanes-webconfig.conf ]] \
+    || fail "tmpfiles.d snippet for /run/airplanes missing"
+grep -Eq '^d /run/airplanes 0755 root root' /usr/lib/tmpfiles.d/airplanes-webconfig.conf \
+    || fail "tmpfiles.d snippet wrong shape"
+
+# Sudoers (PR-4 expanded set): expect entries for apply-config + every
+# systemctl verb the write handlers use + reboot + systemd-run.
+for entry in \
+    'apply-config' \
+    'systemctl restart airplanes-feed.service' \
+    'systemctl restart airplanes-mlat.service' \
+    'systemctl start dump978-fa.service' \
+    'systemctl start airplanes-978.service' \
+    'systemctl stop dump978-fa.service' \
+    'systemctl stop airplanes-978.service' \
+    'systemctl enable dump978-fa.service' \
+    'systemctl enable airplanes-978.service' \
+    'systemctl disable dump978-fa.service' \
+    'systemctl disable airplanes-978.service' \
+    'systemctl reboot' \
+    'systemd-run --unit=airplanes-update --collect /usr/local/share/airplanes/update.sh'
+do
+    grep -F -q "$entry" /etc/sudoers.d/010_airplanes-webconfig \
+        || fail "sudoers missing entry: $entry"
+done
+
+# webconfig.service ReadWritePaths must reach /etc/airplanes so the sudo
+# child (running as root) is allowed to write feed.env through the helper.
+grep -E -q '^ReadWritePaths=.*/etc/airplanes( |$)' /etc/systemd/system/airplanes-webconfig.service \
+    || fail "airplanes-webconfig.service ReadWritePaths missing /etc/airplanes"
+grep -E -q '^ReadWritePaths=.*/run/airplanes( |$)' /etc/systemd/system/airplanes-webconfig.service \
+    || fail "airplanes-webconfig.service ReadWritePaths missing /run/airplanes"
+
 # airplanes-webconfig user exists with matching primary group.
 getent passwd airplanes-webconfig >/dev/null \
     || fail "airplanes-webconfig user missing"
