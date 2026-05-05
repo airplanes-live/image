@@ -32,6 +32,12 @@ declare -gA SENTINELS=(
 	[DUMP978]=no
 )
 
+# FEED_HOST shorthand: when set, expand_feed_host derives both MLATSERVER and
+# TARGET from one hostname so users editing airplanes-config.txt cannot leak
+# half of the traffic to production by setting only one of the two endpoints.
+declare -g FEED_HOST_DEFAULT_MLAT_PORT="31090"
+declare -g FEED_HOST_DEFAULT_BEAST_PORT="30004"
+
 log() {
 	if command -v logger >/dev/null 2>&1; then
 		logger -t airplanes-first-run -- "$*"
@@ -243,6 +249,93 @@ apply_wifi_country() {
 	mv -fT "$tmp_wpa" "$wpa" || { rm -f "$tmp_wpa"; return 1; }
 }
 
+# Synthesize MLATSERVER and TARGET from a user-friendly FEED_HOST shorthand.
+# FEED_HOST itself is a synthetic key — not consumed by airplanes-feed.sh /
+# airplanes-mlat.sh — so we strip it from BOOT_CFG after expansion. (A
+# pre-existing FEED_HOST= line in feed.env on disk is preserved by
+# merge_feed_env's generic preserve-unknown-keys behavior; that's harmless
+# since feed scripts don't read FEED_HOST.)
+#
+# Format: hostname or IPv4, optionally with :port (1..65535). The :port (if
+# given) applies to MLATSERVER; TARGET always uses the well-known beast port
+# 30004. Users needing IPv6 (bracket form) or non-default beast ports must
+# set MLATSERVER and TARGET directly — those overrides win over FEED_HOST-
+# derived defaults so advanced setups (multi-host fan-out, etc.) still work
+# alongside FEED_HOST.
+#
+# Validation: this is a shell-safety gate, not a strict DNS validator. The
+# regex rejects shell metacharacters and shapes that would produce malformed
+# argv (e.g. spaces, embedded ';'); it does NOT reject every malformed
+# hostname (e.g. 'bad..example', '_x.example', or labels >63 bytes). Such
+# inputs pass shell gating, then fail cleanly at resolver time with a clear
+# journalctl error. Conversely, webconfig's universalReject (configspec.go:53)
+# will re-check the synthesized values when the user later edits LATITUDE /
+# USER / etc. via the UI; failing loudly at first boot beats silently
+# poisoning feed.env into a state webconfig refuses to write to.
+#
+# Asymmetric-leak guard: when FEED_HOST is present but invalid, the user has
+# opted into the safe single-knob path and that path failed. Falling back to
+# a half-set MLATSERVER (or half-set TARGET) is the exact asymmetric-routing
+# leak FEED_HOST exists to prevent — so we drop a lone explicit endpoint
+# override in that case. A matched pair (both MLATSERVER and TARGET set
+# explicitly) is preserved: that's a self-contained advanced override.
+expand_feed_host() {
+	local raw host port
+	raw="${BOOT_CFG[FEED_HOST]:-}"
+	[[ -n "$raw" ]] || return 0
+
+	if ! _feed_host_is_valid "$raw"; then
+		log "rejecting invalid FEED_HOST=$raw (need hostname or hostname:port with port 1-65535; bracketed IPv6 is not supported via FEED_HOST — set MLATSERVER and TARGET directly instead)"
+		unset 'BOOT_CFG[FEED_HOST]'
+		_feed_host_drop_lone_override
+		return 0
+	fi
+
+	if [[ "$raw" == *:* ]]; then
+		host="${raw%:*}"
+		port="${raw##*:}"
+	else
+		host="$raw"
+		port="$FEED_HOST_DEFAULT_MLAT_PORT"
+	fi
+
+	[[ -v "BOOT_CFG[MLATSERVER]" ]] || BOOT_CFG[MLATSERVER]="${host}:${port}"
+	[[ -v "BOOT_CFG[TARGET]" ]] || BOOT_CFG[TARGET]="--net-connector ${host},${FEED_HOST_DEFAULT_BEAST_PORT},beast_reduce_plus_out"
+
+	unset 'BOOT_CFG[FEED_HOST]'
+}
+
+# Returns 0 if the argument is an acceptable FEED_HOST value. Splits structure
+# from the main path so port-range validation lives next to its consumer.
+_feed_host_is_valid() {
+	local raw="$1" port
+	(( ${#raw} <= 253 )) || return 1
+	[[ "$raw" =~ ^[A-Za-z0-9._-]+(:[0-9]+)?$ ]] || return 1
+	if [[ "$raw" == *:* ]]; then
+		port="${raw##*:}"
+		# Strip leading zeros to dodge bash's "value too great for base"
+		# error on octal interpretation (e.g. port="08").
+		port="${port#"${port%%[!0]*}"}"
+		[[ -z "$port" ]] && port=0
+		(( port >= 1 && port <= 65535 )) || return 1
+	fi
+	return 0
+}
+
+# When FEED_HOST validation fails, drop a lone MLATSERVER or lone TARGET
+# override to prevent asymmetric routing. A matched pair stays — that's a
+# self-contained advanced override the user wrote intentionally.
+_feed_host_drop_lone_override() {
+	local has_mlat=0 has_target=0
+	[[ -v "BOOT_CFG[MLATSERVER]" ]] && has_mlat=1
+	[[ -v "BOOT_CFG[TARGET]" ]] && has_target=1
+	if (( has_mlat != has_target )); then
+		(( has_mlat )) && unset 'BOOT_CFG[MLATSERVER]'
+		(( has_target )) && unset 'BOOT_CFG[TARGET]'
+		log "dropped lone endpoint override after FEED_HOST rejection (avoiding asymmetric routing)"
+	fi
+}
+
 # Atomic merge under flock: write a tmp file in the target directory, fsync
 # it, rename onto feed.env, then sync the parent directory. The flock makes
 # concurrent webconfig writes impossible during first-run.
@@ -314,6 +407,7 @@ main() {
 			if ! apply_wifi_country; then
 				log "failed to apply WiFi country code; continuing"
 			fi
+			expand_feed_host
 			if (( ${#BOOT_CFG[@]} > 0 )); then
 				if ! merge_feed_env; then
 					log "failed to merge boot config into $FEED_ENV"
