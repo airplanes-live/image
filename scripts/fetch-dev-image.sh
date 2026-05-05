@@ -14,7 +14,7 @@ BRANCH=dev
 WORKFLOW=build-image.yml
 ARTIFACT=image-dev-arm64
 
-for cmd in gh jq xz git; do
+for cmd in gh jq xz git python3; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "missing required tool: $cmd" >&2
         exit 1
@@ -71,8 +71,12 @@ fi
 
 XZ_FILE="${xz_files[0]}"
 XZ_BASE="$(basename -- "$XZ_FILE")"
-echo "==> decompressing $XZ_BASE"
-xz -df -- "$XZ_FILE"
+echo "==> decompressing $XZ_BASE (keeping .xz for manifest)"
+# -dk: decompress, keep the .xz alongside. We need both: the .img is what users
+# flash directly with `dd` / Etcher, the .img.xz is what the rpi-imager Custom
+# Repository manifest references via file:// (rpi-imager re-extracts on flash
+# and validates against extract_sha256).
+xz -dk -- "$XZ_FILE"
 
 IMG_FILE="${XZ_FILE%.xz}"
 IMG_BASE="$(basename -- "$IMG_FILE")"
@@ -81,6 +85,19 @@ if [[ ! -f "$IMG_FILE" ]]; then
     exit 1
 fi
 
+# Move the .xz first: it's the smaller of the two and the manifest depends on
+# it. If the larger .img move fails (no space, etc.), the .xz stays in deploy/
+# so the user can either retry or re-decompress without re-downloading 800 MB.
+mv -f -- "$XZ_FILE" "deploy/$XZ_BASE"
 mv -f -- "$IMG_FILE" "deploy/$IMG_BASE"
 echo "OK: deploy/$IMG_BASE"
-ls -lh "deploy/$IMG_BASE"
+ls -lh "deploy/$IMG_BASE" "deploy/$XZ_BASE"
+
+echo "==> generating rpi-imager manifest"
+"$SCRIPT_DIR/make-imager-manifest.sh" "deploy/$XZ_BASE"
+
+MANIFEST_FILE="deploy/${XZ_BASE%.img.xz}.rpi-imager-manifest.json"
+MANIFEST_URI="$(python3 -c 'import sys, pathlib; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$MANIFEST_FILE")"
+echo
+echo "Paste this URL into rpi-imager > Choose OS > Custom Repository:"
+echo "  $MANIFEST_URI"
