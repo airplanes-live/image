@@ -11,6 +11,9 @@ echo "==> stage-airplanes/00-prep/00-run.sh"
 # Run from the stage dir so relative `files/` paths inside 00-run.sh resolve.
 ( cd /image/stage-airplanes/00-prep && bash 00-run.sh )
 
+echo "==> stage-airplanes/00-prep/03-run.sh (mask first-boot prompts)"
+( cd /image/stage-airplanes/00-prep && bash 03-run.sh )
+
 echo "==> stage-airplanes/01-install-feed/00-run.sh (clone feed)"
 ( cd /image/stage-airplanes/01-install-feed && bash 00-run.sh )
 
@@ -113,6 +116,16 @@ have_enable_link airplanes-mlat.service || fail "airplanes-mlat enable symlink m
 # Stage 00-prep outputs (relative-path install commands; previously silent
 # failures masked by absolute-path commands picking up the slack).
 [[ -x /usr/sbin/policy-rc.d ]] || fail "policy-rc.d missing (00-prep relative path?)"
+
+# 03-run.sh masks first-boot prompts: a /etc/systemd/system/<unit> symlink
+# pointing at /dev/null is the canonical systemd "masked" state. Both must
+# land regardless of whether the target services exist on this rootfs.
+for masked_unit in userconfig.service systemd-firstboot.service; do
+    [[ -L "/etc/systemd/system/$masked_unit" ]] \
+        || fail "$masked_unit not masked (no symlink in /etc/systemd/system/)"
+    [[ "$(readlink "/etc/systemd/system/$masked_unit")" == "/dev/null" ]] \
+        || fail "$masked_unit symlink does not point at /dev/null"
+done
 
 # Stage 02 outputs (decoder + 978).
 [[ -x /usr/bin/readsb ]] || fail "readsb binary missing"
