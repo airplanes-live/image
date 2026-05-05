@@ -17,8 +17,8 @@
 # Symlink target is captured verbatim (readlink), not resolved — the link
 # itself is what stage 05 owns.
 
-WEBCONFIG_USERS=(airplanes-webconfig airplanes)
-WEBCONFIG_GROUPS=(airplanes-webconfig airplanes)
+WEBCONFIG_USERS=(airplanes-webconfig airplanes-feed)
+WEBCONFIG_GROUPS=(airplanes-webconfig airplanes-feed)
 
 WEBCONFIG_REGULAR_FILES=(
     /etc/sudoers

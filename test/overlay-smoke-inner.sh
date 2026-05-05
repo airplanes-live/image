@@ -281,9 +281,11 @@ file /usr/local/lib/airplanes-webconfig/apply-config | grep -q 'ARM aarch64' \
 grep -Eq '^d /run/airplanes 0755 root root' /usr/lib/tmpfiles.d/airplanes-webconfig.conf \
     || fail "tmpfiles.d snippet wrong shape"
 
-# Sudoers (PR-4 expanded set): expect entries for apply-config + every
-# systemctl verb the write handlers use + reboot + systemd-run.
+# Sudoers expected set: claim-show pinned to the airplanes-feed daemon user
+# (the runas), plus apply-config + every systemctl verb the write handlers
+# use + reboot + systemd-run.
 for entry in \
+    '(airplanes-feed) NOPASSWD: /usr/local/bin/apl-feed claim show' \
     'apply-config' \
     'systemctl restart airplanes-feed.service' \
     'systemctl restart airplanes-mlat.service' \
