@@ -227,6 +227,15 @@ sshd_dump | grep -qx 'kbdinteractiveauthentication no' \
 sshd_dump | grep -qx 'pubkeyauthentication yes' \
 	|| { echo "effective PubkeyAuthentication != yes"; exit 1; }
 
+echo "==> asserting userconfig + systemd-firstboot are masked"
+for masked_unit in userconfig.service systemd-firstboot.service; do
+	link="$ROOT_MNT/etc/systemd/system/$masked_unit"
+	[[ -L "$link" ]] \
+		|| { echo "$masked_unit not masked (no symlink in /etc/systemd/system/)"; exit 1; }
+	[[ "$(readlink "$link")" == "/dev/null" ]] \
+		|| { echo "$masked_unit symlink does not point at /dev/null"; exit 1; }
+done
+
 echo "==> asserting cloud-init's 50-cloud-init.conf can override 90-airplanes.conf"
 # Simulates the rpi-imager "SSH on + password" path: cc_set_passwords writes
 # PasswordAuthentication yes into 50-cloud-init.conf, lexically beats our
