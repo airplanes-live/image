@@ -40,3 +40,17 @@ DUMP978=no
 # 978 UAT options (only consulted when DUMP978=yes).
 #DUMP978_SDR_SERIAL=978
 #DUMP978_GAIN=42.1
+
+# Optional WiFi setup for direct-flash users (dd / balenaEtcher / Win32 Disk
+# Imager). If you used rpi-imager's "Edit Settings" (Wireless LAN tab) the
+# credentials already landed elsewhere; leave WIFI_* commented out. Ethernet
+# is always a fallback regardless of these values.
+#
+# WIFI_SSID  : 1-32 byte network name. Quote it if it has spaces.
+# WIFI_PASS  : WPA-PSK passphrase (8-63 chars) or 64-hex pre-shared key. Omit
+#              for an open network.
+# WIFI_COUNTRY: ISO 3166-1 alpha-2 country code (e.g. DE, US, GB). Required
+#              by regulators for the radio to transmit on certain channels.
+#WIFI_SSID="My WiFi"
+#WIFI_PASS="my-password"
+#WIFI_COUNTRY=DE

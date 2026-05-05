@@ -17,6 +17,8 @@ BOOT_CONFIG="/boot/firmware/airplanes-config.txt"
 LOCK_FILE="/var/lock/airplanes-feed-env.lock"
 DONE_MARKER="/var/lib/airplanes/first-run-done"
 CREATE_UUID="/usr/local/share/airplanes/git/create-uuid.sh"
+WIFI_KEYFILE_DIR="${WIFI_KEYFILE_DIR:-/etc/NetworkManager/system-connections}"
+WIFI_KEYFILE="${WIFI_KEYFILE:-${WIFI_KEYFILE_DIR}/airplanes-config-wifi.nmconnection}"
 
 # Sentinel values map to "user has not configured this" — they exist so the
 # template parses, not so they get propagated into feed.env.
@@ -74,13 +76,169 @@ parse_boot_config() {
 			if [[ -v "SENTINELS[$key]" && "${SENTINELS[$key]}" == "$value" ]]; then
 				continue
 			fi
-			if [[ "$value" == *[\"\\\$\`]* ]]; then
+			# Shell-metachar reject is for values that get sourced into bash via
+			# feed.env. WIFI_* values are written into an NM keyfile (line-based,
+			# not eval'd) so common password chars like $ and \ are safe there.
+			if [[ "$key" != WIFI_* && "$value" == *[\"\\\$\`]* ]]; then
 				log "rejecting unsafe value for $key in boot config"
 				continue
 			fi
 			BOOT_CFG[$key]="$value"
 		fi
 	done < "$file"
+}
+
+# Validate WiFi inputs against NM/WPA constraints. SSID 1-32 bytes; PSK is
+# either 8-63 ASCII chars or exactly 64 hex chars; COUNTRY is ISO 3166-1
+# alpha-2 (two uppercase letters). Returns 0 if values are usable (or
+# WIFI_SSID is empty), 1 if SSID was supplied but invalid. Bad PSK / COUNTRY
+# is non-fatal — the corresponding parameter is dropped and a warning logged.
+declare -g _WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
+validate_wifi_inputs() {
+	_WIFI_SSID="${BOOT_CFG[WIFI_SSID]:-}"
+	_WIFI_PASS="${BOOT_CFG[WIFI_PASS]:-}"
+	_WIFI_COUNTRY="${BOOT_CFG[WIFI_COUNTRY]:-}"
+
+	if [[ -n "$_WIFI_SSID" ]]; then
+		local ssid_bytes
+		ssid_bytes="$(LC_ALL=C printf '%s' "$_WIFI_SSID" | wc -c)"
+		if (( ssid_bytes < 1 || ssid_bytes > 32 )); then
+			log "WIFI_SSID length $ssid_bytes invalid (must be 1-32 bytes); ignoring WiFi config"
+			_WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
+			return 1
+		fi
+	fi
+
+	if [[ -n "$_WIFI_PASS" ]]; then
+		local pass_len="${#_WIFI_PASS}"
+		# Either 64-char hex PSK or 8-63 char ASCII passphrase.
+		if [[ "$_WIFI_PASS" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+			:
+		elif (( pass_len >= 8 && pass_len <= 63 )); then
+			:
+		else
+			log "WIFI_PASS length $pass_len invalid (need 8-63 chars or 64 hex); ignoring WiFi config"
+			_WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
+			return 1
+		fi
+	fi
+
+	if [[ -n "$_WIFI_COUNTRY" ]] && [[ ! "$_WIFI_COUNTRY" =~ ^[A-Z]{2}$ ]]; then
+		log "WIFI_COUNTRY=$_WIFI_COUNTRY invalid (need ISO 3166-1 alpha-2 like DE); dropping country"
+		_WIFI_COUNTRY=""
+	fi
+	return 0
+}
+
+# Pop every WIFI_* key from BOOT_CFG so they can never be merged into
+# feed.env. Validates the recognized keys via validate_wifi_inputs and warns
+# about typos like WIFI_PASSWORD that might otherwise leak secrets.
+consume_wifi_config() {
+	validate_wifi_inputs || true
+
+	local key
+	for key in "${!BOOT_CFG[@]}"; do
+		[[ "$key" == WIFI_* ]] || continue
+		case "$key" in
+			WIFI_SSID|WIFI_PASS|WIFI_COUNTRY) ;;
+			*) log "ignoring unrecognized WiFi key $key (typo? use WIFI_SSID / WIFI_PASS / WIFI_COUNTRY)" ;;
+		esac
+		unset "BOOT_CFG[$key]"
+	done
+}
+
+# Write /etc/NetworkManager/system-connections/airplanes-config-wifi.nmconnection
+# atomically. Idempotent: existing keyfile is replaced. If WIFI_SSID is empty,
+# do nothing. Returns non-zero only on hard write failure.
+write_nm_keyfile() {
+	[[ -n "$_WIFI_SSID" ]] || return 0
+
+	local uuid tmp
+	uuid="$(cat /proc/sys/kernel/random/uuid)" || {
+		log "failed to read /proc/sys/kernel/random/uuid"
+		return 1
+	}
+
+	if ! install -d -m 0700 "$WIFI_KEYFILE_DIR" 2>/dev/null; then
+		log "failed to create $WIFI_KEYFILE_DIR"
+		return 1
+	fi
+	# Best-effort root ownership; in test mode (non-root) this is a no-op.
+	[[ "$(id -u)" -eq 0 ]] && chown root:root "$WIFI_KEYFILE_DIR" 2>/dev/null
+
+	tmp="$(mktemp "${WIFI_KEYFILE_DIR}/.airplanes-wifi.tmp.XXXXXX")" || {
+		log "failed to mktemp under $WIFI_KEYFILE_DIR"
+		return 1
+	}
+	trap '[[ -n "${tmp:-}" && -e "$tmp" ]] && rm -f "$tmp"' RETURN
+
+	{
+		printf '[connection]\n'
+		printf 'id=airplanes-config-wifi\n'
+		printf 'uuid=%s\n' "$uuid"
+		printf 'type=wifi\n'
+		printf 'autoconnect=true\n'
+		printf '\n'
+		printf '[wifi]\n'
+		printf 'ssid=%s\n' "$_WIFI_SSID"
+		printf 'mode=infrastructure\n'
+		printf '\n'
+		if [[ -n "$_WIFI_PASS" ]]; then
+			printf '[wifi-security]\n'
+			printf 'key-mgmt=wpa-psk\n'
+			printf 'psk=%s\n' "$_WIFI_PASS"
+			printf '\n'
+		fi
+		printf '[ipv4]\n'
+		printf 'method=auto\n'
+		printf '\n'
+		printf '[ipv6]\n'
+		printf 'method=auto\n'
+	} > "$tmp" || {
+		log "failed to write keyfile body"
+		return 1
+	}
+
+	chmod 0600 "$tmp" || {
+		log "failed to chmod 0600 keyfile temp"
+		return 1
+	}
+	[[ "$(id -u)" -eq 0 ]] && chown root:root "$tmp" 2>/dev/null
+
+	sync -d "$tmp" 2>/dev/null || sync
+	if ! mv -fT "$tmp" "$WIFI_KEYFILE"; then
+		log "failed to rename keyfile into place"
+		return 1
+	fi
+	tmp=""
+	sync "$WIFI_KEYFILE_DIR" 2>/dev/null || sync
+}
+
+# Apply the WiFi country code via raspi-config's nonint helper. raspi-config
+# writes the right combination of /etc/wpa_supplicant/wpa_supplicant.conf,
+# /etc/default/crda, kernel cmdline (rfkill state), and applies it via iw.
+# Falls back to a minimal wpa_supplicant.conf write if raspi-config isn't
+# available, preserving any existing content.
+apply_wifi_country() {
+	[[ -n "$_WIFI_COUNTRY" ]] || return 0
+
+	if command -v raspi-config >/dev/null 2>&1; then
+		if raspi-config nonint do_wifi_country "$_WIFI_COUNTRY" >/dev/null 2>&1; then
+			return 0
+		fi
+		log "raspi-config nonint do_wifi_country $_WIFI_COUNTRY failed; falling back"
+	fi
+
+	local wpa=/etc/wpa_supplicant/wpa_supplicant.conf
+	install -d -m 0755 /etc/wpa_supplicant 2>/dev/null
+	local tmp_wpa
+	tmp_wpa="$(mktemp /etc/wpa_supplicant/.wpa.tmp.XXXXXX)" || return 1
+	if [[ -f "$wpa" ]]; then
+		grep -v '^country=' "$wpa" > "$tmp_wpa" || true
+	fi
+	printf 'country=%s\n' "$_WIFI_COUNTRY" >> "$tmp_wpa"
+	chmod 0644 "$tmp_wpa"
+	mv -fT "$tmp_wpa" "$wpa" || { rm -f "$tmp_wpa"; return 1; }
 }
 
 # Atomic merge under flock: write a tmp file in the target directory, fsync
@@ -143,9 +301,21 @@ main() {
 	if [[ -f "$BOOT_CONFIG" ]]; then
 		if ! parse_boot_config "$BOOT_CONFIG"; then
 			log "failed to parse $BOOT_CONFIG; leaving feed.env untouched"
-		elif (( ${#BOOT_CFG[@]} > 0 )); then
-			if ! merge_feed_env; then
-				log "failed to merge boot config into $FEED_ENV"
+		else
+			# WiFi pass: pop WIFI_* keys and write the NM keyfile + country
+			# BEFORE merge_feed_env so secrets can never reach feed.env even on
+			# typoed keys.
+			consume_wifi_config
+			if ! write_nm_keyfile; then
+				log "failed to write WiFi keyfile; continuing"
+			fi
+			if ! apply_wifi_country; then
+				log "failed to apply WiFi country code; continuing"
+			fi
+			if (( ${#BOOT_CFG[@]} > 0 )); then
+				if ! merge_feed_env; then
+					log "failed to merge boot config into $FEED_ENV"
+				fi
 			fi
 		fi
 		toggle_978_services || true

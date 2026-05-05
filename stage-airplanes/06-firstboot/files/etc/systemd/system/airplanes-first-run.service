@@ -1,7 +1,13 @@
 [Unit]
 Description=airplanes.live first-run setup
 ConditionPathExists=!/var/lib/airplanes/first-run-done
-After=local-fs.target network.target
+# Run BEFORE NetworkManager so the WiFi keyfile generated from
+# /boot/firmware/airplanes-config.txt (WIFI_SSID/PASS/COUNTRY) is in place
+# when NM starts and autoconnects. After=systemd-rfkill.service keeps us
+# behind the rfkill state restore. feed.env merge / feeder-id / 978 toggle
+# are all local file ops that don't need network either.
+After=local-fs.target systemd-rfkill.service
+Before=NetworkManager.service network-pre.target
 Wants=local-fs.target
 
 [Service]
