@@ -76,10 +76,14 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 0 ]
 }
 
-@test "10: sentinel USER=changeme is filtered" {
-    echo "USER=changeme" > "$FIXTURE"
+@test "10: USER has no sentinel — template default propagates" {
+    # USER is intentionally not sentinel-gated. The template ships
+    # `USER=airplanes-live-image` so unconfigured feeders show identifiably
+    # on the MLAT map instead of taking feed.env's generic placeholder.
+    echo "USER=airplanes-live-image" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
-    [ "${#BOOT_CFG[@]}" -eq 0 ]
+    [ "${BOOT_CFG[USER]}" = "airplanes-live-image" ]
+    [ "${#BOOT_CFG[@]}" -eq 1 ]
 }
 
 @test "11: sentinel DUMP978=no is filtered" {
@@ -171,17 +175,20 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 0 ]
 }
 
-@test "25: mixed real + sentinel keeps only the real one" {
+@test "25: mixed real + sentinel keeps only the real ones" {
+    # LATITUDE=0 is sentinel-filtered; LONGITUDE=-0.1, USER (no sentinel),
+    # and DUMP978=yes propagate.
     cat > "$FIXTURE" <<'EOF'
 LATITUDE=0
 LONGITUDE=-0.1
-USER=changeme
+USER=airplanes-live-image
 DUMP978=yes
 EOF
     parse_boot_config "$FIXTURE"
     [ "${BOOT_CFG[LONGITUDE]}" = "-0.1" ]
+    [ "${BOOT_CFG[USER]}" = "airplanes-live-image" ]
     [ "${BOOT_CFG[DUMP978]}" = "yes" ]
-    [ "${#BOOT_CFG[@]}" -eq 2 ]
+    [ "${#BOOT_CFG[@]}" -eq 3 ]
 }
 
 @test "26: shell-injection \$(...) is rejected" {
@@ -219,12 +226,15 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 1 ]
 }
 
-@test "31: shipped airplanes-config.txt template parses to empty BOOT_CFG" {
+@test "31: shipped airplanes-config.txt template parses to only the friendly USER default" {
     # Alignment guard: if anyone adds a non-sentinel default to the template
-    # OR removes a key from SENTINELS while leaving it in the template, this
-    # test fails immediately.
+    # other than USER, OR drops USER from the template, OR re-adds USER as
+    # a sentinel, this test fails. Sentinel-gated keys (LATITUDE, LONGITUDE,
+    # ALTITUDE, DUMP978) must still parse to "not in BOOT_CFG"; USER alone
+    # propagates the friendly default airplanes-live-image.
     parse_boot_config "$TEMPLATE"
-    [ "${#BOOT_CFG[@]}" -eq 0 ]
+    [ "${BOOT_CFG[USER]}" = "airplanes-live-image" ]
+    [ "${#BOOT_CFG[@]}" -eq 1 ]
 }
 
 @test "32: merge_feed_env output round-trips through 'source' safely" {

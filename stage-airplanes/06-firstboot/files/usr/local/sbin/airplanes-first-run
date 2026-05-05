@@ -21,12 +21,14 @@ WIFI_KEYFILE_DIR="${WIFI_KEYFILE_DIR:-/etc/NetworkManager/system-connections}"
 WIFI_KEYFILE="${WIFI_KEYFILE:-${WIFI_KEYFILE_DIR}/airplanes-config-wifi.nmconnection}"
 
 # Sentinel values map to "user has not configured this" — they exist so the
-# template parses, not so they get propagated into feed.env.
+# template parses, not so they get propagated into feed.env. USER is not
+# sentinel-gated: the template ships a friendly default (airplanes-live-image)
+# that we want propagated so unconfigured feeders show identifiably on the
+# MLAT map instead of as the generic upstream placeholder.
 declare -gA SENTINELS=(
 	[LATITUDE]=0
 	[LONGITUDE]=0
 	[ALTITUDE]=0m
-	[USER]=changeme
 	[DUMP978]=no
 )
 
