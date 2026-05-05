@@ -127,10 +127,17 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh api --paginate \
-            "repos/$REPO/actions/artifacts?name=image-dev-arm64&per_page=100" \
-            --jq '.artifacts | sort_by(.created_at) | reverse | .[1:] | .[].id' \
-          | while read -r id; do
-              echo "Deleting artifact $id"
-              gh api --method DELETE "repos/$REPO/actions/artifacts/$id"
-            done
+          # Materialize the full list before deleting: --paginate runs --jq
+          # per page, so without --slurp we'd keep the newest *per page* rather
+          # than newest overall, and concurrent producer/consumer over a mutable
+          # collection can skip pages mid-pagination.
+          mapfile -t artifact_ids < <(
+            gh api --paginate --slurp \
+              "repos/$REPO/actions/artifacts?name=image-dev-arm64&per_page=100" \
+              --jq 'map(.artifacts[]) | sort_by(.created_at) | reverse | .[1:] | .[].id'
+          )
+          for id in "${artifact_ids[@]}"; do
+            [[ "$id" =~ ^[0-9]+$ ]] || { echo "Unexpected artifact id: $id" >&2; exit 1; }
+            echo "Deleting artifact $id"
+            gh api --method DELETE "repos/$REPO/actions/artifacts/$id"
+          done
