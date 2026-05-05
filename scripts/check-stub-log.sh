@@ -1,5 +1,6 @@
 #!/bin/bash
-# Verify that the systemctl-stub was actually exercised during stages 01-05
+# Verify that the systemctl-stub was actually exercised during the
+# stage-airplanes substages that touch systemctl (01-05 + 06b)
 # and that no start/restart line ever made it through. Writes a one-line
 # fingerprint into the rootfs that later steps (manifest, release smoke) can
 # fold into the build provenance.

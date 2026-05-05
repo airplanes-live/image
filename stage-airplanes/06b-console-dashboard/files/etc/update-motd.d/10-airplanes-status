@@ -1,0 +1,5 @@
+#!/bin/bash
+# update-motd.d hook — prints the airplanes.live dashboard once at SSH login
+# (and at any local TTY login that uses pam_motd). Snapshot mode: no
+# screen-clear, no loop, no rate-derived field. Runs as root via pam_motd.
+exec /usr/local/lib/airplanes/render-status --snapshot
