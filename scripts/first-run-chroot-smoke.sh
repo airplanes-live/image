@@ -81,16 +81,39 @@ echo "==> seeding airplanes-config.txt with real values"
 # Overwrite the shipped sentinel template with realistic values so we can
 # assert the merge into feed.env actually lands user-set keys (not just
 # "feed.env still parses"). DUMP978=no is the sentinel, must NOT propagate.
+# WIFI_PASSWORD (typo) seeded to verify it does NOT leak into feed.env.
 cat > "$ROOT_MNT/boot/firmware/airplanes-config.txt" <<'CFG'
 LATITUDE=51.5
 LONGITUDE=-0.1
 ALTITUDE=42m
 USER=ci-smoke
 DUMP978=no
+WIFI_SSID="Test Net"
+WIFI_PASS="hunter22-secret"
+WIFI_COUNTRY=DE
+WIFI_PASSWORD=should-not-leak
 CFG
 
-echo "==> running airplanes-first-run inside chroot"
-chroot "$ROOT_MNT" /usr/local/sbin/airplanes-first-run
+# Mock raspi-config / iw inside the chroot so apply_wifi_country doesn't
+# touch the host kernel's regdomain via the bind-mounted /sys + /proc.
+echo "==> staging raspi-config / iw mocks inside chroot"
+mkdir -p "$ROOT_MNT/usr/local/bin-mocks"
+cat > "$ROOT_MNT/usr/local/bin-mocks/raspi-config" <<'STUB'
+#!/bin/sh
+echo "[mock] raspi-config $*" >> /var/log/airplanes-first-run-mocks.log
+exit 0
+STUB
+cat > "$ROOT_MNT/usr/local/bin-mocks/iw" <<'STUB'
+#!/bin/sh
+echo "[mock] iw $*" >> /var/log/airplanes-first-run-mocks.log
+exit 0
+STUB
+chmod +x "$ROOT_MNT/usr/local/bin-mocks/raspi-config" "$ROOT_MNT/usr/local/bin-mocks/iw"
+
+echo "==> running airplanes-first-run inside chroot (with mocks on PATH)"
+# shellcheck disable=SC2016 # $PATH expanded by chroot's bash, not ours
+chroot "$ROOT_MNT" /bin/bash -c \
+	'PATH=/usr/local/bin-mocks:$PATH /usr/local/sbin/airplanes-first-run'
 
 echo "==> asserting feeder-id exists and is a valid UUID"
 FEEDER_ID_FILE="$ROOT_MNT/etc/airplanes/feeder-id"
@@ -113,4 +136,25 @@ unset LATITUDE LONGITUDE ALTITUDE USER
 	[[ "$USER" == "ci-smoke" ]] || { echo "USER not merged: $USER"; exit 1; } \
 ) || { echo "feed.env merge assertions failed"; exit 1; }
 
-echo "OK: feeder-id=$FEEDER_ID, boot-config merge confirmed"
+echo "==> asserting WiFi keyfile generated and locked down"
+WIFI_KEYFILE="$ROOT_MNT/etc/NetworkManager/system-connections/airplanes-config-wifi.nmconnection"
+[[ -f "$WIFI_KEYFILE" ]] || { echo "WiFi keyfile missing: $WIFI_KEYFILE"; exit 1; }
+[[ "$(stat -c %a "$WIFI_KEYFILE")" == "600" ]] \
+	|| { echo "WiFi keyfile mode != 0600: $(stat -c %a "$WIFI_KEYFILE")"; exit 1; }
+grep -q '^ssid=Test Net$' "$WIFI_KEYFILE" \
+	|| { echo "WiFi keyfile missing ssid=Test Net"; exit 1; }
+grep -q '^psk=hunter22-secret$' "$WIFI_KEYFILE" \
+	|| { echo "WiFi keyfile missing psk=hunter22-secret"; exit 1; }
+grep -q '^autoconnect=true$' "$WIFI_KEYFILE" \
+	|| { echo "WiFi keyfile missing autoconnect=true"; exit 1; }
+
+echo "==> asserting raspi-config nonint do_wifi_country DE was invoked"
+grep -q 'raspi-config nonint do_wifi_country DE' "$ROOT_MNT/var/log/airplanes-first-run-mocks.log" \
+	|| { echo "raspi-config not invoked for country"; exit 1; }
+
+echo "==> asserting WIFI_* keys did NOT leak into feed.env"
+if grep -E '^WIFI_' "$ROOT_MNT/etc/airplanes/feed.env"; then
+	echo "WIFI_* keys leaked into feed.env"; exit 1
+fi
+
+echo "OK: feeder-id=$FEEDER_ID, boot-config merge confirmed, WiFi keyfile written, no leaks"

@@ -289,3 +289,44 @@ EOF
     toggle_978_services
     [ ! -s "$SYSCTL_LOG" ]
 }
+
+# WIFI_* keys must NOT be subject to the shell-metachar reject — common WiFi
+# passwords contain $ and \. Those values are written into an NM keyfile, not
+# sourced via bash, so the reject would silently degrade WPA-PSK to open. See
+# generate_wifi_keyfile in airplanes-first-run for the keyfile path.
+
+@test "38: WIFI_PASS with \$ is preserved (NM keyfile is not eval'd)" {
+    echo 'WIFI_PASS="my$pass"' > "$FIXTURE"
+    parse_boot_config "$FIXTURE"
+    [ "${BOOT_CFG[WIFI_PASS]}" = 'my$pass' ]
+}
+
+@test "39: WIFI_PASS with backslash is preserved" {
+    echo 'WIFI_PASS="my\\pass"' > "$FIXTURE"
+    parse_boot_config "$FIXTURE"
+    [ "${BOOT_CFG[WIFI_PASS]}" = 'my\\pass' ]
+}
+
+@test "40: WIFI_PASS with backtick is preserved" {
+    echo 'WIFI_PASS="back`tick"' > "$FIXTURE"
+    parse_boot_config "$FIXTURE"
+    [ "${BOOT_CFG[WIFI_PASS]}" = 'back`tick' ]
+}
+
+@test "41: WIFI_SSID with \$ is preserved" {
+    echo 'WIFI_SSID="net$work"' > "$FIXTURE"
+    parse_boot_config "$FIXTURE"
+    [ "${BOOT_CFG[WIFI_SSID]}" = 'net$work' ]
+}
+
+@test "42: non-WIFI key with \$ is still rejected" {
+    echo 'USER="some$thing"' > "$FIXTURE"
+    parse_boot_config "$FIXTURE"
+    [ ! -v "BOOT_CFG[USER]" ]
+}
+
+@test "43: WIFI_COUNTRY=DE parses (validation happens at consume_wifi_config)" {
+    echo "WIFI_COUNTRY=DE" > "$FIXTURE"
+    parse_boot_config "$FIXTURE"
+    [ "${BOOT_CFG[WIFI_COUNTRY]}" = "DE" ]
+}
