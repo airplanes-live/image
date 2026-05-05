@@ -57,6 +57,17 @@ echo "==> stage-airplanes/05-install-webconfig/02-run.sh (no-op)"
 ( cd /image/stage-airplanes/05-install-webconfig && bash 02-run.sh )
 
 echo "==> stage-airplanes/06-firstboot/00-run.sh"
+# Seed NM state + saved WLAN rfkill so we can assert stage 06 wipes them.
+# Mirrors what pi-gen's stage2/02-net-tweaks/01-run.sh writes when WPA_COUNTRY
+# is unset; stage 06 overrides that policy and must clear both.
+mkdir -p /var/lib/NetworkManager /var/lib/systemd/rfkill
+cat > /var/lib/NetworkManager/NetworkManager.state <<'NMSTATE'
+[main]
+NetworkingEnabled=true
+WirelessEnabled=false
+WWANEnabled=true
+NMSTATE
+echo 1 > /var/lib/systemd/rfkill/platform-3f300000.mmcnr:wlan
 # pi-gen runs on_chroot via its own helper; we stub that at the top of this
 # script. The stage's `install` commands take relative `files/` paths.
 ( cd /image/stage-airplanes/06-firstboot && bash 00-run.sh )
@@ -299,11 +310,33 @@ getent group airplanes-webconfig >/dev/null \
 [[ -f /etc/systemd/system/airplanes-first-run.service ]] || fail "airplanes-first-run.service missing"
 [[ -f /etc/systemd/system/airplanes-claim.service ]] || fail "airplanes-claim.service missing"
 [[ -f /etc/systemd/system/airplanes-claim.timer ]] || fail "airplanes-claim.timer missing"
+[[ -f /etc/systemd/system/airplanes-rfkill-unblock.service ]] \
+    || fail "airplanes-rfkill-unblock.service missing"
 [[ -f /boot/firmware/airplanes-config.txt ]] || fail "boot-config template missing"
 [[ -L /etc/systemd/system/multi-user.target.wants/airplanes-first-run.service ]] \
     || fail "airplanes-first-run.service enable symlink missing"
 [[ -L /etc/systemd/system/timers.target.wants/airplanes-claim.timer ]] \
     || fail "airplanes-claim.timer enable symlink missing"
+[[ -L /etc/systemd/system/multi-user.target.wants/airplanes-rfkill-unblock.service ]] \
+    || fail "airplanes-rfkill-unblock.service enable symlink missing"
+
+# rfkill-unblock unit semantics: must order before NetworkManager.service,
+# must call `rfkill unblock wlan` (not `all`), and must clear NM.state.
+grep -q '^Before=.*NetworkManager\.service' /etc/systemd/system/airplanes-rfkill-unblock.service \
+    || fail "airplanes-rfkill-unblock.service missing Before=NetworkManager.service"
+grep -q '^ExecStart=/usr/sbin/rfkill unblock wlan$' /etc/systemd/system/airplanes-rfkill-unblock.service \
+    || fail "airplanes-rfkill-unblock.service missing ExecStart=/usr/sbin/rfkill unblock wlan"
+grep -q '^ExecStart=/bin/rm -f /var/lib/NetworkManager/NetworkManager\.state$' \
+    /etc/systemd/system/airplanes-rfkill-unblock.service \
+    || fail "airplanes-rfkill-unblock.service missing ExecStart that wipes NetworkManager.state"
+
+# Stage 06 must override stage2's WPA_COUNTRY-unset defaults: NM.state and
+# any saved WLAN rfkill files written into the build chroot must be gone.
+[[ ! -e /var/lib/NetworkManager/NetworkManager.state ]] \
+    || fail "stage 06 did not delete NetworkManager.state seeded above"
+if compgen -G '/var/lib/systemd/rfkill/*:wlan*' >/dev/null; then
+    fail "stage 06 did not clear /var/lib/systemd/rfkill/*:wlan*"
+fi
 
 # Build-manifest sentinels written by stages 00 + 01 (rest are checked above).
 [[ -s /etc/airplanes/.build-pi-gen-sha ]] || fail ".build-pi-gen-sha missing or empty"

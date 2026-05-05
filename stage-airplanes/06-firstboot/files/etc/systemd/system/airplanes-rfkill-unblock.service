@@ -1,0 +1,22 @@
+[Unit]
+# Pi OS's stage2/02-net-tweaks intentionally leaves WLAN rfkill-blocked and
+# writes /var/lib/NetworkManager/NetworkManager.state with WirelessEnabled=false
+# when WPA_COUNTRY isn't set, so the device never radiates before a regulatory
+# domain is configured. We override that here: airplanes-live feeders rely on
+# rpi-imager's WiFi customization (which sets the country via the kernel
+# cfg80211.ieee80211_regdom= cmdline) and ship without WPA_COUNTRY in the
+# build configs. The override runs every boot so apt-upgrade-induced
+# regressions of either file (raspberrypi-sys-mods, network-manager package
+# updates) self-heal on the next reboot.
+Description=airplanes.live: clear WLAN rfkill + NM wireless-disabled state at boot
+After=systemd-rfkill.service
+Before=NetworkManager.service network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/rfkill unblock wlan
+ExecStart=/bin/rm -f /var/lib/NetworkManager/NetworkManager.state
+
+[Install]
+WantedBy=multi-user.target

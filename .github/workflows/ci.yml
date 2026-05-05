@@ -170,7 +170,8 @@ jobs:
                    "$ROOT/usr/local/share/airplanes" \
                    "$ROOT/usr/local/share/tar1090" \
                    "$ROOT/usr/share/graphs1090" \
-                   "$ROOT/usr/bin"
+                   "$ROOT/usr/bin" \
+                   "$ROOT/usr/sbin"
           install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.timer \
@@ -197,6 +198,7 @@ jobs:
           install -m 0755 /dev/null "$ROOT/usr/local/share/tar1090/tar1090.sh"
           install -m 0755 /dev/null "$ROOT/usr/share/graphs1090/service.sh"
           install -m 0755 /dev/null "$ROOT/usr/share/graphs1090/service-graphs1090.sh"
+          install -m 0755 /dev/null "$ROOT/usr/sbin/rfkill"
           # Default env files referenced by EnvironmentFile=
           mkdir -p "$ROOT/etc/default"
           : > "$ROOT/etc/default/tar1090"
@@ -211,6 +213,7 @@ jobs:
               airplanes-first-run.service \
               airplanes-claim.service \
               airplanes-claim.timer \
+              airplanes-rfkill-unblock.service \
               readsb.service \
               dump978-fa.service \
               airplanes-978.service \
