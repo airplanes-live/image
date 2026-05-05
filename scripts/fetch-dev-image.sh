@@ -85,8 +85,11 @@ if [[ ! -f "$IMG_FILE" ]]; then
     exit 1
 fi
 
-mv -f -- "$IMG_FILE" "deploy/$IMG_BASE"
+# Move the .xz first: it's the smaller of the two and the manifest depends on
+# it. If the larger .img move fails (no space, etc.), the .xz stays in deploy/
+# so the user can either retry or re-decompress without re-downloading 800 MB.
 mv -f -- "$XZ_FILE" "deploy/$XZ_BASE"
+mv -f -- "$IMG_FILE" "deploy/$IMG_BASE"
 echo "OK: deploy/$IMG_BASE"
 ls -lh "deploy/$IMG_BASE" "deploy/$XZ_BASE"
 

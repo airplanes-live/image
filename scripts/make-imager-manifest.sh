@@ -25,7 +25,7 @@ case "$INPUT" in
     *) echo "input must end in .img.xz: $INPUT" >&2; exit 1 ;;
 esac
 
-for cmd in jq xz sha256sum stat python3 date wc; do
+for cmd in jq xz sha256sum stat python3 date mktemp; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "missing required tool: $cmd" >&2
         exit 1
@@ -97,7 +97,10 @@ DESCRIPTION="airplanes.live ADS-B/MLAT/UAT feeder image (${CHANNEL} channel). Ed
 # entry advertises).
 DEVICES_JSON='["pi5-64bit","pi4-64bit","pi3-64bit"]'
 
-TMP="${OUTPUT}.tmp.$$"
+# Same-directory mktemp keeps the final `mv` atomic (rename within one fs).
+# Avoids predictable `$$`-based names that could conflict with a shared
+# /tmp-style directory or be hijacked via symlink races.
+TMP="$(mktemp -- "${OUTPUT}.tmp.XXXXXX")"
 trap 'rm -f -- "$TMP"' EXIT INT TERM
 
 jq -n \
