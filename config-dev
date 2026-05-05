@@ -13,6 +13,11 @@ export ARCHIVE_FILENAME="${ARCHIVE_FILENAME:-${IMG_NAME}-${GIT_HASH:0:7}}"
 export CHANNEL="${CHANNEL:-dev}"
 export STAGE_LIST="${STAGE_LIST:-${BASE_DIR:-.}/stage0 ${BASE_DIR:-.}/stage1 ${BASE_DIR:-.}/stage2 ${BASE_DIR:-.}/stage-airplanes}"
 export DEPLOY_COMPRESSION="${DEPLOY_COMPRESSION:-xz}"
+# Pi-gen's default is 6 (slow, ~30% smaller). Level 1 trades ~10-15% size
+# growth for roughly 3x faster xz compression — meaningful on a ~700 MB image
+# every dev rebuild. Stable channel keeps the upstream default for smaller
+# release artifacts.
+export COMPRESSION_LEVEL="${COMPRESSION_LEVEL:-1}"
 export IMG_SUFFIX="${IMG_SUFFIX:-}"
 
 # Branch-tracking on dev — moving target by design, catches upstream drift early.
