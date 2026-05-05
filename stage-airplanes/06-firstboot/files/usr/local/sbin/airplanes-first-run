@@ -251,99 +251,125 @@ apply_wifi_country() {
 	mv -fT "$tmp_wpa" "$wpa" || { rm -f "$tmp_wpa"; return 1; }
 }
 
+# RFC 1123 single-label hostname: 1-63 bytes, alnum, internal hyphens
+# allowed, no leading/trailing hyphen. Reserved names (localhost) rejected
+# case-insensitively because setting them as the system hostname breaks
+# NSS resolution and other local-loopback assumptions.
+_hostname_valid() {
+	local h="$1"
+	(( ${#h} >= 1 && ${#h} <= 63 )) || return 1
+	[[ "$h" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] || return 1
+	[[ "${h,,}" != localhost ]] || return 1
+	return 0
+}
+
 # Set the system hostname from BOOT_CFG[HOSTNAME] if specified. Updates
-# /etc/hostname (atomic write) and the 127.0.1.1 entry in /etc/hosts so mDNS
-# broadcasts the right name. Best-effort runtime apply via hostnamectl —
-# chroot-mode and bats test mode skip the live apply silently.
+# /etc/hostname (atomic write), the 127.0.1.1 entry in /etc/hosts (preserving
+# aliases), and the live kernel hostname (so avahi-daemon broadcasts the
+# right name on the same boot). HOSTNAME is a synthetic key — stripped from
+# BOOT_CFG up front so it never lands in feed.env even on subsequent failure.
 #
 # Format: a single-label RFC 1123 hostname (1-63 bytes, letters/digits/hyphens,
 # no leading or trailing hyphen, no dots). Multi-label names like foo.local
-# are rejected — mDNS adds .local automatically; multi-feeder users want short
-# names like 'airplanes-feeder' or 'feeder1' here.
+# are rejected — mDNS adds .local automatically; multi-feeder users want
+# short names like 'airplanes-feeder' or 'feeder1' here.
 #
-# Idempotent: skips if HOSTNAME already matches /etc/hostname. HOSTNAME is a
-# synthetic key (not consumed by feed scripts), so it's stripped from BOOT_CFG
-# regardless of whether the apply succeeded.
+# Skips the /etc/hostname write when it already matches HOSTNAME (idempotent),
+# but always runs the /etc/hosts rewrite + runtime apply so a partial prior
+# run that left /etc/hosts stale gets repaired on the next first-boot.
 apply_hostname() {
 	local raw="${BOOT_CFG[HOSTNAME]:-}"
 	[[ -n "$raw" ]] || return 0
 
-	if (( ${#raw} > 63 )) || [[ ! "$raw" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
-		log "rejecting invalid HOSTNAME=$raw (need 1-63 char RFC 1123 single-label hostname; do not include .local)"
+	if ! _hostname_valid "$raw"; then
+		log "rejecting invalid HOSTNAME=$raw (need 1-63 char RFC 1123 single-label hostname; not 'localhost'; no .local suffix — mDNS adds it)"
 		unset 'BOOT_CFG[HOSTNAME]'
 		return 0
 	fi
 
+	# Strip up front — the key is synthetic, so any subsequent failure must
+	# not leak it into feed.env via merge_feed_env.
+	unset 'BOOT_CFG[HOSTNAME]'
+
+	# Read current hostname (first line only, CR/LF stripped). Validate it
+	# before using as a search key for the /etc/hosts rewrite — if it's not
+	# a sane hostname (multi-line, commented, weird whitespace), we skip the
+	# /etc/hosts pass rather than risk concatenating into a wrong rewrite.
 	local current=""
 	if [[ -f "$HOSTNAME_FILE" ]]; then
-		current="$(tr -d '\n\r' < "$HOSTNAME_FILE")"
+		current="$(head -n1 -- "$HOSTNAME_FILE" | tr -d '\r\n')"
+		if ! _hostname_valid "$current"; then
+			log "ignoring untrusted current hostname '$current' from $HOSTNAME_FILE; skipping $HOSTS_FILE rewrite"
+			current=""
+		fi
 	fi
 
-	if [[ "$current" == "$raw" ]]; then
-		unset 'BOOT_CFG[HOSTNAME]'
-		return 0
+	# /etc/hostname: atomic write, only if changed. Failures here are hard:
+	# without a written /etc/hostname the boot is in an inconsistent state we
+	# can't reason about, so return non-zero to surface the failure to main().
+	if [[ "$current" != "$raw" ]]; then
+		local tmp_hn
+		tmp_hn="$(mktemp "${HOSTNAME_FILE}.tmp.XXXXXX")" || {
+			log "failed mktemp for $HOSTNAME_FILE"
+			return 1
+		}
+		if ! printf '%s\n' "$raw" > "$tmp_hn"; then
+			rm -f -- "$tmp_hn"
+			log "failed writing $HOSTNAME_FILE tmp"
+			return 1
+		fi
+		if ! chmod 0644 -- "$tmp_hn"; then
+			rm -f -- "$tmp_hn"
+			log "failed chmod on $HOSTNAME_FILE tmp"
+			return 1
+		fi
+		if ! mv -fT -- "$tmp_hn" "$HOSTNAME_FILE"; then
+			rm -f -- "$tmp_hn"
+			log "failed renaming $HOSTNAME_FILE"
+			return 1
+		fi
 	fi
 
-	# /etc/hostname: atomic write. Drop the synthetic key on any hard failure
-	# so downstream merge_feed_env doesn't see HOSTNAME and treat it as a
-	# regular feed.env key.
-	local tmp_hn
-	tmp_hn="$(mktemp "${HOSTNAME_FILE}.tmp.XXXXXX")" || {
-		log "failed mktemp for $HOSTNAME_FILE"
-		unset 'BOOT_CFG[HOSTNAME]'
-		return 1
-	}
-	printf '%s\n' "$raw" > "$tmp_hn" || {
-		rm -f "$tmp_hn"
-		log "failed writing $HOSTNAME_FILE tmp"
-		unset 'BOOT_CFG[HOSTNAME]'
-		return 1
-	}
-	chmod 0644 "$tmp_hn"
-	if ! mv -fT "$tmp_hn" "$HOSTNAME_FILE"; then
-		rm -f "$tmp_hn"
-		log "failed renaming $HOSTNAME_FILE"
-		unset 'BOOT_CFG[HOSTNAME]'
-		return 1
-	fi
-
-	# /etc/hosts: rewrite the 127.0.1.1 line that maps to the OLD hostname,
-	# preserving any aliases that follow. Skip if the file is missing or we
-	# don't know the previous hostname (can't safely guess which line to edit).
+	# /etc/hosts: rewrite the 127.0.1.1 line whose hostname matches `current`.
+	# Run even when /etc/hostname was idempotent so a partial prior run that
+	# left /etc/hosts pointing at the old name gets repaired.
+	#
+	# `current` is validated to alnum + internal hyphens, so it contains no
+	# sed metacharacters. Use sed for byte-faithful rewrite of non-matching
+	# lines (the previous bash line-by-line emit could add a trailing newline
+	# to files that didn't have one and could land a partial file on ENOSPC
+	# during the loop).
 	if [[ -n "$current" && -f "$HOSTS_FILE" ]]; then
-		local tmp_hosts line
-		tmp_hosts="$(mktemp "${HOSTS_FILE}.tmp.XXXXXX")" || {
-			log "failed mktemp for $HOSTS_FILE; leaving stale /etc/hosts entry"
-			unset 'BOOT_CFG[HOSTNAME]'
-			return 0
-		}
-		while IFS= read -r line || [[ -n "$line" ]]; do
-			# Capture: anchor 127.0.1.1, whitespace, hostname (group 1),
-			# everything after (group 2 — aliases or trailing whitespace).
-			# String-match (not regex) on group 1 against $current — quoted
-			# RHS in [[ ]] makes == a literal compare.
-			if [[ "$line" =~ ^127\.0\.1\.1[[:space:]]+([^[:space:]]+)(.*)$ ]] \
-				&& [[ "${BASH_REMATCH[1]}" == "$current" ]]; then
-				printf '127.0.1.1\t%s%s\n' "$raw" "${BASH_REMATCH[2]}" >> "$tmp_hosts"
+		local tmp_hosts
+		if tmp_hosts="$(mktemp "${HOSTS_FILE}.tmp.XXXXXX")"; then
+			if sed -E "s/^(127\\.0\\.1\\.1[[:space:]]+)${current}([[:space:]]|$)/\\1${raw}\\2/" -- "$HOSTS_FILE" > "$tmp_hosts" \
+				&& chmod 0644 -- "$tmp_hosts"; then
+				if ! mv -fT -- "$tmp_hosts" "$HOSTS_FILE"; then
+					rm -f -- "$tmp_hosts"
+					log "failed renaming $HOSTS_FILE"
+				fi
 			else
-				printf '%s\n' "$line" >> "$tmp_hosts"
+				rm -f -- "$tmp_hosts"
+				log "failed transforming $HOSTS_FILE; leaving original in place"
 			fi
-		done < "$HOSTS_FILE"
-		chmod 0644 "$tmp_hosts"
-		mv -fT "$tmp_hosts" "$HOSTS_FILE" || {
-			rm -f "$tmp_hosts"
-			log "failed renaming $HOSTS_FILE"
-		}
+		else
+			log "failed mktemp for $HOSTS_FILE; runtime hostname apply continues"
+		fi
 	fi
 
-	# Best-effort runtime apply. Chroot/test mode without systemd-hostnamed
-	# returns non-zero — silently fine since the next boot picks up
-	# /etc/hostname directly.
+	# Apply for the running session so daemons that read the hostname at
+	# startup (avahi-daemon for mDNS broadcasts, lighttpd for self-references)
+	# see the new value. Run unconditionally — /etc/hostname is the canonical
+	# source for next-boot, so the kernel-hostname change is the same-boot
+	# signal that needs to land regardless of /etc/hosts state.
 	if command -v hostnamectl >/dev/null 2>&1; then
 		hostnamectl set-hostname "$raw" 2>/dev/null || true
 	fi
-
-	unset 'BOOT_CFG[HOSTNAME]'
+	# Legacy fallback when systemd-hostnamed isn't running (chroot-mode
+	# tests, recovery contexts).
+	if command -v hostname >/dev/null 2>&1; then
+		hostname "$raw" 2>/dev/null || true
+	fi
 }
 
 # Synthesize MLATSERVER and TARGET from a user-friendly FEED_HOST shorthand.

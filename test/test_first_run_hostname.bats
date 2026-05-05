@@ -123,6 +123,48 @@ teardown() { rm -rf "$TMP"; }
     [ ! -v "BOOT_CFG[HOSTNAME]" ]
 }
 
+@test "13a: idempotent + stale /etc/hosts -> /etc/hosts repaired" {
+    # Partial-prior-run state: /etc/hostname already matches HOSTNAME but
+    # /etc/hosts still has the old name. Idempotency must not skip the hosts
+    # repair.
+    printf 'feeder1\n' > "$HOSTNAME_FILE"
+    cat > "$HOSTS_FILE" <<'EOF'
+127.0.0.1	localhost
+127.0.1.1	feeder1
+EOF
+    # Note: current=feeder1, raw=feeder1 — sed will produce a no-op rewrite,
+    # which is fine. The bug we're guarding against is the function returning
+    # before the /etc/hosts pass runs at all.
+    BOOT_CFG=([HOSTNAME]="feeder1")
+    apply_hostname
+    grep -qP '^127\.0\.1\.1\tfeeder1$' "$HOSTS_FILE"
+}
+
+@test "13b: localhost is rejected (case-insensitive)" {
+    BOOT_CFG=([HOSTNAME]="localhost")
+    apply_hostname 2>/dev/null
+    [ "$(cat "$HOSTNAME_FILE")" = "raspberrypi" ]
+    BOOT_CFG=([HOSTNAME]="LOCALHOST")
+    apply_hostname 2>/dev/null
+    [ "$(cat "$HOSTNAME_FILE")" = "raspberrypi" ]
+    BOOT_CFG=([HOSTNAME]="LocalHost")
+    apply_hostname 2>/dev/null
+    [ "$(cat "$HOSTNAME_FILE")" = "raspberrypi" ]
+}
+
+@test "13c: multi-line /etc/hostname -> /etc/hosts rewrite is skipped (current rejected)" {
+    # Defense against a tampered /etc/hostname leaking weirdness into the
+    # sed search key. Multi-line content fails _hostname_valid, so current
+    # is treated as unknown and we leave /etc/hosts alone.
+    printf 'foo\nbar\n' > "$HOSTNAME_FILE"
+    BOOT_CFG=([HOSTNAME]="feeder1")
+    apply_hostname 2>/dev/null
+    [ "$(cat "$HOSTNAME_FILE")" = "feeder1" ]
+    # Original /etc/hosts still has the canonical raspberrypi line — we
+    # didn't try to match the bogus 'foo' or 'foobar' as a key.
+    grep -qP '^127\.0\.1\.1\traspberrypi$' "$HOSTS_FILE"
+}
+
 @test "14: /etc/hosts 127.0.1.1 line gets the new hostname" {
     BOOT_CFG=([HOSTNAME]="feeder1")
     apply_hostname
@@ -201,4 +243,64 @@ EOF
     apply_hostname
     [ "$(cat "$HOSTNAME_FILE")" = "raspberrypi" ]
     [ ! -v "BOOT_CFG[HOSTNAME]" ]
+}
+
+@test "23: /etc/hosts byte-for-byte: comments + tabs + blank lines preserved" {
+    # Hand-crafted /etc/hosts with the kinds of structure a user might add.
+    # After rewriting only the 127.0.1.1 line, every other byte should be
+    # identical to the original.
+    cat > "$HOSTS_FILE" <<'EOF'
+# user comment
+127.0.0.1	localhost
+::1		localhost ip6-localhost ip6-loopback
+
+# more aliases:
+192.168.1.10	homeserver homeserver.lan
+127.0.1.1	raspberrypi
+EOF
+    local before
+    before="$(grep -v '^127\.0\.1\.1' "$HOSTS_FILE")"
+    BOOT_CFG=([HOSTNAME]="feeder1")
+    apply_hostname
+    local after
+    after="$(grep -v '^127\.0\.1\.1' "$HOSTS_FILE")"
+    [ "$before" = "$after" ]
+    grep -qP '^127\.0\.1\.1\tfeeder1$' "$HOSTS_FILE"
+}
+
+@test "24: hosts mktemp failure does not block runtime hostname apply" {
+    # Mock the legacy `hostname` binary (the runtime fallback path used when
+    # systemd-hostnamed isn't running). Lock the hosts directory after
+    # seeding so apply_hostname's mktemp inside the /etc/hosts pass fails;
+    # the runtime apply must still happen unconditionally afterward.
+    local mock_bin="$TMP/mockbin"
+    mkdir -p "$mock_bin"
+    cat > "$mock_bin/hostname" <<'STUB'
+#!/bin/sh
+echo "$@" >> "$HOSTNAME_LOG"
+STUB
+    chmod +x "$mock_bin/hostname"
+    export HOSTNAME_LOG="$TMP/hostname-invocations.log"
+    : > "$HOSTNAME_LOG"
+    local saved_path="$PATH"
+    export PATH="$mock_bin:$PATH"
+
+    local locked_dir="$TMP/locked"
+    mkdir -p "$locked_dir"
+    cp "$HOSTS_FILE" "$locked_dir/hosts"
+    chmod 0555 "$locked_dir"
+    export HOSTS_FILE="$locked_dir/hosts"
+
+    BOOT_CFG=([HOSTNAME]="feeder1")
+    apply_hostname 2>/dev/null
+
+    chmod 0755 "$locked_dir"
+    export PATH="$saved_path"
+
+    # /etc/hostname was written even though the /etc/hosts mktemp failed.
+    [ "$(cat "$HOSTNAME_FILE")" = "feeder1" ]
+    # /etc/hosts itself was NOT modified (mktemp failed before the rewrite).
+    grep -qP '^127\.0\.1\.1\traspberrypi$' "$HOSTS_FILE"
+    # Runtime apply still happened — the codex-flagged behavior.
+    grep -qx 'feeder1' "$HOSTNAME_LOG"
 }
