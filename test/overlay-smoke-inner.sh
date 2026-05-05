@@ -139,6 +139,13 @@ grep -q -- '--write-json-globe-index' /usr/local/share/airplanes/readsb.sh \
     || fail "readsb.sh missing --write-json-globe-index"
 grep -q -- '--globe-history-dir' /usr/local/share/airplanes/readsb.sh \
     || fail "readsb.sh missing --globe-history-dir"
+# Regression guard: --aircraft-update-interval is a flightaware/dump1090-fa
+# flag, not a wiedehopf/readsb flag. We pass --write-json-every instead.
+# Crashlooped readsb in a real-Pi flash test before this guard existed.
+grep -q -- '--write-json-every ' /usr/local/share/airplanes/readsb.sh \
+    || fail "readsb.sh missing --write-json-every"
+! grep -q -- '--aircraft-update-interval' /usr/local/share/airplanes/readsb.sh \
+    || fail "readsb.sh has --aircraft-update-interval (unsupported by wiedehopf/readsb)"
 [[ -d /var/globe_history ]] || fail "/var/globe_history not created"
 [[ "$(stat -c %U /var/globe_history)" == "readsb" ]] || fail "/var/globe_history not owned by readsb"
 
