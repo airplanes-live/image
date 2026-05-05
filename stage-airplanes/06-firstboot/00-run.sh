@@ -30,10 +30,21 @@ install -m 755 files/usr/local/sbin/airplanes-first-run \
 # AIRPLANES_FEED_BRANCH; without it the script defaults to "main" regardless
 # of channel. The file is image-identity, not user state — feed.env stays
 # user-editable.
-if [[ -z "${AIRPLANES_FEED_BRANCH:-}" ]]; then
-	echo "AIRPLANES_FEED_BRANCH unset; refusing to ship release-channel" >&2
-	exit 1
-fi
+#
+# Allowlist mirrors the feed-side validation: only main / dev. Refusing to
+# ship a bogus pin here surfaces release-config typos at build time instead
+# of at every operator's update.
+case "${AIRPLANES_FEED_BRANCH:-}" in
+	main|dev) ;;
+	"")
+		echo "AIRPLANES_FEED_BRANCH unset; refusing to ship release-channel" >&2
+		exit 1
+		;;
+	*)
+		echo "AIRPLANES_FEED_BRANCH=${AIRPLANES_FEED_BRANCH} not in {main, dev}; refusing to ship release-channel" >&2
+		exit 1
+		;;
+esac
 install -d -m 755 "${ROOTFS_DIR}/etc/airplanes"
 printf '%s\n' "${AIRPLANES_FEED_BRANCH}" \
 	> "${ROOTFS_DIR}/etc/airplanes/release-channel"
