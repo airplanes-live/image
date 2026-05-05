@@ -52,6 +52,12 @@ INPUT_ABS="$(python3 -c 'import sys, pathlib; print(pathlib.Path(sys.argv[1]).re
 
 OUTPUT="${INPUT_ABS%.img.xz}.rpi-imager-manifest.json"
 
+# Drop any stale prior manifest before we start computing the new one. If the
+# script fails mid-flight (xz error, sha256sum error, jq error), the worst case
+# is "no manifest" rather than "stale manifest pointing at a different image".
+# Atomic install of the new content via `.tmp.$$` + mv happens at the bottom.
+rm -f -- "$OUTPUT"
+
 # Compressed artifact size (file:// download size for rpi-imager).
 IMAGE_DOWNLOAD_SIZE="$(stat -c %s -- "$INPUT_ABS")"
 
