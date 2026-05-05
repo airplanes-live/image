@@ -183,4 +183,39 @@ grep -Eq '^[[:space:]]*KbdInteractiveAuthentication[[:space:]]+no[[:space:]]*$' 
 grep -Eq '^[[:space:]]*PubkeyAuthentication[[:space:]]+yes[[:space:]]*$' "$SSHD_DROPIN" \
 	|| { echo "PubkeyAuthentication yes missing from drop-in"; exit 1; }
 
+# sshd -T resolves the *effective* config (Include chain + first-match), not
+# what's in any one snippet. Catches drift like the main sshd_config moving
+# the Include below a hardcoded PasswordAuthentication, or a future stage
+# adding an overriding snippet that lexically wins. Host keys are needed for
+# sshd to start; ssh-keygen -A here doesn't reach the .img.xz artifact since
+# smoke operates on a temp-decompressed copy.
+echo "==> asserting effective sshd config rejects password auth by default"
+mkdir -p "$ROOT_MNT/run/sshd"
+chroot "$ROOT_MNT" /usr/bin/ssh-keygen -A >/dev/null 2>&1 \
+	|| { echo "ssh-keygen -A failed in chroot"; exit 1; }
+sshd_dump() {
+	chroot "$ROOT_MNT" /usr/sbin/sshd -T -C "user=pi,host=localhost,addr=127.0.0.1" 2>/dev/null
+}
+sshd_dump | grep -qx 'passwordauthentication no' \
+	|| { echo "effective PasswordAuthentication != no"; sshd_dump | grep -E 'authentication' >&2; exit 1; }
+sshd_dump | grep -qx 'kbdinteractiveauthentication no' \
+	|| { echo "effective KbdInteractiveAuthentication != no"; exit 1; }
+sshd_dump | grep -qx 'pubkeyauthentication yes' \
+	|| { echo "effective PubkeyAuthentication != yes"; exit 1; }
+
+echo "==> asserting cloud-init's 50-cloud-init.conf can override 90-airplanes.conf"
+# Simulates the rpi-imager "SSH on + password" path: cc_set_passwords writes
+# PasswordAuthentication yes into 50-cloud-init.conf, lexically beats our
+# 90-airplanes.conf. Regression guard for any future change that would block
+# the explicit-opt-in flow.
+cat > "$ROOT_MNT/etc/ssh/sshd_config.d/50-cloud-init.conf" <<'CIEOF'
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+CIEOF
+sshd_dump | grep -qx 'passwordauthentication yes' \
+	|| { echo "cloud-init 50- override did not flip pwauth to yes"; exit 1; }
+sshd_dump | grep -qx 'kbdinteractiveauthentication yes' \
+	|| { echo "cloud-init 50- override did not flip kbd-interactive to yes"; exit 1; }
+rm -f "$ROOT_MNT/etc/ssh/sshd_config.d/50-cloud-init.conf"
+
 echo "OK: feeder-id=$FEEDER_ID, boot-config merge confirmed, WiFi keyfile written, no leaks"
