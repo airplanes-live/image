@@ -336,6 +336,9 @@ EOF
 
 # Helper: shim PATH with mock `systemctl` and `timeout`. The mocks are env-
 # driven so each test can dial a single state without mutating the others.
+# The timeout shim also logs each probed verb to PROBE_LOG when set, so a
+# test can assert that is-active is skipped after an is-enabled timeout
+# (without a guard, a regression could re-introduce the doubled stall).
 _unit_state_shim() {
     local shim="$TMP/shim-systemd"
     mkdir -p "$shim"
@@ -343,6 +346,9 @@ _unit_state_shim() {
 #!/bin/bash
 shift  # drop the duration argument
 verb="$2"  # $1=systemctl, $2=verb
+if [[ -n "${PROBE_LOG:-}" ]]; then
+    printf '%s\n' "$verb" >> "$PROBE_LOG"
+fi
 if [[ "$verb" == "is-enabled" && -n "${MOCK_TIMEOUT_IS_ENABLED:-}" ]]; then
     exit 124
 fi
@@ -357,7 +363,11 @@ TIMEOUT_EOF
 verb="$1"
 case "$verb" in
     is-enabled)
+        # Real systemctl prints the state on stdout AND signals via rc:
+        # rc 0 for enabled/static, nonzero for disabled/masked. Mirror that
+        # so a future regression that consults the rc is exercised.
         printf '%s\n' "${MOCK_IS_ENABLED:-static}"
+        exit "${MOCK_IS_ENABLED_RC:-0}"
         ;;
     is-active)
         exit "${MOCK_IS_ACTIVE_RC:-0}"
@@ -372,7 +382,7 @@ SYSTEMCTL_EOF
 @test "unit_state: masked unit returns 'masked'" {
     shim="$(_unit_state_shim)"
     PATH="$shim:$PATH"
-    out="$(MOCK_IS_ENABLED=masked unit_state airplanes-feed.service)"
+    out="$(MOCK_IS_ENABLED=masked MOCK_IS_ENABLED_RC=1 unit_state airplanes-feed.service)"
     [ "$out" = "masked" ]
 }
 
@@ -393,22 +403,34 @@ SYSTEMCTL_EOF
 @test "unit_state: disabled+inactive returns 'disabled'" {
     shim="$(_unit_state_shim)"
     PATH="$shim:$PATH"
-    out="$(MOCK_IS_ENABLED=disabled MOCK_IS_ACTIVE_RC=3 unit_state airplanes-feed.service)"
+    # Real systemctl exits 1 for a disabled unit while still printing 'disabled'.
+    out="$(MOCK_IS_ENABLED=disabled MOCK_IS_ENABLED_RC=1 MOCK_IS_ACTIVE_RC=3 unit_state airplanes-feed.service)"
     [ "$out" = "disabled" ]
 }
 
-@test "unit_state: is-enabled timeout (rc=124) returns 'timeout'" {
+@test "unit_state: is-enabled timeout returns 'timeout' and skips is-active" {
     shim="$(_unit_state_shim)"
     PATH="$shim:$PATH"
-    out="$(MOCK_TIMEOUT_IS_ENABLED=1 unit_state airplanes-feed.service)"
+    log="$TMP/probes-enabled-timeout"
+    : > "$log"
+    out="$(MOCK_TIMEOUT_IS_ENABLED=1 PROBE_LOG=$log unit_state airplanes-feed.service)"
     [ "$out" = "timeout" ]
+    # Critical: is-active must NOT be probed after is-enabled timed out, or
+    # the dbus-stall budget doubles per unit and the SSH-login MOTD can take
+    # ~20s with five units.
+    [ "$(cat "$log")" = "is-enabled" ]
 }
 
-@test "unit_state: is-active timeout (rc=124) returns 'timeout'" {
+@test "unit_state: is-active timeout returns 'timeout' (after is-enabled succeeds)" {
     shim="$(_unit_state_shim)"
     PATH="$shim:$PATH"
-    out="$(MOCK_IS_ENABLED=enabled MOCK_TIMEOUT_IS_ACTIVE=1 unit_state airplanes-feed.service)"
+    log="$TMP/probes-active-timeout"
+    : > "$log"
+    out="$(MOCK_IS_ENABLED=enabled MOCK_TIMEOUT_IS_ACTIVE=1 PROBE_LOG=$log unit_state airplanes-feed.service)"
     [ "$out" = "timeout" ]
+    # Both probes ran; is-active timed out as expected.
+    [ "$(sed -n '1p' "$log")" = "is-enabled" ]
+    [ "$(sed -n '2p' "$log")" = "is-active" ]
 }
 
 # ---- snapshot end-to-end (full render with all sources missing) ------------
@@ -509,17 +531,32 @@ EOF
     fi
 }
 
-@test "render_once live: counter reset (d_msgs<0) prints 'msgs/s: -'" {
-    # Simulate a readsb restart: previous frame saw 1000 messages at t=90, the
-    # next frame sees 500 at t=100. The renderer must not print a negative
-    # rate; it should fall back to '-' until the counter re-baselines.
+@test "render_once live: counter reset prints '-', then re-baselines next frame" {
+    # Simulate a readsb restart: previous frame saw 1000 messages at t=90,
+    # the next frame sees 500 at t=100. Frame 1 must print 'msgs/s: -' (no
+    # bogus negative rate) AND update PREV_MSGS/PREV_TS so the next frame
+    # computes a normal positive rate. Redirect to a file rather than
+    # capturing via $(...) so the script-level globals update in this
+    # shell — a subshell would lose the re-baseline and a regression that
+    # never updated PREV_* after a counter reset would still pass.
     cat > "$PATHS_AIRCRAFT_JSON" <<'EOF'
 { "now": 100, "messages": 500, "aircraft": [{"hex":"a"}] }
 EOF
     PREV_MSGS=1000
     PREV_TS=90
-    out="$(render_once live)"
-    [[ "$out" == *"msgs/s: -"* ]]
+    frame1="$TMP/frame1"
+    render_once live > "$frame1"
+    grep -q 'msgs/s: -' "$frame1"
+    [ "$PREV_MSGS" = "500" ]
+    [ "$PREV_TS" = "100" ]
+
+    # Frame 2: 10 new messages over 10 seconds -> 1.0 msgs/s.
+    cat > "$PATHS_AIRCRAFT_JSON" <<'EOF'
+{ "now": 110, "messages": 510, "aircraft": [{"hex":"a"}] }
+EOF
+    frame2="$TMP/frame2"
+    render_once live > "$frame2"
+    grep -qE 'msgs/s: 1\.0' "$frame2"
 }
 
 # ---- MOTD wrapper env-scrub guard ------------------------------------------
