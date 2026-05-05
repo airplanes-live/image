@@ -358,6 +358,93 @@ fi
 [[ -s /etc/airplanes/.build-pi-gen-sha ]] || fail ".build-pi-gen-sha missing or empty"
 [[ -s /etc/airplanes/.build-airplanes-readsb-sha ]] || fail ".build-airplanes-readsb-sha missing or empty"
 
+echo "==> stage-airplanes/06b-console-dashboard/00-run.sh"
+( cd /image/stage-airplanes/06b-console-dashboard && bash 00-run.sh )
+
+echo "==> stage-airplanes/06b-console-dashboard/01-run-chroot.sh"
+( cd /image/stage-airplanes/06b-console-dashboard && bash 01-run-chroot.sh )
+
+echo "==> 06b post-install assertions"
+[[ -x /usr/local/lib/airplanes/render-status ]] || fail "render-status missing or not executable"
+[[ "$(stat -c %a /usr/local/lib/airplanes/render-status)" == "755" ]] \
+    || fail "render-status mode != 0755"
+[[ -s /usr/local/share/airplanes/logo.txt ]] || fail "logo.txt missing or empty"
+[[ "$(stat -c %a /usr/local/share/airplanes/logo.txt)" == "644" ]] \
+    || fail "logo.txt mode != 0644"
+[[ -f /etc/systemd/system/airplanes-dashboard.service ]] \
+    || fail "airplanes-dashboard.service missing"
+[[ -f /etc/systemd/system/getty@tty1.service.d/override.conf ]] \
+    || fail "getty@tty1 override drop-in missing"
+[[ -x /etc/update-motd.d/10-airplanes-status ]] \
+    || fail "update-motd.d/10-airplanes-status missing or not executable"
+[[ "$(stat -c %a /etc/update-motd.d/10-airplanes-status)" == "755" ]] \
+    || fail "10-airplanes-status mode != 0755"
+
+# Unit content sanity.
+grep -q '^TTYPath=/dev/tty1' /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing TTYPath=/dev/tty1"
+grep -q '^Conflicts=getty@tty1.service' /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing Conflicts=getty@tty1.service"
+grep -q '^WantedBy=getty.target' /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing WantedBy=getty.target"
+grep -q '^StartLimitIntervalSec=' /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing StartLimitIntervalSec"
+
+# Getty@tty1 must be masked (symlinked to /dev/null) and NOT in
+# getty.target.wants/. Getty@tty2 must be in getty.target.wants/.
+[[ -L /etc/systemd/system/getty@tty1.service ]] \
+    || fail "getty@tty1.service not a symlink (mask failed)"
+[[ "$(readlink /etc/systemd/system/getty@tty1.service)" == "/dev/null" ]] \
+    || fail "getty@tty1.service not masked to /dev/null"
+[[ ! -e /etc/systemd/system/getty.target.wants/getty@tty1.service ]] \
+    || fail "stale getty@tty1.service wants symlink left behind"
+[[ -L /etc/systemd/system/getty.target.wants/getty@tty2.service ]] \
+    || fail "getty@tty2.service enable symlink missing"
+[[ -L /etc/systemd/system/getty.target.wants/airplanes-dashboard.service ]] \
+    || fail "airplanes-dashboard.service enable symlink missing"
+
+# Renderer self-test: invoke --snapshot with every PATHS_* pointing at a
+# missing file. Must exit 0, render every section, and never leak a
+# 32+hex-char run (regression guard against accidentally reading the claim
+# secret) or the literal path of the secret file.
+SNAP_OUT="$(mktemp)"
+PATHS_FEEDER_ID=/nx \
+PATHS_RELEASE_CHANNEL=/nx \
+PATHS_MANIFEST=/nx \
+PATHS_FEED_ENV=/nx \
+PATHS_CLAIM_SECRET=/nx \
+PATHS_CLAIM_PENDING=/nx \
+PATHS_CLAIM_VERSION=/nx \
+PATHS_AIRCRAFT_JSON=/nx \
+PATHS_THERMAL=/nx \
+PATHS_LOGO=/usr/local/share/airplanes/logo.txt \
+TERM=dumb \
+    bash /usr/local/lib/airplanes/render-status --snapshot >"$SNAP_OUT" 2>&1 \
+    || fail "render-status --snapshot exited non-zero with all sources missing"
+for needle in 'Access' 'Feeder ID' 'Claim' 'Services' 'Feed' 'Build' 'System'; do
+    grep -q "$needle" "$SNAP_OUT" || fail "snapshot missing section: $needle"
+done
+grep -q '(not yet generated)' "$SNAP_OUT" \
+    || fail "snapshot did not show '(not yet generated)' for missing feeder-id"
+grep -q 'unclaimed' "$SNAP_OUT" \
+    || fail "snapshot did not show 'unclaimed' for missing claim secret"
+if grep -E -q '[0-9a-f]{32,}' "$SNAP_OUT"; then
+    fail "snapshot leaked a 32+ hex-char run (possible secret read)"
+fi
+# Real claim secrets are 16 uppercase A-Z0-9 (apl-feed validate_secret),
+# displayed by `claim show` as XXXX-XXXX-XXXX-XXXX. Defense-in-depth match
+# on both shapes catches a regression that started reading the secret file.
+if grep -E -q '[A-Z0-9]{16}' "$SNAP_OUT"; then
+    fail "snapshot leaked a 16-uppercase-alnum run (claim secret format)"
+fi
+if grep -E -q '([A-Z0-9]{4}-){3}[A-Z0-9]{4}' "$SNAP_OUT"; then
+    fail "snapshot leaked an XXXX-XXXX-XXXX-XXXX run (displayed secret form)"
+fi
+if grep -q 'feeder-claim-secret' "$SNAP_OUT"; then
+    fail "snapshot leaked the literal string 'feeder-claim-secret'"
+fi
+rm -f "$SNAP_OUT"
+
 echo "==> stage-airplanes/07-finalize/00-run.sh (stub-check + manifest + cleanup)"
 ( cd /image/stage-airplanes/07-finalize && bash 00-run.sh )
 
