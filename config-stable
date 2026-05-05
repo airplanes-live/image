@@ -1,3 +1,15 @@
+# build.sh sets GIT_HASH after sourcing configs, but we need it earlier for
+# ARCHIVE_FILENAME below. build-docker.sh exports GIT_HASH into the container,
+# so this fallback only fires on bare-host invocations.
+: "${GIT_HASH:="$(git -C "${BASE_DIR:-.}" rev-parse HEAD 2>/dev/null || echo unknown)"}"
+export GIT_HASH
+
+export IMG_NAME="${IMG_NAME:-airplanes-feeder-stable-arm64}"
+# Same-day rebuilds from different commits would collide on pi-gen's default
+# `image_${IMG_DATE}-${IMG_NAME}` and silently overwrite the prior artifact.
+# Commit short-SHA gives every commit a unique file; same-commit rebuilds
+# overwrite themselves (identical content). IMG_DATE is still in the .info.
+export ARCHIVE_FILENAME="${ARCHIVE_FILENAME:-${IMG_NAME}-${GIT_HASH:0:7}}"
 export CHANNEL="${CHANNEL:-stable}"
 export STAGE_LIST="${STAGE_LIST:-${BASE_DIR:-.}/stage0 ${BASE_DIR:-.}/stage1 ${BASE_DIR:-.}/stage2 ${BASE_DIR:-.}/stage-airplanes}"
 export DEPLOY_COMPRESSION="${DEPLOY_COMPRESSION:-xz}"
