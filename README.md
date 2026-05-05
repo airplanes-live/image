@@ -5,7 +5,6 @@
 <p align="center">
   <a href="https://github.com/airplanes-live/image/actions/workflows/ci.yml"><img src="https://github.com/airplanes-live/image/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
   <a href="https://github.com/airplanes-live/image/actions/workflows/build-image.yml"><img src="https://github.com/airplanes-live/image/actions/workflows/build-image.yml/badge.svg?branch=dev" alt="Build image"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/airplanes-live/image?color=blue" alt="License"></a>
   <a href="https://github.com/airplanes-live/image/releases"><img src="https://img.shields.io/github/v/release/airplanes-live/image?include_prereleases&display_name=tag&label=release" alt="Latest release"></a>
 </p>
 
@@ -33,11 +32,11 @@ The boot config file is read **once** on first boot; later edits don't apply (us
 
 [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (v2.0.9 or newer) can configure hostname, WiFi, and SSH access during flashing — but only via a Custom Repository URL. The "Use Custom" local-image flow deliberately hides those settings.
 
-1. Run `./scripts/make-imager-manifest.sh path/to/airplanes-feeder-*.img.xz` on the downloaded image. It prints a `file://...rpi-imager-manifest.json` URL.
+1. On the [Releases](https://github.com/airplanes-live/image/releases) page, copy the URL of the `.rpi-imager-manifest.json` asset attached to the release you want.
 2. In Imager, click the gear icon at the bottom of the OS list → **Custom Repository** → paste the URL.
 3. Pick airplanes.live from the OS list, select your microSD card, click **Next**, then **Edit Settings** to configure hostname, WiFi, and SSH. Save and write.
 
-After first boot, browse to `http://<hostname>.local/` to set your receiver location and MLAT display name via the web UI.
+Imager downloads and flashes the image for you. After first boot, browse to `http://<hostname>.local/` to set your receiver location and MLAT display name via the web UI.
 
 ### Already have a Pi feeding another aggregator?
 
