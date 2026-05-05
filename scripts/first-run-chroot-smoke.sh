@@ -1,13 +1,14 @@
 #!/bin/bash
 # Boot-free smoke for /usr/local/sbin/airplanes-first-run. Mounts the built
-# image, copies a static qemu binary into the rootfs, runs the script via
-# chroot, and asserts the side effects (feeder-id, done marker, feed.env
-# integrity) without needing a full QEMU boot.
+# image, runs the script via chroot, and asserts the side effects (feeder-id,
+# done marker, feed.env integrity) without needing a full QEMU boot.
 #
 # Usage: first-run-chroot-smoke.sh PATH_TO_IMAGE.img.xz
 #
-# Requires: root (for losetup/mount/chroot), xz-utils, qemu-user-static, and
-# binfmt-misc registered for the matching arch. CI installs all of these.
+# Requires: root (for losetup/mount/chroot), xz-utils. Cross-arch chroot
+# additionally needs qemu-user-static + binfmt-misc registered for the target
+# arch. Native chroot (e.g. arm64 host running an arm64 image) skips the
+# qemu staging entirely.
 
 set -euo pipefail
 
@@ -19,12 +20,23 @@ IMG_XZ="${1:?usage: first-run-chroot-smoke.sh PATH_TO_IMAGE.img.xz}"
 [[ -f "$IMG_XZ" ]] || { echo "image not found: $IMG_XZ" >&2; exit 1; }
 
 case "$(basename "$IMG_XZ")" in
-	*-arm64.img.xz)  QEMU_BIN=qemu-aarch64-static ;;
-	*-armhf.img.xz)  QEMU_BIN=qemu-arm-static ;;
+	*-arm64.img.xz)  TARGET_ARCH=arm64 ; QEMU_BIN=qemu-aarch64-static ;;
+	*-armhf.img.xz)  TARGET_ARCH=armhf ; QEMU_BIN=qemu-arm-static ;;
 	*) echo "cannot infer arch from filename: $IMG_XZ" >&2; exit 1 ;;
 esac
 
-if [[ ! -x "/usr/bin/${QEMU_BIN}" ]]; then
+# Native chroot: host arch matches target, no qemu translation needed. Skips
+# the qemu-user-static dependency on native arm64 runners.
+case "$(uname -m)" in
+	aarch64)        HOST_ARCH=arm64 ;;
+	armv7l|armv6l)  HOST_ARCH=armhf ;;
+	*)              HOST_ARCH="$(uname -m)" ;;
+esac
+if [[ "$HOST_ARCH" == "$TARGET_ARCH" ]]; then
+	QEMU_BIN=""
+fi
+
+if [[ -n "$QEMU_BIN" && ! -x "/usr/bin/${QEMU_BIN}" ]]; then
 	echo "missing /usr/bin/${QEMU_BIN}; install qemu-user-static" >&2
 	exit 1
 fi
@@ -66,9 +78,13 @@ echo "==> mounting FAT ${LOOP_DEV}p1 -> $ROOT_MNT/boot/firmware"
 mkdir -p "$ROOT_MNT/boot/firmware"
 mount "${LOOP_DEV}p1" "$ROOT_MNT/boot/firmware"
 
-echo "==> staging $QEMU_BIN"
-QEMU_COPIED="$ROOT_MNT/usr/bin/$QEMU_BIN"
-cp "/usr/bin/$QEMU_BIN" "$QEMU_COPIED"
+if [[ -n "$QEMU_BIN" ]]; then
+	echo "==> staging $QEMU_BIN"
+	QEMU_COPIED="$ROOT_MNT/usr/bin/$QEMU_BIN"
+	cp "/usr/bin/$QEMU_BIN" "$QEMU_COPIED"
+else
+	echo "==> native chroot ($HOST_ARCH==$TARGET_ARCH); skipping qemu staging"
+fi
 
 # create-uuid.sh inside the chroot reads /proc/sys/kernel/random/uuid; without
 # /proc mounted it falls back to no-uuid and feeder-id never gets written.
