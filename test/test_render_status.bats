@@ -254,6 +254,163 @@ EOF
     [[ "$out" =~ ^http://|^\(not\ connected\)$ ]]
 }
 
+# Helper: shim PATH with mock `hostname` and `ip`. The fixture exercises the
+# function's own logic (raspberrypi suppression, IP/.local join) rather than
+# whatever the test host happens to expose.
+_local_urls_shim() {
+    local shim="$TMP/shim-net"
+    mkdir -p "$shim"
+    cat > "$shim/hostname" <<'HOSTNAME_EOF'
+#!/bin/bash
+printf '%s\n' "${MOCK_HOSTNAME:-localhost}"
+HOSTNAME_EOF
+    chmod +x "$shim/hostname"
+    cat > "$shim/ip" <<'IP_EOF'
+#!/bin/bash
+# Mock the format `ip -4 -o addr show scope global` produces.
+if [[ -n "${MOCK_IP:-}" ]]; then
+    printf '2: eth0    inet %s/24 brd 192.168.1.255 scope global eth0\n' "$MOCK_IP"
+fi
+IP_EOF
+    chmod +x "$shim/ip"
+    printf '%s' "$shim"
+}
+
+@test "read_local_urls: hostname=raspberrypi suppresses .local, returns IP only" {
+    shim="$(_local_urls_shim)"
+    PATH="$shim:$PATH"
+    out="$(MOCK_HOSTNAME=raspberrypi MOCK_IP=192.168.1.42 read_local_urls)"
+    [ "$out" = "http://192.168.1.42" ]
+}
+
+@test "read_local_urls: non-default hostname joins IP and .local" {
+    shim="$(_local_urls_shim)"
+    PATH="$shim:$PATH"
+    out="$(MOCK_HOSTNAME=feeder1 MOCK_IP=192.168.1.42 read_local_urls)"
+    [ "$out" = "http://192.168.1.42  or  http://feeder1.local" ]
+}
+
+@test "read_local_urls: no IP, default hostname yields '(not connected)'" {
+    shim="$(_local_urls_shim)"
+    PATH="$shim:$PATH"
+    out="$(MOCK_HOSTNAME=raspberrypi read_local_urls)"
+    [ "$out" = "(not connected)" ]
+}
+
+# ---- read_build_short_sha --------------------------------------------------
+
+@test "read_build_short_sha: valid 40-hex SHA returns 7-char prefix" {
+    cat > "$PATHS_MANIFEST" <<'EOF'
+{ "components": { "airplanes_feed": "abcdef1234567890123456789012345678901234" } }
+EOF
+    [ "$(read_build_short_sha)" = "abcdef1" ]
+}
+
+@test "read_build_short_sha: empty .components.airplanes_feed returns empty" {
+    cat > "$PATHS_MANIFEST" <<'EOF'
+{ "components": {} }
+EOF
+    [ -z "$(read_build_short_sha)" ]
+}
+
+@test "read_build_short_sha: malformed JSON returns empty" {
+    printf 'not json\n' > "$PATHS_MANIFEST"
+    [ -z "$(read_build_short_sha)" ]
+}
+
+@test "read_build_short_sha: SHA with wrong length returns empty" {
+    cat > "$PATHS_MANIFEST" <<'EOF'
+{ "components": { "airplanes_feed": "abc1234" } }
+EOF
+    [ -z "$(read_build_short_sha)" ]
+}
+
+# ---- unit_state ------------------------------------------------------------
+#
+# Regression test for the rc-capture bug: bash sets $? to 0 after `if cmd;
+# then …; fi` whose body did not run, so `active_rc=$?` was always 0 and the
+# `timeout` branch was unreachable. The is-enabled call had a parallel issue
+# — its rc was discarded by `|| true` in command-substitution, so a stalled
+# dbus burned the timeout budget twice per unit. The fix captures both rcs
+# explicitly and short-circuits on 124.
+
+# Helper: shim PATH with mock `systemctl` and `timeout`. The mocks are env-
+# driven so each test can dial a single state without mutating the others.
+_unit_state_shim() {
+    local shim="$TMP/shim-systemd"
+    mkdir -p "$shim"
+    cat > "$shim/timeout" <<'TIMEOUT_EOF'
+#!/bin/bash
+shift  # drop the duration argument
+verb="$2"  # $1=systemctl, $2=verb
+if [[ "$verb" == "is-enabled" && -n "${MOCK_TIMEOUT_IS_ENABLED:-}" ]]; then
+    exit 124
+fi
+if [[ "$verb" == "is-active" && -n "${MOCK_TIMEOUT_IS_ACTIVE:-}" ]]; then
+    exit 124
+fi
+exec "$@"
+TIMEOUT_EOF
+    chmod +x "$shim/timeout"
+    cat > "$shim/systemctl" <<'SYSTEMCTL_EOF'
+#!/bin/bash
+verb="$1"
+case "$verb" in
+    is-enabled)
+        printf '%s\n' "${MOCK_IS_ENABLED:-static}"
+        ;;
+    is-active)
+        exit "${MOCK_IS_ACTIVE_RC:-0}"
+        ;;
+esac
+exit 0
+SYSTEMCTL_EOF
+    chmod +x "$shim/systemctl"
+    printf '%s' "$shim"
+}
+
+@test "unit_state: masked unit returns 'masked'" {
+    shim="$(_unit_state_shim)"
+    PATH="$shim:$PATH"
+    out="$(MOCK_IS_ENABLED=masked unit_state airplanes-feed.service)"
+    [ "$out" = "masked" ]
+}
+
+@test "unit_state: enabled+active returns 'ok'" {
+    shim="$(_unit_state_shim)"
+    PATH="$shim:$PATH"
+    out="$(MOCK_IS_ENABLED=enabled MOCK_IS_ACTIVE_RC=0 unit_state airplanes-feed.service)"
+    [ "$out" = "ok" ]
+}
+
+@test "unit_state: enabled+inactive returns 'fail'" {
+    shim="$(_unit_state_shim)"
+    PATH="$shim:$PATH"
+    out="$(MOCK_IS_ENABLED=enabled MOCK_IS_ACTIVE_RC=3 unit_state airplanes-feed.service)"
+    [ "$out" = "fail" ]
+}
+
+@test "unit_state: disabled+inactive returns 'disabled'" {
+    shim="$(_unit_state_shim)"
+    PATH="$shim:$PATH"
+    out="$(MOCK_IS_ENABLED=disabled MOCK_IS_ACTIVE_RC=3 unit_state airplanes-feed.service)"
+    [ "$out" = "disabled" ]
+}
+
+@test "unit_state: is-enabled timeout (rc=124) returns 'timeout'" {
+    shim="$(_unit_state_shim)"
+    PATH="$shim:$PATH"
+    out="$(MOCK_TIMEOUT_IS_ENABLED=1 unit_state airplanes-feed.service)"
+    [ "$out" = "timeout" ]
+}
+
+@test "unit_state: is-active timeout (rc=124) returns 'timeout'" {
+    shim="$(_unit_state_shim)"
+    PATH="$shim:$PATH"
+    out="$(MOCK_IS_ENABLED=enabled MOCK_TIMEOUT_IS_ACTIVE=1 unit_state airplanes-feed.service)"
+    [ "$out" = "timeout" ]
+}
+
 # ---- snapshot end-to-end (full render with all sources missing) ------------
 
 @test "snapshot: exits 0 with all sources missing" {
@@ -350,6 +507,19 @@ EOF
     if echo "$output" | grep -q 'msgs/s'; then
         false
     fi
+}
+
+@test "render_once live: counter reset (d_msgs<0) prints 'msgs/s: -'" {
+    # Simulate a readsb restart: previous frame saw 1000 messages at t=90, the
+    # next frame sees 500 at t=100. The renderer must not print a negative
+    # rate; it should fall back to '-' until the counter re-baselines.
+    cat > "$PATHS_AIRCRAFT_JSON" <<'EOF'
+{ "now": 100, "messages": 500, "aircraft": [{"hex":"a"}] }
+EOF
+    PREV_MSGS=1000
+    PREV_TS=90
+    out="$(render_once live)"
+    [[ "$out" == *"msgs/s: -"* ]]
 }
 
 # ---- MOTD wrapper env-scrub guard ------------------------------------------

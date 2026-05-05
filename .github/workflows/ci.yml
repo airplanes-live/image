@@ -48,6 +48,20 @@ jobs:
             bash -n "$f"
           done
 
+      - name: No nested on_chroot in *-run-chroot.sh
+        run: |
+          # pi-gen's build.sh already invokes each *-run-chroot.sh via
+          # `on_chroot < script.sh`, so the body executes inside the chroot
+          # where on_chroot is undefined. A nested call silently broke the
+          # 06b stage in PR #29; this guard prevents a repeat. Anchored at
+          # line-start so docstring mentions don't trip it.
+          shopt -s globstar nullglob
+          if grep -nE '^[[:space:]]*on_chroot([[:space:]<]|$)' \
+               stage-airplanes/**/*-run-chroot.sh; then
+            echo "*-run-chroot.sh files are already executed via on_chroot by pi-gen build.sh" >&2
+            exit 1
+          fi
+
   bats:
     runs-on: ubuntu-24.04
     steps:

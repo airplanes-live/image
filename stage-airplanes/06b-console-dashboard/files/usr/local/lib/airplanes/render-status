@@ -178,7 +178,7 @@ mlat_disabled_by_config() {
 # Service state. Bounded by `timeout 2` so stalled dbus / systemd cannot
 # freeze us (critical for the snapshot path that runs at SSH login).
 unit_state() {
-    local unit="$1" enabled active_rc
+    local unit="$1" enabled enabled_rc active_rc
     if ! command -v systemctl >/dev/null 2>&1; then
         printf 'unknown'
         return
@@ -188,23 +188,29 @@ unit_state() {
         printf 'disabled-by-config'
         return
     fi
-    enabled="$(timeout 2 systemctl is-enabled "$unit" 2>/dev/null || true)"
-    case "$enabled" in
-        masked) printf 'masked'; return ;;
-        disabled|static) ;;  # fall through; check is-active
-    esac
-    if timeout 2 systemctl is-active --quiet "$unit" 2>/dev/null; then
-        printf 'ok'
-        return
-    fi
-    active_rc=$?
-    if (( active_rc == 124 )); then
+    # Capture rcs explicitly. `if cmd; then …; fi; rc=$?` does NOT preserve
+    # the condition's exit status when the body is skipped — bash sets $? to
+    # 0 in that case. Short-circuit on `timeout` rc 124 from either probe so
+    # a stalled dbus does not double the wall-clock budget per unit.
+    enabled="$(timeout 2 systemctl is-enabled "$unit" 2>/dev/null)"
+    enabled_rc=$?
+    if (( enabled_rc == 124 )); then
         printf 'timeout'
         return
     fi
     case "$enabled" in
+        masked) printf 'masked'; return ;;
+    esac
+
+    timeout 2 systemctl is-active --quiet "$unit" 2>/dev/null
+    active_rc=$?
+    case "$active_rc" in
+        0)   printf 'ok';      return ;;
+        124) printf 'timeout'; return ;;
+    esac
+    case "$enabled" in
         disabled) printf 'disabled' ;;
-        *) printf 'fail' ;;
+        *)        printf 'fail' ;;
     esac
 }
 
