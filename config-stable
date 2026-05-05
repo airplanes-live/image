@@ -15,13 +15,13 @@ export STAGE_LIST="${STAGE_LIST:-${BASE_DIR:-.}/stage0 ${BASE_DIR:-.}/stage1 ${B
 export DEPLOY_COMPRESSION="${DEPLOY_COMPRESSION:-xz}"
 export IMG_SUFFIX="${IMG_SUFFIX:-}"
 
-# Ship sshd up but with password auth off; let cloud-init's ssh_pwauth
-# directive (emitted by rpi-imager only when the user explicitly enables
-# SSH + password auth in Edit Settings) flip PasswordAuthentication on via
-# cc_set_passwords. This makes the v2.0.x customization flow reach working
-# SSH (the bare `enable_ssh: true` flag the imager emits is a no-op nobody
-# handles, fixed upstream in 2c428de4 but not in any released imager as of
-# v2.0.8). Posture per case:
+# Ship sshd enabled so rpi-imager's v2.0.x customization can reach a working
+# SSH posture (the bare `enable_ssh: true` flag the imager emits is a no-op
+# nobody handles — fixed upstream in 2c428de4 but not yet released as of
+# v2.0.8). Password auth stays off in shipped sshd_config via
+# stage-airplanes/00-prep/02-run.sh dropping
+# /etc/ssh/sshd_config.d/90-airplanes.conf; cloud-init's 50-cloud-init.conf
+# wins lexical order when ssh_pwauth is emitted. Posture per case:
 #   - SSH off + user/pass set     → user created, sshd up but pwauth off,
 #                                   no key dropped → no SSH access (matches
 #                                   "password is for console only" intent)
@@ -31,7 +31,6 @@ export IMG_SUFFIX="${IMG_SUFFIX:-}"
 #                                   --disabled-login, no creds → sshd
 #                                   reachable but unauthenticatable
 export ENABLE_SSH="${ENABLE_SSH:-1}"
-export PUBKEY_ONLY_SSH="${PUBKEY_ONLY_SSH:-1}"
 
 # Pinned SHAs. Bump in lockstep with PRs that have been validated on dev.
 # Resolution helpers (run before bumping):

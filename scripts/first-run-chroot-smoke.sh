@@ -173,4 +173,14 @@ if grep -E '^WIFI_' "$ROOT_MNT/etc/airplanes/feed.env"; then
 	echo "WIFI_* keys leaked into feed.env"; exit 1
 fi
 
+echo "==> asserting SSH posture drop-in is shipped"
+SSHD_DROPIN="$ROOT_MNT/etc/ssh/sshd_config.d/90-airplanes.conf"
+[[ -f "$SSHD_DROPIN" ]] || { echo "missing $SSHD_DROPIN"; exit 1; }
+grep -Eq '^[[:space:]]*PasswordAuthentication[[:space:]]+no[[:space:]]*$' "$SSHD_DROPIN" \
+	|| { echo "PasswordAuthentication no missing from drop-in"; exit 1; }
+grep -Eq '^[[:space:]]*KbdInteractiveAuthentication[[:space:]]+no[[:space:]]*$' "$SSHD_DROPIN" \
+	|| { echo "KbdInteractiveAuthentication no missing from drop-in"; exit 1; }
+grep -Eq '^[[:space:]]*PubkeyAuthentication[[:space:]]+yes[[:space:]]*$' "$SSHD_DROPIN" \
+	|| { echo "PubkeyAuthentication yes missing from drop-in"; exit 1; }
+
 echo "OK: feeder-id=$FEEDER_ID, boot-config merge confirmed, WiFi keyfile written, no leaks"
