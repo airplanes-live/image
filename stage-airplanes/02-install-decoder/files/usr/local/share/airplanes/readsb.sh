@@ -22,7 +22,7 @@ args=(
 	--lat "$LATITUDE"
 	--lon "$LONGITUDE"
 	--max-range 600
-	--aircraft-update-interval 0.5
+	--write-json-every 0.5
 	--json-location-accuracy 2
 	--write-json-globe-index
 	--globe-history-dir /var/globe_history
