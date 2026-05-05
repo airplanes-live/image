@@ -168,7 +168,7 @@ echo "==> asserting HOSTNAME applied to /etc/hostname and /etc/hosts"
 HN_ACTUAL="$(tr -d '\n\r' < "$ROOT_MNT/etc/hostname")"
 [[ "$HN_ACTUAL" == "ci-smoke-feeder" ]] \
 	|| { echo "/etc/hostname not updated: got '$HN_ACTUAL'"; exit 1; }
-grep -qP '^127\.0\.1\.1\s+ci-smoke-feeder(\b|$)' "$ROOT_MNT/etc/hosts" \
+grep -qP '^127\.0\.1\.1\s+ci-smoke-feeder(\s|$)' "$ROOT_MNT/etc/hosts" \
 	|| { echo "/etc/hosts 127.0.1.1 line not updated"; cat "$ROOT_MNT/etc/hosts" >&2; exit 1; }
 
 echo "==> asserting HOSTNAME line did NOT leak into feed.env on disk"
