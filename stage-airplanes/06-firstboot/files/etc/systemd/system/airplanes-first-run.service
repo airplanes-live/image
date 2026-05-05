@@ -6,8 +6,12 @@ ConditionPathExists=!/var/lib/airplanes/first-run-done
 # when NM starts and autoconnects. After=systemd-rfkill.service keeps us
 # behind the rfkill state restore. feed.env merge / feeder-id / 978 toggle
 # are all local file ops that don't need network either.
+#
+# Before=avahi-daemon.service lighttpd.service so apply_hostname's
+# /etc/hostname + hostnamectl run before mDNS broadcasts the system name and
+# before lighttpd serves its first response with hostname-derived headers.
 After=local-fs.target systemd-rfkill.service
-Before=NetworkManager.service network-pre.target
+Before=NetworkManager.service network-pre.target avahi-daemon.service lighttpd.service
 Wants=local-fs.target
 
 [Service]

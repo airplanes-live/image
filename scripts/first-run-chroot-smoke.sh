@@ -98,12 +98,16 @@ echo "==> seeding airplanes-config.txt with real values"
 # assert the merge into feed.env actually lands user-set keys (not just
 # "feed.env still parses"). DUMP978=no is the sentinel, must NOT propagate.
 # WIFI_PASSWORD (typo) seeded to verify it does NOT leak into feed.env.
+# FEED_HOST seeded to verify expand_feed_host runs end-to-end: derived
+# MLATSERVER and TARGET must land in feed.env, and FEED_HOST itself must NOT.
 cat > "$ROOT_MNT/boot/firmware/airplanes-config.txt" <<'CFG'
 LATITUDE=51.5
 LONGITUDE=-0.1
 ALTITUDE=42m
 USER=ci-smoke
 DUMP978=no
+HOSTNAME=ci-smoke-feeder
+FEED_HOST=test.local
 WIFI_SSID="Test Net"
 WIFI_PASS="hunter22-secret"
 WIFI_COUNTRY=DE
@@ -143,14 +147,34 @@ echo "==> asserting first-run-done marker exists"
 	|| { echo "first-run-done marker missing"; exit 1; }
 
 echo "==> asserting feed.env merged the seeded boot config"
-unset LATITUDE LONGITUDE ALTITUDE USER
+unset LATITUDE LONGITUDE ALTITUDE USER MLATSERVER TARGET FEED_HOST
 # shellcheck source=/dev/null
 ( set -a; source "$ROOT_MNT/etc/airplanes/feed.env"; set +a; \
 	[[ "$LATITUDE" == "51.5" ]] || { echo "LATITUDE not merged: $LATITUDE"; exit 1; }; \
 	[[ "$LONGITUDE" == "-0.1" ]] || { echo "LONGITUDE not merged: $LONGITUDE"; exit 1; }; \
 	[[ "$ALTITUDE" == "42m" ]] || { echo "ALTITUDE not merged: $ALTITUDE"; exit 1; }; \
-	[[ "$USER" == "ci-smoke" ]] || { echo "USER not merged: $USER"; exit 1; } \
+	[[ "$USER" == "ci-smoke" ]] || { echo "USER not merged: $USER"; exit 1; }; \
+	[[ "$MLATSERVER" == "test.local:31090" ]] || { echo "MLATSERVER not derived from FEED_HOST: $MLATSERVER"; exit 1; }; \
+	[[ "$TARGET" == "--net-connector test.local,30004,beast_reduce_plus_out" ]] || { echo "TARGET not derived from FEED_HOST: $TARGET"; exit 1; }; \
+	[[ -z "${FEED_HOST:-}" ]] || { echo "FEED_HOST leaked into feed.env: $FEED_HOST"; exit 1; } \
 ) || { echo "feed.env merge assertions failed"; exit 1; }
+
+echo "==> asserting FEED_HOST line did NOT leak into feed.env on disk"
+if grep -E '^FEED_HOST=' "$ROOT_MNT/etc/airplanes/feed.env"; then
+	echo "FEED_HOST= line present in feed.env"; exit 1
+fi
+
+echo "==> asserting HOSTNAME applied to /etc/hostname and /etc/hosts"
+HN_ACTUAL="$(tr -d '\n\r' < "$ROOT_MNT/etc/hostname")"
+[[ "$HN_ACTUAL" == "ci-smoke-feeder" ]] \
+	|| { echo "/etc/hostname not updated: got '$HN_ACTUAL'"; exit 1; }
+grep -qP '^127\.0\.1\.1\tci-smoke-feeder(\b|$)' "$ROOT_MNT/etc/hosts" \
+	|| { echo "/etc/hosts 127.0.1.1 line not updated"; cat "$ROOT_MNT/etc/hosts" >&2; exit 1; }
+
+echo "==> asserting HOSTNAME line did NOT leak into feed.env on disk"
+if grep -E '^HOSTNAME=' "$ROOT_MNT/etc/airplanes/feed.env"; then
+	echo "HOSTNAME= line present in feed.env"; exit 1
+fi
 
 echo "==> asserting WiFi keyfile generated and locked down"
 WIFI_KEYFILE="$ROOT_MNT/etc/NetworkManager/system-connections/airplanes-config-wifi.nmconnection"
