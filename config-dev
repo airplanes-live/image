@@ -20,6 +20,17 @@ export DEPLOY_COMPRESSION="${DEPLOY_COMPRESSION:-xz}"
 export COMPRESSION_LEVEL="${COMPRESSION_LEVEL:-1}"
 export IMG_SUFFIX="${IMG_SUFFIX:-}"
 
+# Match stock Raspberry Pi OS Trixie: ship sshd enabled. Required for the
+# rpi-imager 2.0.x "Edit Settings → Enable SSH" flow to actually work — that
+# toggle emits `enable_ssh: true` which neither cloud-init nor
+# rpi-cloud-init-mods handle (a no-op flag, fixed upstream in commit 2c428de4
+# but not in any released imager as of v2.0.8). With sshd already enabled,
+# the imager's `users:` block (user + password + ssh_authorized_keys) is
+# enough to log in. No-customization flashes still have a `pi` user with
+# disabled login (no password set), so an enabled sshd has no exploitable
+# account until cloud-init or webconfig provisions one.
+export ENABLE_SSH="${ENABLE_SSH:-1}"
+
 # Branch-tracking on dev — moving target by design, catches upstream drift early.
 export AIRPLANES_FEED_REPO="${AIRPLANES_FEED_REPO:-https://github.com/airplanes-live/feed.git}"
 export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-dev}"
