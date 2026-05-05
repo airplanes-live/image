@@ -1,3 +1,14 @@
+<p align="center">
+  <a href="https://airplanes.live"><img src=".github/assets/airplanes-live-logo.png" alt="airplanes.live" width="420"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/airplanes-live/image/actions/workflows/ci.yml"><img src="https://github.com/airplanes-live/image/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
+  <a href="https://github.com/airplanes-live/image/actions/workflows/build-image.yml"><img src="https://github.com/airplanes-live/image/actions/workflows/build-image.yml/badge.svg?branch=dev" alt="Build image"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/airplanes-live/image?color=blue" alt="License"></a>
+  <a href="https://github.com/airplanes-live/image/releases"><img src="https://img.shields.io/github/v/release/airplanes-live/image?include_prereleases&display_name=tag&label=release" alt="Latest release"></a>
+</p>
+
 # airplanes.live feeder image
 
 Raspberry Pi image for feeding ADS-B (1090 MHz) and optionally UAT (978 MHz) data to [airplanes.live](https://airplanes.live). Includes readsb (decoder), mlat-client, optional dump978-fa, tar1090 (live map), graphs1090 (stats), and a web UI for configuration.
