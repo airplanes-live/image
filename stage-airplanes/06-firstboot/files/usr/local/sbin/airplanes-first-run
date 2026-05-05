@@ -19,6 +19,8 @@ DONE_MARKER="/var/lib/airplanes/first-run-done"
 CREATE_UUID="/usr/local/share/airplanes/git/create-uuid.sh"
 WIFI_KEYFILE_DIR="${WIFI_KEYFILE_DIR:-/etc/NetworkManager/system-connections}"
 WIFI_KEYFILE="${WIFI_KEYFILE:-${WIFI_KEYFILE_DIR}/airplanes-config-wifi.nmconnection}"
+HOSTNAME_FILE="${HOSTNAME_FILE:-/etc/hostname}"
+HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 
 # Sentinel values map to "user has not configured this" — they exist so the
 # template parses, not so they get propagated into feed.env. USER is not
@@ -249,6 +251,101 @@ apply_wifi_country() {
 	mv -fT "$tmp_wpa" "$wpa" || { rm -f "$tmp_wpa"; return 1; }
 }
 
+# Set the system hostname from BOOT_CFG[HOSTNAME] if specified. Updates
+# /etc/hostname (atomic write) and the 127.0.1.1 entry in /etc/hosts so mDNS
+# broadcasts the right name. Best-effort runtime apply via hostnamectl —
+# chroot-mode and bats test mode skip the live apply silently.
+#
+# Format: a single-label RFC 1123 hostname (1-63 bytes, letters/digits/hyphens,
+# no leading or trailing hyphen, no dots). Multi-label names like foo.local
+# are rejected — mDNS adds .local automatically; multi-feeder users want short
+# names like 'airplanes-feeder' or 'feeder1' here.
+#
+# Idempotent: skips if HOSTNAME already matches /etc/hostname. HOSTNAME is a
+# synthetic key (not consumed by feed scripts), so it's stripped from BOOT_CFG
+# regardless of whether the apply succeeded.
+apply_hostname() {
+	local raw="${BOOT_CFG[HOSTNAME]:-}"
+	[[ -n "$raw" ]] || return 0
+
+	if (( ${#raw} > 63 )) || [[ ! "$raw" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+		log "rejecting invalid HOSTNAME=$raw (need 1-63 char RFC 1123 single-label hostname; do not include .local)"
+		unset 'BOOT_CFG[HOSTNAME]'
+		return 0
+	fi
+
+	local current=""
+	if [[ -f "$HOSTNAME_FILE" ]]; then
+		current="$(tr -d '\n\r' < "$HOSTNAME_FILE")"
+	fi
+
+	if [[ "$current" == "$raw" ]]; then
+		unset 'BOOT_CFG[HOSTNAME]'
+		return 0
+	fi
+
+	# /etc/hostname: atomic write. Drop the synthetic key on any hard failure
+	# so downstream merge_feed_env doesn't see HOSTNAME and treat it as a
+	# regular feed.env key.
+	local tmp_hn
+	tmp_hn="$(mktemp "${HOSTNAME_FILE}.tmp.XXXXXX")" || {
+		log "failed mktemp for $HOSTNAME_FILE"
+		unset 'BOOT_CFG[HOSTNAME]'
+		return 1
+	}
+	printf '%s\n' "$raw" > "$tmp_hn" || {
+		rm -f "$tmp_hn"
+		log "failed writing $HOSTNAME_FILE tmp"
+		unset 'BOOT_CFG[HOSTNAME]'
+		return 1
+	}
+	chmod 0644 "$tmp_hn"
+	if ! mv -fT "$tmp_hn" "$HOSTNAME_FILE"; then
+		rm -f "$tmp_hn"
+		log "failed renaming $HOSTNAME_FILE"
+		unset 'BOOT_CFG[HOSTNAME]'
+		return 1
+	fi
+
+	# /etc/hosts: rewrite the 127.0.1.1 line that maps to the OLD hostname,
+	# preserving any aliases that follow. Skip if the file is missing or we
+	# don't know the previous hostname (can't safely guess which line to edit).
+	if [[ -n "$current" && -f "$HOSTS_FILE" ]]; then
+		local tmp_hosts line
+		tmp_hosts="$(mktemp "${HOSTS_FILE}.tmp.XXXXXX")" || {
+			log "failed mktemp for $HOSTS_FILE; leaving stale /etc/hosts entry"
+			unset 'BOOT_CFG[HOSTNAME]'
+			return 0
+		}
+		while IFS= read -r line || [[ -n "$line" ]]; do
+			# Capture: anchor 127.0.1.1, whitespace, hostname (group 1),
+			# everything after (group 2 — aliases or trailing whitespace).
+			# String-match (not regex) on group 1 against $current — quoted
+			# RHS in [[ ]] makes == a literal compare.
+			if [[ "$line" =~ ^127\.0\.1\.1[[:space:]]+([^[:space:]]+)(.*)$ ]] \
+				&& [[ "${BASH_REMATCH[1]}" == "$current" ]]; then
+				printf '127.0.1.1\t%s%s\n' "$raw" "${BASH_REMATCH[2]}" >> "$tmp_hosts"
+			else
+				printf '%s\n' "$line" >> "$tmp_hosts"
+			fi
+		done < "$HOSTS_FILE"
+		chmod 0644 "$tmp_hosts"
+		mv -fT "$tmp_hosts" "$HOSTS_FILE" || {
+			rm -f "$tmp_hosts"
+			log "failed renaming $HOSTS_FILE"
+		}
+	fi
+
+	# Best-effort runtime apply. Chroot/test mode without systemd-hostnamed
+	# returns non-zero — silently fine since the next boot picks up
+	# /etc/hostname directly.
+	if command -v hostnamectl >/dev/null 2>&1; then
+		hostnamectl set-hostname "$raw" 2>/dev/null || true
+	fi
+
+	unset 'BOOT_CFG[HOSTNAME]'
+}
+
 # Synthesize MLATSERVER and TARGET from a user-friendly FEED_HOST shorthand.
 # FEED_HOST itself is a synthetic key — not consumed by airplanes-feed.sh /
 # airplanes-mlat.sh — so we strip it from BOOT_CFG after expansion. (A
@@ -407,6 +504,7 @@ main() {
 			if ! apply_wifi_country; then
 				log "failed to apply WiFi country code; continuing"
 			fi
+			apply_hostname || true
 			expand_feed_host
 			if (( ${#BOOT_CFG[@]} > 0 )); then
 				if ! merge_feed_env; then

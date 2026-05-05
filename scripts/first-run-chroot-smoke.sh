@@ -106,6 +106,7 @@ LONGITUDE=-0.1
 ALTITUDE=42m
 USER=ci-smoke
 DUMP978=no
+HOSTNAME=ci-smoke-feeder
 FEED_HOST=test.local
 WIFI_SSID="Test Net"
 WIFI_PASS="hunter22-secret"
@@ -161,6 +162,18 @@ unset LATITUDE LONGITUDE ALTITUDE USER MLATSERVER TARGET FEED_HOST
 echo "==> asserting FEED_HOST line did NOT leak into feed.env on disk"
 if grep -E '^FEED_HOST=' "$ROOT_MNT/etc/airplanes/feed.env"; then
 	echo "FEED_HOST= line present in feed.env"; exit 1
+fi
+
+echo "==> asserting HOSTNAME applied to /etc/hostname and /etc/hosts"
+HN_ACTUAL="$(tr -d '\n\r' < "$ROOT_MNT/etc/hostname")"
+[[ "$HN_ACTUAL" == "ci-smoke-feeder" ]] \
+	|| { echo "/etc/hostname not updated: got '$HN_ACTUAL'"; exit 1; }
+grep -qP '^127\.0\.1\.1\tci-smoke-feeder(\b|$)' "$ROOT_MNT/etc/hosts" \
+	|| { echo "/etc/hosts 127.0.1.1 line not updated"; cat "$ROOT_MNT/etc/hosts" >&2; exit 1; }
+
+echo "==> asserting HOSTNAME line did NOT leak into feed.env on disk"
+if grep -E '^HOSTNAME=' "$ROOT_MNT/etc/airplanes/feed.env"; then
+	echo "HOSTNAME= line present in feed.env"; exit 1
 fi
 
 echo "==> asserting WiFi keyfile generated and locked down"

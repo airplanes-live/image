@@ -22,9 +22,10 @@ Flash the image to the microSD card with any tool (`dd`, balenaEtcher, Win32 Dis
 
 - `LATITUDE`, `LONGITUDE`, `ALTITUDE` — your receiver's location (decimal degrees, WGS84). MLAT requires accurate values.
 - `USER` — your MLAT display name (shows up on airplanes.live).
+- `HOSTNAME` — set this if you run more than one Pi on your network (otherwise they'll all collide on `raspberrypi.local`). E.g. `HOSTNAME=airplanes-feeder` makes the Pi reachable at `airplanes-feeder.local`.
 - `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY` — only if you're not on Ethernet.
 
-Eject, insert into the Pi, connect SDR + antenna, power on. After ~2 minutes the feeder is online — browse to `http://raspberrypi.local/` to verify and tweak via the web UI.
+Eject, insert into the Pi, connect SDR + antenna, power on. After ~2 minutes the feeder is online — browse to `http://<hostname>.local/` (or `http://raspberrypi.local/` if you didn't set `HOSTNAME`) to verify and tweak via the web UI.
 
 The boot config file is read **once** on first boot; later edits don't apply (use the web UI for ongoing changes).
 

@@ -21,6 +21,13 @@ ALTITUDE=0m
 # feeder is identifiable on the map; the default below is a generic placeholder.
 USER=airplanes-live-image
 
+# Optional: override the network hostname so you can reach this Pi as
+# <hostname>.local instead of raspberrypi.local. Useful if you run multiple
+# Pis on the same network. Single-label only (no dots, no .local suffix —
+# mDNS adds it automatically). 1-63 chars, letters/digits/hyphens, no
+# leading or trailing hyphen.
+#HOSTNAME=airplanes-feeder
+
 # Enable 978 MHz UAT (US-only; second SDR required). yes|no.
 # Convention: flash the 978 dongle's serial via:
 #   sudo apt install rtl-sdr && rtl_eeprom -s 00000978
