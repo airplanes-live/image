@@ -431,6 +431,15 @@ grep -q 'unclaimed' "$SNAP_OUT" \
 if grep -E -q '[0-9a-f]{32,}' "$SNAP_OUT"; then
     fail "snapshot leaked a 32+ hex-char run (possible secret read)"
 fi
+# Real claim secrets are 16 uppercase A-Z0-9 (apl-feed validate_secret),
+# displayed by `claim show` as XXXX-XXXX-XXXX-XXXX. Defense-in-depth match
+# on both shapes catches a regression that started reading the secret file.
+if grep -E -q '[A-Z0-9]{16}' "$SNAP_OUT"; then
+    fail "snapshot leaked a 16-uppercase-alnum run (claim secret format)"
+fi
+if grep -E -q '([A-Z0-9]{4}-){3}[A-Z0-9]{4}' "$SNAP_OUT"; then
+    fail "snapshot leaked an XXXX-XXXX-XXXX-XXXX run (displayed secret form)"
+fi
 if grep -q 'feeder-claim-secret' "$SNAP_OUT"; then
     fail "snapshot leaked the literal string 'feeder-claim-secret'"
 fi

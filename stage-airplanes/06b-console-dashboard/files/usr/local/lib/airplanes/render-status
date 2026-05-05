@@ -94,43 +94,58 @@ read_build_short_sha() {
 
 # Mirror the canonical parser in webconfig/internal/feedenv/feedenv.go:
 # match `^\s*KEY=(?:"value"|unquoted)\s*$`, never `source` the file.
-# Whitelist callers; here only LATITUDE / LONGITUDE / USER are needed.
+# Last-wins on duplicate keys (matches the Go parser's loop, which keeps
+# overwriting `out[key]`). Whitelist callers; here only LATITUDE / LONGITUDE
+# / USER are needed.
 read_feed_env_var() {
-    local key="$1" line val
+    local key="$1" line val have=0
     [[ -r "$PATHS_FEED_ENV" ]] || return 0
     case "$key" in
         LATITUDE|LONGITUDE|USER) ;;
         *) return 0 ;;  # whitelist
     esac
+    val=""
     while IFS= read -r line; do
         if [[ "$line" =~ ^[[:space:]]*${key}=\"([^\"]*)\"[[:space:]]*$ ]]; then
             val="${BASH_REMATCH[1]}"
-            printf '%s' "$val"
-            return 0
+            have=1
+            continue
         fi
-        if [[ "$line" =~ ^[[:space:]]*${key}=([^[:space:]\#]*)[[:space:]]*$ ]]; then
+        if [[ "$line" =~ ^[[:space:]]*${key}=([^[:space:]]*)[[:space:]]*$ ]]; then
             val="${BASH_REMATCH[1]}"
-            printf '%s' "$val"
-            return 0
+            have=1
         fi
     done < "$PATHS_FEED_ENV"
-    return 0
+    if (( have )); then
+        printf '%s' "$val"
+    fi
 }
 
-# Claim state. NEVER reads secret contents; existence-check only.
+# Claim state. NEVER reads secret contents; existence-check only. Mirrors
+# the file lifecycle in feed/scripts/apl-feed/claim.sh: register writes
+# .pending then mv's it to the final secret on success, so .pending without
+# a final secret means a registration was started but not confirmed; rotate
+# writes .pending alongside an existing final secret.
 # States:
-#   unclaimed                 — no secret file
-#   secret-saved              — secret present, no version recorded yet
-#   registered (vN)           — secret + version file (last known register OK)
-#   rotation-pending          — .pending file present (operator started rotate)
-#   * always-prefer the most-actionable hint
+#   unclaimed                 — no secret, no pending: never registered
+#   registration-pending      — .pending exists, no final secret
+#   rotation-pending          — .pending exists AND final secret exists
+#   registered (vN)           — final secret + version file
+#   secret-saved              — final secret without version file
 claim_state() {
     local version
-    if [[ -f "$PATHS_CLAIM_PENDING" ]]; then
-        printf 'rotation-pending'
+    local has_final=0 has_pending=0
+    [[ -f "$PATHS_CLAIM_SECRET" ]] && has_final=1
+    [[ -f "$PATHS_CLAIM_PENDING" ]] && has_pending=1
+    if (( has_pending )); then
+        if (( has_final )); then
+            printf 'rotation-pending'
+        else
+            printf 'registration-pending'
+        fi
         return
     fi
-    if [[ ! -f "$PATHS_CLAIM_SECRET" ]]; then
+    if (( ! has_final )); then
         printf 'unclaimed'
         return
     fi
@@ -145,14 +160,19 @@ claim_state() {
 }
 
 # True (rc 0) if the airplanes-mlat wrapper would early-exit with "MLAT
-# DISABLED + sleep 3600". Mirrors feed/scripts/airplanes-mlat.sh:37.
+# DISABLED + sleep 3600". Exactly mirrors the sentinel checks in
+# feed/scripts/airplanes-mlat.sh:37 — LAT/LON==0 or USER in {0, disable}.
+# Notably USER=changeme is NOT treated as disabled here: the upstream
+# wrapper will still exec mlat-client with that name (the server then
+# rejects it). Use the lat/lon=0 sentinel + the explicit MLAT-warning
+# banner to communicate "you have not configured this".
 mlat_disabled_by_config() {
     local lat lon user
     lat="$(read_feed_env_var LATITUDE)"
     lon="$(read_feed_env_var LONGITUDE)"
     user="$(read_feed_env_var USER)"
     [[ "${lat:-0}" == "0" || "${lon:-0}" == "0" \
-        || "$user" == "0" || "$user" == "disable" || "$user" == "changeme" ]]
+        || "$user" == "0" || "$user" == "disable" ]]
 }
 
 # Service state. Bounded by `timeout 2` so stalled dbus / systemd cannot
@@ -173,7 +193,7 @@ unit_state() {
         masked) printf 'masked'; return ;;
         disabled|static) ;;  # fall through; check is-active
     esac
-    if timeout 2 systemctl is-active --quiet "$unit"; then
+    if timeout 2 systemctl is-active --quiet "$unit" 2>/dev/null; then
         printf 'ok'
         return
     fi
@@ -273,10 +293,15 @@ render_once() {
     claim="$(claim_state)"
     urls="$(read_local_urls)"
 
-    # Aircraft + msgs/sec
+    # Aircraft + msgs/sec. Validate counters are unsigned-int strings before
+    # bash arithmetic — readsb's contract is integers, but defending here
+    # means a corrupted aircraft.json (e.g. "messages":"bad", "messages":1.5)
+    # cannot crash the renderer under set -u.
     local snap cnt msgs now mps='-'
     snap="$(read_aircraft_snapshot)"
     IFS='|' read -r cnt msgs now <<< "$snap"
+    [[ "$msgs" =~ ^[0-9]+$ ]] || msgs=""
+    [[ "$now" =~ ^[0-9]+(\.[0-9]+)?$ ]] || now=""
 
     if [[ "$mode" != "snapshot" ]] \
         && [[ -n "$msgs" && -n "$now" \
@@ -284,7 +309,12 @@ render_once() {
         local d_msgs d_t
         d_msgs=$(( msgs - PREV_MSGS ))
         d_t="$(awk -v a="$now" -v b="$PREV_TS" 'BEGIN{printf "%.3f", a-b}')"
-        if awk -v dt="$d_t" 'BEGIN{exit (dt<=0)}'; then
+        # readsb restart resets the messages counter, producing a negative
+        # delta. Don't print a bogus negative rate; show "-" and let the
+        # next tick re-baseline.
+        if (( d_msgs < 0 )); then
+            mps='-'
+        elif awk -v dt="$d_t" 'BEGIN{exit (dt<=0)}'; then
             mps="$(awk -v m="$d_msgs" -v dt="$d_t" \
                 'BEGIN{printf "%.1f", m/dt}')"
         fi
@@ -355,11 +385,13 @@ render_once() {
 
 claim_color() {
     case "$1" in
-        registered*)        printf '%b%s%b' "$C_OK" "$1" "$C_RESET" ;;
-        secret-saved)       printf '%b%s%b' "$C_WARN" "$1" "$C_RESET" ;;
-        rotation-pending)   printf '%b%s%b' "$C_WARN" "$1" "$C_RESET" ;;
-        *)                  printf '%b%s%b — sudo apl-feed claim register' \
-                                "$C_WARN" "$1" "$C_RESET" ;;
+        registered*)
+            printf '%b%s%b' "$C_OK" "$1" "$C_RESET" ;;
+        secret-saved|rotation-pending|registration-pending)
+            printf '%b%s%b' "$C_WARN" "$1" "$C_RESET" ;;
+        *)
+            printf '%b%s%b — sudo apl-feed claim register' \
+                "$C_WARN" "$1" "$C_RESET" ;;
     esac
 }
 

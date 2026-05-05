@@ -22,7 +22,11 @@ jobs:
           shopt -s globstar nullglob
           mapfile -d '' files < <(
             find scripts stage-airplanes test -type f \
-              \( -name '*.sh' -o -name 'systemctl-stub' -o -name 'airplanes-first-run' \) \
+              \( -name '*.sh' \
+                 -o -name 'systemctl-stub' \
+                 -o -name 'airplanes-first-run' \
+                 -o -name 'render-status' \
+                 -o -name '10-airplanes-status' \) \
               -print0
           )
           if (( ${#files[@]} == 0 )); then
@@ -37,6 +41,8 @@ jobs:
           for f in scripts/systemctl-stub scripts/*.sh \
                    stage-airplanes/**/*.sh \
                    stage-airplanes/**/files/**/airplanes-first-run \
+                   stage-airplanes/**/files/**/render-status \
+                   stage-airplanes/**/files/**/10-airplanes-status \
                    test/*.sh; do
             [[ -e "$f" ]] || continue
             bash -n "$f"
@@ -176,6 +182,8 @@ jobs:
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.timer \
               "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/06b-console-dashboard/files/etc/systemd/system/*.service \
+              "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/02-install-decoder/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/05-install-webconfig/files/etc/systemd/system/*.service \
@@ -188,8 +196,9 @@ jobs:
           install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-first-run"
           install -m 0755 /dev/null "$ROOT/usr/local/bin/apl-feed"
           install -m 0755 /dev/null "$ROOT/usr/local/bin/airplanes-webconfig"
-          mkdir -p "$ROOT/usr/local/lib/airplanes-webconfig"
+          mkdir -p "$ROOT/usr/local/lib/airplanes-webconfig" "$ROOT/usr/local/lib/airplanes"
           install -m 0755 /dev/null "$ROOT/usr/local/lib/airplanes-webconfig/reset"
+          install -m 0755 /dev/null "$ROOT/usr/local/lib/airplanes/render-status"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/readsb.sh"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/airplanes-978.sh"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/dump978-fa.sh"
@@ -214,6 +223,7 @@ jobs:
               airplanes-claim.service \
               airplanes-claim.timer \
               airplanes-rfkill-unblock.service \
+              airplanes-dashboard.service \
               readsb.service \
               dump978-fa.service \
               airplanes-978.service \
