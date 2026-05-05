@@ -7,6 +7,11 @@
 # Format: KEY=value or KEY="value" (one per line, # for comments).
 # Sentinel defaults below are placeholders meaning "not configured" — they
 # are NOT propagated into the running config.
+#
+# WiFi credentials are NOT configured here. Use rpi-imager's "Edit Settings"
+# (Wireless LAN tab) before flashing, or wire the feeder via Ethernet for
+# first boot. Tools that flash the .img.xz directly (dd, Etcher, Win32 Disk
+# Imager) bypass the WiFi customization step — those flows need Ethernet.
 
 # Receiver location (decimal degrees, WGS84). MLAT requires accurate values.
 LATITUDE=0

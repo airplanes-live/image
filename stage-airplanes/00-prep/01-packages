@@ -26,3 +26,4 @@ collectd-core
 unzip
 wget
 bash-builtins
+rfkill
