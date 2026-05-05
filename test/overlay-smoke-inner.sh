@@ -345,6 +345,15 @@ if compgen -G '/var/lib/systemd/rfkill/*:wlan*' >/dev/null; then
     fail "stage 06 did not clear /var/lib/systemd/rfkill/*:wlan*"
 fi
 
+# release-channel pin: stage 06 writes the AIRPLANES_FEED_BRANCH this image
+# was built from so feed/update.sh fetches runtime updates from the matching
+# branch instead of defaulting to feed/main on dev images.
+[[ -f /etc/airplanes/release-channel ]] || fail "release-channel missing"
+[[ "$(stat -c %a /etc/airplanes/release-channel)" == "644" ]] \
+    || fail "release-channel mode != 0644"
+[[ "$(cat /etc/airplanes/release-channel)" == "$AIRPLANES_FEED_BRANCH" ]] \
+    || fail "release-channel content does not match AIRPLANES_FEED_BRANCH"
+
 # Build-manifest sentinels written by stages 00 + 01 (rest are checked above).
 [[ -s /etc/airplanes/.build-pi-gen-sha ]] || fail ".build-pi-gen-sha missing or empty"
 [[ -s /etc/airplanes/.build-airplanes-readsb-sha ]] || fail ".build-airplanes-readsb-sha missing or empty"

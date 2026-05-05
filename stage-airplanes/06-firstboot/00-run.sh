@@ -24,6 +24,32 @@ install -d -m 755 "${ROOTFS_DIR}/usr/local/sbin"
 install -m 755 files/usr/local/sbin/airplanes-first-run \
 	"${ROOTFS_DIR}/usr/local/sbin/airplanes-first-run"
 
+# Pin the runtime-update branch to the channel this image was built from, so
+# `apl-feed update` (which invokes feed/update.sh) doesn't silently fall back
+# to feed/main on a dev image. update.sh reads this file as the fallback for
+# AIRPLANES_FEED_BRANCH; without it the script defaults to "main" regardless
+# of channel. The file is image-identity, not user state — feed.env stays
+# user-editable.
+#
+# Allowlist mirrors the feed-side validation: only main / dev. Refusing to
+# ship a bogus pin here surfaces release-config typos at build time instead
+# of at every operator's update.
+case "${AIRPLANES_FEED_BRANCH:-}" in
+	main|dev) ;;
+	"")
+		echo "AIRPLANES_FEED_BRANCH unset; refusing to ship release-channel" >&2
+		exit 1
+		;;
+	*)
+		echo "AIRPLANES_FEED_BRANCH=${AIRPLANES_FEED_BRANCH} not in {main, dev}; refusing to ship release-channel" >&2
+		exit 1
+		;;
+esac
+install -d -m 755 "${ROOTFS_DIR}/etc/airplanes"
+printf '%s\n' "${AIRPLANES_FEED_BRANCH}" \
+	> "${ROOTFS_DIR}/etc/airplanes/release-channel"
+chmod 0644 "${ROOTFS_DIR}/etc/airplanes/release-channel"
+
 # pi-gen's export-image stage copies ${ROOTFS_DIR}/boot/firmware/* onto the
 # FAT partition during image assembly, so writing the template here lands it
 # on partition 1 where SD-card editors can reach it.
