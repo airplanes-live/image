@@ -109,3 +109,35 @@ jobs:
           name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
           path: deploy/
           if-no-files-found: error
+
+  cleanup-dev-artifacts:
+    # Keep only the newest image-dev-arm64 artifact. Without this, every dev
+    # push leaves a ~700MB artifact behind for the default 90-day retention,
+    # piling up to hundreds of GB. Gated to canonical dev pushes so manual
+    # workflow_dispatch runs (even with channel=dev) can't delete the latest.
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && success()
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Delete prior dev-channel artifacts, keep newest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Materialize the full list before deleting: --paginate runs --jq
+          # per page, so without --slurp we'd keep the newest *per page* rather
+          # than newest overall, and concurrent producer/consumer over a mutable
+          # collection can skip pages mid-pagination.
+          mapfile -t artifact_ids < <(
+            gh api --paginate --slurp \
+              "repos/$REPO/actions/artifacts?name=image-dev-arm64&per_page=100" \
+              --jq 'map(.artifacts[]) | sort_by(.created_at) | reverse | .[1:] | .[].id'
+          )
+          for id in "${artifact_ids[@]}"; do
+            [[ "$id" =~ ^[0-9]+$ ]] || { echo "Unexpected artifact id: $id" >&2; exit 1; }
+            echo "Deleting artifact $id"
+            gh api --method DELETE "repos/$REPO/actions/artifacts/$id"
+          done
