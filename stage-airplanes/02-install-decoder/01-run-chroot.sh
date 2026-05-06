@@ -48,7 +48,7 @@ fi
 adduser readsb plugdev || true
 adduser readsb dialout || true
 
-# tar1090's heatmap + coverage history reads from --globe-history-dir.
+# readsb writes heatmap + coverage history here (--write-globe-history); tar1090 reads it.
 install -d -m 0755 -o readsb -g readsb /var/globe_history
 
 # 4. Enable readsb. 978 services stay disabled (first-run enables on DUMP978=yes).

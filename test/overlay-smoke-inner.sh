@@ -172,8 +172,8 @@ have_enable_link airplanes-978.service \
 # Stage 02 fuller-features wiring (consumed by tar1090 heatmap/coverage).
 grep -q -- '--write-json-globe-index' /usr/local/share/airplanes/readsb.sh \
     || fail "readsb.sh missing --write-json-globe-index"
-grep -q -- '--globe-history-dir' /usr/local/share/airplanes/readsb.sh \
-    || fail "readsb.sh missing --globe-history-dir"
+grep -q -- '--write-globe-history' /usr/local/share/airplanes/readsb.sh \
+    || fail "readsb.sh missing --write-globe-history"
 # Regression guard: --aircraft-update-interval is a flightaware/dump1090-fa
 # flag, not a wiedehopf/readsb flag. We pass --write-json-every instead.
 # Crashlooped readsb in a real-Pi flash test before this guard existed.
