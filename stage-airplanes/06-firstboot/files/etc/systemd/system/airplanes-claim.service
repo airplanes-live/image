@@ -7,3 +7,41 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/apl-feed claim register
+
+# Sandboxing. The unit must run as root (writes /etc/airplanes/ and chowns
+# the resulting claim-state files to airplanes-feed:airplanes-feed; the dir
+# stays root-owned because feed.env is shell-sourced as root by update.sh
+# and a daemon-writable /etc/airplanes/ would let a compromised airplanes-
+# feed escalate via planted shell metacharacters in feed.env). The
+# directives below shrink the blast radius of root for this oneshot.
+ProtectSystem=strict
+ReadWritePaths=/etc/airplanes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# Network for HTTPS POST to airplanes.live, AF_UNIX for nsswitch / journal.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# CAP_CHOWN: chown_claim_state hands the secret over to
+# airplanes-feed:airplanes-feed.
+# CAP_FOWNER: write_secret_file chmods 0640 AFTER chowning, so the chmod
+# target is owned by airplanes-feed (not root) — without CAP_FOWNER, root
+# can't change the mode on a non-owned file.
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER
+# On a retry where a previous register left a pending file behind,
+# claim_register reads the pending file (mode 0640 group=airplanes-feed)
+# before re-publishing. Without group membership, root would need
+# CAP_DAC_READ_SEARCH; SupplementaryGroups is the surgical fix.
+SupplementaryGroups=airplanes-feed
