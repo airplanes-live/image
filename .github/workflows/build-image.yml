@@ -73,25 +73,6 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af || true
 
-      # APT cache: apt-cacher-ng on the host runner serves debootstrap and every
-      # in-chroot apt-get install over localhost. Pi-gen's stage0/00-configure-apt
-      # writes /etc/apt/apt.conf.d/51cache (Acquire::http::Proxy = $APT_PROXY) into
-      # the chroot, and export-image/02-set-sources removes that file before the
-      # final dist-upgrade so the shipped image has no proxy reference.
-      #
-      # Cache key uses run_id to force a save every run (GitHub cache entries are
-      # immutable per key); restore-keys walk back from "same package set" to
-      # "any prior arm64 run" so we get the warmest available start.
-      - name: Restore APT cache
-        id: apt-cache-restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: /var/cache/apt-cacher-ng
-          key: apt-cacher-ng-${{ matrix.arch }}-${{ hashFiles('**/*packages*', 'config-dev', 'config-stable', 'stage0/00-configure-apt/files/**', 'depends') }}-${{ github.run_id }}
-          restore-keys: |
-            apt-cacher-ng-${{ matrix.arch }}-${{ hashFiles('**/*packages*', 'config-dev', 'config-stable', 'stage0/00-configure-apt/files/**', 'depends') }}-
-            apt-cacher-ng-${{ matrix.arch }}-
-
       - name: Install pi-gen build dependencies
         run: |
           sudo apt-get update
@@ -107,14 +88,39 @@ jobs:
               apt-cacher-ng
           sudo ln -sf /bin/true /usr/local/bin/qemu-arm
 
+      # APT cache: apt-cacher-ng on the host runner serves debootstrap and every
+      # in-chroot apt-get install over localhost. Pi-gen's stage0/00-configure-apt
+      # writes /etc/apt/apt.conf.d/51cache (Acquire::http::Proxy = $APT_PROXY) into
+      # the chroot, and export-image/02-set-sources removes that file before the
+      # image is finalized — so the shipped /etc/apt has no proxy reference even
+      # though the final dist-upgrade still inherits http_proxy from the build env.
+      #
+      # Cache key uses run_id to force a save every run (GitHub cache entries are
+      # immutable per key); restore-keys walk back from "same package set" to
+      # "any prior arm64 run" so we get the warmest available start. Restore runs
+      # after the package install so the target dir already exists; pre-chown to
+      # the runner is needed because actions/cache writes as the unprivileged user.
+      - name: Pre-restore APT cache permissions
+        run: sudo chown -R "$(id -u):$(id -g)" /var/cache/apt-cacher-ng
+
+      - name: Restore APT cache
+        id: apt-cache-restore
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /var/cache/apt-cacher-ng
+          key: apt-cacher-ng-${{ matrix.arch }}-${{ hashFiles('**/*packages*', 'config-dev', 'config-stable', 'stage0/00-configure-apt/files/**', 'depends') }}-${{ github.run_id }}
+          restore-keys: |
+            apt-cacher-ng-${{ matrix.arch }}-${{ hashFiles('**/*packages*', 'config-dev', 'config-stable', 'stage0/00-configure-apt/files/**', 'depends') }}-
+            apt-cacher-ng-${{ matrix.arch }}-
+
       - name: Start apt-cacher-ng
         run: |
           set -euo pipefail
           echo "cache restore hit: ${{ steps.apt-cache-restore.outputs.cache-hit || 'false' }}"
-          # actions/cache restored as runner; daemon needs apt-cacher-ng ownership.
-          if [[ -d /var/cache/apt-cacher-ng ]]; then
-            sudo chown -R apt-cacher-ng:apt-cacher-ng /var/cache/apt-cacher-ng
-          fi
+          # Bind localhost only — chroot shares the host network namespace and
+          # can still reach 127.0.0.1, so we don't need to expose the proxy.
+          echo 'BindAddress: 127.0.0.1' | sudo tee /etc/apt-cacher-ng/conf.d/zz-ci-bind.conf > /dev/null
+          sudo chown -R apt-cacher-ng:apt-cacher-ng /var/cache/apt-cacher-ng
           sudo systemctl start apt-cacher-ng
           for _ in $(seq 1 30); do
             if curl -sf http://127.0.0.1:3142/acng-report.html > /dev/null; then
@@ -157,8 +163,10 @@ jobs:
           sudo systemctl stop apt-cacher-ng || true
           sudo chown -R "$(id -u):$(id -g)" /var/cache/apt-cacher-ng || true
 
+      # Save only on the success path. Saving on always() can poison the cache
+      # for future runs if the build failed mid-fetch and left partial files.
       - name: Save APT cache
-        if: always() && steps.apt-cache-restore.outputs.cache-primary-key != ''
+        if: steps.apt-cache-restore.outputs.cache-primary-key != ''
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /var/cache/apt-cacher-ng
