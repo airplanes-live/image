@@ -145,7 +145,24 @@ jobs:
           DEPLOY_COMPRESSION: xz
           IMG_SUFFIX: ""
           APT_PROXY: http://127.0.0.1:3142
-        run: sudo -E ./build.sh -c "config-$CHANNEL"
+        # Ubuntu's default sudoers strips most env vars (env_reset + a small
+        # env_keep). Passing APT_PROXY=<val> on the sudo command line bypasses
+        # that and guarantees pi-gen sees it.
+        run: sudo APT_PROXY="$APT_PROXY" -E ./build.sh -c "config-$CHANNEL"
+
+      # Sanity check: if APT_PROXY did not propagate into the chroot, no apt
+      # traffic reached the daemon and the cache populates with nothing — silent
+      # failure mode that looks like "cache is just slow to warm up". Force a
+      # loud failure so a future regression in env propagation is caught.
+      - name: Verify apt-cacher-ng saw build traffic
+        run: |
+          set -euo pipefail
+          files=$(sudo find /var/cache/apt-cacher-ng -type f | wc -l)
+          echo "apt-cacher-ng cache file count: $files"
+          if [ "$files" -lt 50 ]; then
+            echo "FAIL: apt-cacher-ng saw too little traffic ($files files); APT_PROXY likely not reaching the chroot" >&2
+            exit 1
+          fi
 
       - name: Per-cell rootfs smoke
         env:
