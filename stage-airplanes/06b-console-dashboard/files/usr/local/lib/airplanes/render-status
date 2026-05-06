@@ -442,12 +442,13 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             render_once live
             ;;
         --live|*)
-            # Cursor home + render frame + erase-to-end-of-screen — less
-            # flicker than \e[2J\e[H (full clear then home).
+            # Full clear before every frame (\e[H = home, \e[J = erase from
+            # cursor → end of screen). Without this, lines that get shorter
+            # between frames (e.g. `aircraft: 1234` → `aircraft: 1`) leave
+            # stale trailing characters from the previous render.
             while :; do
-                printf '%s[H' "$ESC"
+                printf '%s[H%s[J' "$ESC" "$ESC"
                 render_once live
-                printf '%s[J' "$ESC"
                 sleep 5
             done
             ;;

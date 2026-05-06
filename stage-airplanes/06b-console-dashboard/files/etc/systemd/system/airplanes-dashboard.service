@@ -3,14 +3,26 @@ Description=airplanes.live console dashboard on /dev/tty1
 Documentation=https://github.com/airplanes-live/image
 ConditionPathExists=/dev/tty1
 Conflicts=getty@tty1.service
-After=systemd-vconsole-setup.service systemd-user-sessions.service
-After=getty@tty1.service airplanes-first-run.service
+# Defer until the system has reached a steady state: boot/systemd output is
+# done, so the handoff to the dashboard is on a clean screen rather than
+# painting over a half-printed boot log.
+After=multi-user.target systemd-vconsole-setup.service systemd-user-sessions.service
+After=airplanes-first-run.service
 # Crashloop guard (StartLimit* belong in [Unit], not [Service]).
 StartLimitIntervalSec=120
 StartLimitBurst=3
 
 [Service]
 Type=simple
+# sleep: coarse grace for late kmsg (USB enumeration, rfkill, NM late events)
+# that arrives after multi-user.target. Generous; multi-user→quiet is sub-
+# second in practice but the budget is free.
+ExecStartPre=/usr/bin/sleep 6
+# `-` prefix → best-effort. setterm clears whatever boot output reached the
+# VT and disables kernel printk-on-VT for tty1 only (`--msg off` is per-VT,
+# so the serial console on serial0,115200 is unaffected). A failure here
+# does not block the dashboard from starting.
+ExecStartPre=-/usr/bin/setterm --term linux --clear all --msg off
 ExecStart=/usr/local/lib/airplanes/render-status --live
 Restart=on-failure
 RestartSec=10s
@@ -37,4 +49,4 @@ ProtectControlGroups=yes
 LockPersonality=yes
 
 [Install]
-WantedBy=getty.target
+WantedBy=multi-user.target

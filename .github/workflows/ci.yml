@@ -222,6 +222,11 @@ jobs:
           install -m 0755 /dev/null "$ROOT/usr/share/graphs1090/service.sh"
           install -m 0755 /dev/null "$ROOT/usr/share/graphs1090/service-graphs1090.sh"
           install -m 0755 /dev/null "$ROOT/usr/sbin/rfkill"
+          # util-linux / coreutils binaries referenced by ExecStartPre= in
+          # airplanes-dashboard.service (sleep grace + setterm to clear the
+          # VT and mute kernel printk on tty1).
+          install -m 0755 /dev/null "$ROOT/usr/bin/sleep"
+          install -m 0755 /dev/null "$ROOT/usr/bin/setterm"
           # Default env files referenced by EnvironmentFile=
           mkdir -p "$ROOT/etc/default"
           : > "$ROOT/etc/default/tar1090"

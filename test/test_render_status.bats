@@ -559,6 +559,23 @@ EOF
     grep -qE 'msgs/s: 1\.0' "$frame2"
 }
 
+# ---- live mode framing -----------------------------------------------------
+#
+# Regression guard for the "duplicate lines" bug: --live must emit a full
+# clear (\e[H\e[J) before every frame. Without it, lines that get shorter
+# between frames leave stale trailing characters from the previous render.
+
+@test "live: first frame begins with full clear (\\e[H\\e[J)" {
+    OUT="$TMP/live-out"
+    # SIGTERM the infinite loop after 1s — easily enough for the first frame
+    # (single render_once + entering sleep). `|| true` because timeout exits
+    # 124/143 on signal.
+    timeout 1 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
+    expected=$'\033[H\033[J'
+    actual="$(head -c 6 "$OUT" 2>/dev/null)"
+    [ "$actual" = "$expected" ]
+}
+
 # ---- MOTD wrapper env-scrub guard ------------------------------------------
 #
 # pam_motd inherits the user's session env. Without scrubbing, a logged-in
