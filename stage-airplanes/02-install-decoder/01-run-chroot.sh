@@ -7,14 +7,20 @@ set -e
 # install scripts call directly; legitimate enable/disable/mask pass through.
 export PATH="/usr/local/sbin:${PATH}"
 
-# 1. Compile wiedehopf readsb. -j2 is QEMU-safe (matches feed convention; -j$(nproc)
-# OOMs on armhf qemu-user emulation).
+# armhf qemu-user emulation OOMs above -j2; native arm64 handles -j$(nproc).
+if dpkg --print-architecture | grep -qs armhf; then
+	build_jobs=2
+else
+	build_jobs="$(nproc)"
+fi
+
+# 1. Compile wiedehopf readsb.
 cd /usr/local/src/airplanes-readsb-build
 if dpkg --print-architecture | grep -qs armhf; then
-	make -j2 AIRCRAFT_HASH_BITS=12 RTLSDR=yes \
+	make -j"$build_jobs" AIRCRAFT_HASH_BITS=12 RTLSDR=yes \
 		OPTIMIZE="-O2 -marm -mcpu=arm1176jzf-s -mfpu=vfp"
 else
-	make -j2 AIRCRAFT_HASH_BITS=12 RTLSDR=yes
+	make -j"$build_jobs" AIRCRAFT_HASH_BITS=12 RTLSDR=yes
 fi
 install -m 0755 readsb /usr/bin/readsb
 install -m 0755 viewadsb /usr/bin/viewadsb
@@ -24,7 +30,7 @@ ln -f /usr/bin/readsb /usr/bin/airplanes-978
 # 2. Compile flightaware dump978. Build only the dump978-fa target; skyaware978
 # is FA's standalone dashboard which we don't ship.
 cd /usr/local/src/airplanes-dump978-build
-make -j2 dump978-fa
+make -j"$build_jobs" dump978-fa
 install -m 0755 dump978-fa /usr/bin/dump978-fa
 # Defensive build-time check for unresolved boost/soapy/usb libs.
 if ldd /usr/bin/dump978-fa | grep -q 'not found'; then
