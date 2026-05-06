@@ -78,6 +78,21 @@ echo "==> mounting FAT ${LOOP_DEV}p1 -> $ROOT_MNT/boot/firmware"
 mkdir -p "$ROOT_MNT/boot/firmware"
 mount "${LOOP_DEV}p1" "$ROOT_MNT/boot/firmware"
 
+# Regression guard: a build-time APT_PROXY (e.g. apt-cacher-ng on the CI runner)
+# routes all in-chroot apt traffic through 127.0.0.1:3142 via 51cache. Pi-gen's
+# export-image/02-set-sources removes 51cache before the final dist-upgrade so
+# the shipped /etc/apt has no proxy reference. Catches any future change that
+# leaks the proxy config into the baked image.
+echo "==> asserting no APT proxy artifacts baked into shipped /etc/apt"
+if [[ -e "$ROOT_MNT/etc/apt/apt.conf.d/51cache" ]]; then
+	echo "FAIL: /etc/apt/apt.conf.d/51cache leaked into shipped rootfs" >&2
+	exit 1
+fi
+if grep -RIns -E '127\.0\.0\.1:3142|apt-cacher-ng' "$ROOT_MNT/etc/apt/" 2>/dev/null; then
+	echo "FAIL: APT proxy references found in shipped /etc/apt" >&2
+	exit 1
+fi
+
 if [[ -n "$QEMU_BIN" ]]; then
 	echo "==> staging $QEMU_BIN"
 	QEMU_COPIED="$ROOT_MNT/usr/bin/$QEMU_BIN"

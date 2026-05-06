@@ -73,6 +73,25 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af || true
 
+      # APT cache: apt-cacher-ng on the host runner serves debootstrap and every
+      # in-chroot apt-get install over localhost. Pi-gen's stage0/00-configure-apt
+      # writes /etc/apt/apt.conf.d/51cache (Acquire::http::Proxy = $APT_PROXY) into
+      # the chroot, and export-image/02-set-sources removes that file before the
+      # final dist-upgrade so the shipped image has no proxy reference.
+      #
+      # Cache key uses run_id to force a save every run (GitHub cache entries are
+      # immutable per key); restore-keys walk back from "same package set" to
+      # "any prior arm64 run" so we get the warmest available start.
+      - name: Restore APT cache
+        id: apt-cache-restore
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /var/cache/apt-cacher-ng
+          key: apt-cacher-ng-${{ matrix.arch }}-${{ hashFiles('**/*packages*', 'config-dev', 'config-stable', 'stage0/00-configure-apt/files/**', 'depends') }}-${{ github.run_id }}
+          restore-keys: |
+            apt-cacher-ng-${{ matrix.arch }}-${{ hashFiles('**/*packages*', 'config-dev', 'config-stable', 'stage0/00-configure-apt/files/**', 'depends') }}-
+            apt-cacher-ng-${{ matrix.arch }}-
+
       - name: Install pi-gen build dependencies
         run: |
           sudo apt-get update
@@ -84,8 +103,29 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
               quilt parted debootstrap \
               zerofree zip dosfstools libarchive-tools libcap2-bin rsync \
-              xz-utils file bc qemu-utils kpartx gpg pigz xxd arch-test
+              xz-utils file bc qemu-utils kpartx gpg pigz xxd arch-test \
+              apt-cacher-ng
           sudo ln -sf /bin/true /usr/local/bin/qemu-arm
+
+      - name: Start apt-cacher-ng
+        run: |
+          set -euo pipefail
+          echo "cache restore hit: ${{ steps.apt-cache-restore.outputs.cache-hit || 'false' }}"
+          # actions/cache restored as runner; daemon needs apt-cacher-ng ownership.
+          if [[ -d /var/cache/apt-cacher-ng ]]; then
+            sudo chown -R apt-cacher-ng:apt-cacher-ng /var/cache/apt-cacher-ng
+          fi
+          sudo systemctl start apt-cacher-ng
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3142/acng-report.html > /dev/null; then
+              echo "apt-cacher-ng ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "apt-cacher-ng failed to come up within 30s" >&2
+          sudo systemctl status apt-cacher-ng --no-pager >&2 || true
+          exit 1
 
       - name: Build
         env:
@@ -94,6 +134,7 @@ jobs:
           ARCHIVE_FILENAME: airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}
           DEPLOY_COMPRESSION: xz
           IMG_SUFFIX: ""
+          APT_PROXY: http://127.0.0.1:3142
         run: sudo -E ./build.sh -c "config-$CHANNEL"
 
       - name: Per-cell rootfs smoke
@@ -104,6 +145,24 @@ jobs:
 
       - name: First-run chroot smoke
         run: sudo -E bash scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz"
+
+      # Stop daemon cleanly before reading the cache dir; flushes pending writes.
+      # Hit/miss line is logged for cache-effectiveness tracking across runs.
+      - name: Stop apt-cacher-ng and log stats
+        if: always()
+        run: |
+          curl -sf "http://127.0.0.1:3142/acng-report.html" 2>/dev/null \
+            | grep -E 'Hits|Misses|Cache size|Bytes transferred' \
+            || echo "could not fetch acng stats"
+          sudo systemctl stop apt-cacher-ng || true
+          sudo chown -R "$(id -u):$(id -g)" /var/cache/apt-cacher-ng || true
+
+      - name: Save APT cache
+        if: always() && steps.apt-cache-restore.outputs.cache-primary-key != ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /var/cache/apt-cacher-ng
+          key: ${{ steps.apt-cache-restore.outputs.cache-primary-key }}
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
