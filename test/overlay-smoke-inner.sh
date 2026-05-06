@@ -14,6 +14,9 @@ echo "==> stage-airplanes/00-prep/00-run.sh"
 echo "==> stage-airplanes/00-prep/03-run.sh (mask first-boot prompts)"
 ( cd /image/stage-airplanes/00-prep && bash 03-run.sh )
 
+echo "==> stage-airplanes/00-prep/04-run.sh (force cloud-init debian distro)"
+( cd /image/stage-airplanes/00-prep && bash 04-run.sh )
+
 echo "==> stage-airplanes/01-install-feed/00-run.sh (clone feed)"
 ( cd /image/stage-airplanes/01-install-feed && bash 00-run.sh )
 
@@ -126,6 +129,14 @@ for masked_unit in userconfig.service systemd-firstboot.service; do
     [[ "$(readlink "/etc/systemd/system/$masked_unit")" == "/dev/null" ]] \
         || fail "$masked_unit symlink does not point at /dev/null"
 done
+
+# 04-run.sh forces cloud-init off raspberry_pi_os Distro. Without this,
+# cc_users_groups blows up on the masked getty@tty1 (06b) and SSH keys from
+# rpi-imager customisation never reach /home/<user>/.ssh.
+distro_dropin=/etc/cloud/cloud.cfg.d/99-airplanes-distro-debian.cfg
+[[ -f $distro_dropin ]] || fail "$distro_dropin missing"
+grep -qE '^[[:space:]]*distro:[[:space:]]+debian[[:space:]]*$' "$distro_dropin" \
+    || fail "$distro_dropin does not select debian distro"
 
 # Stage 02 outputs (decoder + 978).
 [[ -x /usr/bin/readsb ]] || fail "readsb binary missing"
