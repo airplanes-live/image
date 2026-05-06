@@ -411,6 +411,9 @@ echo "==> 06b post-install assertions"
 [[ -s /usr/local/share/airplanes/logo.txt ]] || fail "logo.txt missing or empty"
 [[ "$(stat -c %a /usr/local/share/airplanes/logo.txt)" == "644" ]] \
     || fail "logo.txt mode != 0644"
+[[ -s /usr/local/share/airplanes/banner.txt ]] || fail "banner.txt missing or empty"
+[[ "$(stat -c %a /usr/local/share/airplanes/banner.txt)" == "644" ]] \
+    || fail "banner.txt mode != 0644"
 [[ -f /etc/systemd/system/airplanes-dashboard.service ]] \
     || fail "airplanes-dashboard.service missing"
 [[ -f /etc/systemd/system/getty@tty1.service.d/override.conf ]] \
