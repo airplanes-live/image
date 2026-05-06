@@ -5,10 +5,11 @@
 // so no shell-out is needed.
 //
 // /api/identity/secret (POST, authed) returns the full claim secret. The
-// secret file is /etc/airplanes/feeder-claim-secret, mode 0600 — webconfig
-// (running as airplanes-webconfig) can't read it directly. Reveal goes
-// through `sudo -n -u airplanes-feed /usr/local/bin/apl-feed claim show`
-// whose argv is pinned in /etc/sudoers.d.
+// secret file is /etc/airplanes/feeder-claim-secret, mode 0600 root:root —
+// webconfig (running as airplanes-webconfig) can't read it directly. Reveal
+// goes through `sudo -n -u root /usr/local/bin/apl-feed claim show` whose
+// argv is pinned in /etc/sudoers.d, so the privilege bump is bounded to one
+// read-only command.
 package identity
 
 import (
@@ -36,7 +37,7 @@ func DefaultPaths() Paths {
 		FeederIDFile:    "/etc/airplanes/feeder-id",
 		ClaimSecretFile: "/etc/airplanes/feeder-claim-secret",
 		APLFeedSudoArgv: []string{
-			"/usr/bin/sudo", "-n", "-u", "airplanes-feed",
+			"/usr/bin/sudo", "-n", "-u", "root",
 			"/usr/local/bin/apl-feed", "claim", "show",
 		},
 	}

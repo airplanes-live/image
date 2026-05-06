@@ -6,7 +6,7 @@
 # sudoers ""-after-command form forces "no arguments" on apply-config so
 # even sudo's relaxed default cannot let extra args slip in.
 
-airplanes-webconfig ALL=(airplanes-feed) NOPASSWD: /usr/local/bin/apl-feed claim show
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/local/bin/apl-feed claim show
 airplanes-webconfig ALL=(root) NOPASSWD: /usr/local/lib/airplanes-webconfig/apply-config ""
 
 airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl restart airplanes-feed.service

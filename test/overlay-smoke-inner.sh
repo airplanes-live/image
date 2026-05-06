@@ -292,11 +292,12 @@ file /usr/local/lib/airplanes-webconfig/apply-config | grep -q 'ARM aarch64' \
 grep -Eq '^d /run/airplanes 0755 root root' /usr/lib/tmpfiles.d/airplanes-webconfig.conf \
     || fail "tmpfiles.d snippet wrong shape"
 
-# Sudoers expected set: claim-show pinned to the airplanes-feed daemon user
-# (the runas), plus apply-config + every systemctl verb the write handlers
-# use + reboot + systemd-run.
+# Sudoers expected set: claim-show runs as root (the secret file is root:root
+# 0600; argv is pinned by sudoers so the privilege bump is bounded to one
+# read-only command), plus apply-config + every systemctl verb the write
+# handlers use + reboot + systemd-run.
 for entry in \
-    '(airplanes-feed) NOPASSWD: /usr/local/bin/apl-feed claim show' \
+    '(root) NOPASSWD: /usr/local/bin/apl-feed claim show' \
     'apply-config' \
     'systemctl restart airplanes-feed.service' \
     'systemctl restart airplanes-mlat.service' \
@@ -337,6 +338,26 @@ getent group airplanes-webconfig >/dev/null \
     || fail "/etc/airplanes/webconfig perms != 0700"
 [[ "$(stat -c %U /etc/airplanes/webconfig)" == "airplanes-webconfig" ]] \
     || fail "/etc/airplanes/webconfig owner != airplanes-webconfig"
+
+# End-to-end sudo-chain reveal: webconfig drops to airplanes-webconfig, then
+# elevates to root via the pinned sudoers entry. Catches regressions in
+# either side (sudoers entry, identity.go default argv, apl-feed CLI output
+# format) at PR time. Production layout is root:root 0600 for the secret
+# file because airplanes-claim.service runs as root.
+install -d -m 0755 /etc/airplanes
+printf '%s\n' 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' > /etc/airplanes/feeder-id
+chmod 0644 /etc/airplanes/feeder-id
+printf '%s\n' 'ABCD1234EFGH5678' > /etc/airplanes/feeder-claim-secret
+chmod 0600 /etc/airplanes/feeder-claim-secret
+if ! reveal_out=$(runuser -u airplanes-webconfig -- \
+        /usr/bin/sudo -n -u root /usr/local/bin/apl-feed claim show 2>&1); then
+    fail "sudo-chain reveal failed: $reveal_out"
+fi
+grep -q '^Feeder ID: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee$' <<<"$reveal_out" \
+    || fail "claim show feeder-id line wrong: $reveal_out"
+grep -q '^Claim secret: ABCD-1234-EFGH-5678$' <<<"$reveal_out" \
+    || fail "claim show secret line wrong: $reveal_out"
+rm -f /etc/airplanes/feeder-id /etc/airplanes/feeder-claim-secret
 
 # Stage 06 outputs.
 [[ -x /usr/local/sbin/airplanes-first-run ]] || fail "airplanes-first-run entrypoint missing"

@@ -148,11 +148,11 @@ func TestParseClaimShow_IgnoresUnknownLines(t *testing.T) {
 // Pin the runas user that the production sudoers entry permits. If anything
 // here drifts, the shipped sudoers won't authorise the call and reveal
 // breaks silently. Catches a rename on either side of the contract.
-func TestDefaultPaths_SudoArgvRunsAsAirplanesFeed(t *testing.T) {
+func TestDefaultPaths_SudoArgvRunsAsRoot(t *testing.T) {
 	t.Parallel()
 	argv := DefaultPaths().APLFeedSudoArgv
 	want := []string{
-		"/usr/bin/sudo", "-n", "-u", "airplanes-feed",
+		"/usr/bin/sudo", "-n", "-u", "root",
 		"/usr/local/bin/apl-feed", "claim", "show",
 	}
 	if len(argv) != len(want) {
