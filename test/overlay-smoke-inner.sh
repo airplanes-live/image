@@ -292,11 +292,11 @@ file /usr/local/lib/airplanes-webconfig/apply-config | grep -q 'ARM aarch64' \
 grep -Eq '^d /run/airplanes 0755 root root' /usr/lib/tmpfiles.d/airplanes-webconfig.conf \
     || fail "tmpfiles.d snippet wrong shape"
 
-# Sudoers expected set: claim-show pinned to the airplanes-feed daemon user
-# (the runas), plus apply-config + every systemctl verb the write handlers
-# use + reboot + systemd-run.
+# Sudoers expected set: apply-config + every systemctl verb the write
+# handlers use + reboot + systemd-run. The reveal handler reads the claim
+# secret directly via airplanes-feed group membership (mode 0640) — no
+# sudoers entry required for `apl-feed claim show`.
 for entry in \
-    '(airplanes-feed) NOPASSWD: /usr/local/bin/apl-feed claim show' \
     'apply-config' \
     'systemctl restart airplanes-feed.service' \
     'systemctl restart airplanes-mlat.service' \
@@ -314,6 +314,13 @@ do
     grep -F -q "$entry" /etc/sudoers.d/010_airplanes-webconfig \
         || fail "sudoers missing entry: $entry"
 done
+
+# claim-show MUST NOT be in sudoers — webconfig reads the secret directly
+# via group permissions. A leftover entry would be dead config and an
+# unnecessary privilege surface.
+if grep -qF 'apl-feed claim show' /etc/sudoers.d/010_airplanes-webconfig; then
+    fail "sudoers still contains 'apl-feed claim show' — should be dropped after the group-read pivot"
+fi
 
 # webconfig.service ReadWritePaths must reach /etc/airplanes so the sudo
 # child (running as root) is allowed to write feed.env through the helper.
@@ -337,6 +344,33 @@ getent group airplanes-webconfig >/dev/null \
     || fail "/etc/airplanes/webconfig perms != 0700"
 [[ "$(stat -c %U /etc/airplanes/webconfig)" == "airplanes-webconfig" ]] \
     || fail "/etc/airplanes/webconfig owner != airplanes-webconfig"
+
+# airplanes-webconfig must be a member of the airplanes-feed group so the
+# reveal handler can read /etc/airplanes/feeder-claim-secret directly.
+id -nG airplanes-webconfig | tr ' ' '\n' | grep -qx airplanes-feed \
+    || fail "airplanes-webconfig not in airplanes-feed group"
+
+# webconfig.service must declare the supplementary group explicitly so the
+# runtime contract is self-documenting (and survives an /etc/group rewrite
+# between unit-load and process-start).
+grep -q '^SupplementaryGroups=airplanes-feed$' /etc/systemd/system/airplanes-webconfig.service \
+    || fail "airplanes-webconfig.service missing SupplementaryGroups=airplanes-feed"
+
+# End-to-end: drop a fake claim secret as airplanes-feed:airplanes-feed
+# mode 0640, then read it as airplanes-webconfig via group permissions.
+# Catches regressions in either side (file ownership/mode, group
+# membership) at PR time.
+install -d -m 0755 /etc/airplanes
+printf '%s\n' 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' > /etc/airplanes/feeder-id
+chmod 0644 /etc/airplanes/feeder-id
+printf '%s\n' 'ABCD1234EFGH5678' > /etc/airplanes/feeder-claim-secret
+chmod 0640 /etc/airplanes/feeder-claim-secret
+chown airplanes-feed:airplanes-feed /etc/airplanes/feeder-claim-secret
+read_out=$(runuser -u airplanes-webconfig -- cat /etc/airplanes/feeder-claim-secret 2>&1) \
+    || fail "airplanes-webconfig cannot read claim secret: $read_out"
+[[ "$read_out" == "ABCD1234EFGH5678" ]] \
+    || fail "claim secret read returned wrong content: $read_out"
+rm -f /etc/airplanes/feeder-id /etc/airplanes/feeder-claim-secret
 
 # Stage 06 outputs.
 [[ -x /usr/local/sbin/airplanes-first-run ]] || fail "airplanes-first-run entrypoint missing"
