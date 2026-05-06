@@ -4,6 +4,24 @@ Adds an ASCII-logo + status dashboard on `/dev/tty1` (refreshes every 5s)
 and the same dashboard as a one-shot snapshot at SSH login (via
 `update-motd.d`). Local console login moves to TTY2 (Alt+F2).
 
+The dashboard service is wired to `multi-user.target` and waits a brief
+grace period (`ExecStartPre=/bin/sleep 6`) before starting, so boot
+output finishes scrolling on TTY1 first and the dashboard takes over on
+a clean screen. A best-effort `setterm --msg off` then silences kernel
+printk-on-VT for `/dev/tty1` only (serial console on `serial0,115200` is
+unaffected) so late USB/rfkill kmsg can't bleed into the live display.
+
+The live-render loop emits a full clear (`\e[H\e[J`) before every frame
+so dashboard fields that get shorter between frames don't leave stale
+trailing characters on screen.
+
+The chroot stage also strips Debian / Raspberry Pi OS defaults that
+`pam_motd` would otherwise print at TTY2/SSH login: `/etc/motd` is reset
+to an empty file and the upstream `update-motd.d` hooks (`10-uname`,
+`00-header`, `10-help-text`, `50-motd-news`) are removed. Only
+`10-airplanes-status` runs, so login output is the dashboard and nothing
+else (besides sshd's own `Last login:` line, which is out of scope).
+
 ## What lands in the rootfs
 
 - `/usr/local/lib/airplanes/render-status` — bash renderer with three
@@ -12,7 +30,7 @@ and the same dashboard as a one-shot snapshot at SSH login (via
   systemd unit), `--once` (one-shot with screen clear).
 - `/usr/local/share/airplanes/logo.txt` — pre-rendered ASCII logo.
 - `/etc/systemd/system/airplanes-dashboard.service` — owns `/dev/tty1`,
-  `Conflicts=getty@tty1.service`, `WantedBy=getty.target`.
+  `Conflicts=getty@tty1.service`, `WantedBy=multi-user.target`.
 - `/etc/systemd/system/getty@tty1.service.d/override.conf` —
   defense-in-depth `Conflicts=airplanes-dashboard.service` if the mask is
   later cleared.

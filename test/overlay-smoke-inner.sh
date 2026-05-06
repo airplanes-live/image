@@ -387,6 +387,20 @@ fi
 echo "==> stage-airplanes/06b-console-dashboard/00-run.sh"
 ( cd /image/stage-airplanes/06b-console-dashboard && bash 00-run.sh )
 
+# Seed the Debian/Raspberry Pi OS default login-banner content that ships in
+# the real target rootfs but NOT in this debian:trixie-slim base. Without
+# this, the 01-run-chroot.sh cleanup assertions below would pass vacuously
+# (deleting a file that was never there).
+mkdir -p /etc/update-motd.d
+printf 'Debian GNU/Linux placeholder license blurb.\n' > /etc/motd
+for hook in 10-uname 00-header 10-help-text 50-motd-news; do
+    cat > "/etc/update-motd.d/$hook" <<HOOK
+#!/bin/sh
+echo "SEEDED-MOTD-HOOK-$hook"
+HOOK
+    chmod 0755 "/etc/update-motd.d/$hook"
+done
+
 echo "==> stage-airplanes/06b-console-dashboard/01-run-chroot.sh"
 ( cd /image/stage-airplanes/06b-console-dashboard && bash 01-run-chroot.sh )
 
@@ -411,10 +425,19 @@ grep -q '^TTYPath=/dev/tty1' /etc/systemd/system/airplanes-dashboard.service \
     || fail "dashboard service missing TTYPath=/dev/tty1"
 grep -q '^Conflicts=getty@tty1.service' /etc/systemd/system/airplanes-dashboard.service \
     || fail "dashboard service missing Conflicts=getty@tty1.service"
-grep -q '^WantedBy=getty.target' /etc/systemd/system/airplanes-dashboard.service \
-    || fail "dashboard service missing WantedBy=getty.target"
+grep -q '^WantedBy=multi-user.target' /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing WantedBy=multi-user.target"
+grep -Eq '^After=.*multi-user\.target' /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing After=multi-user.target"
 grep -q '^StartLimitIntervalSec=' /etc/systemd/system/airplanes-dashboard.service \
     || fail "dashboard service missing StartLimitIntervalSec"
+# Deferred-start machinery: sleep grace then best-effort kmsg-mute via setterm.
+grep -q '^ExecStartPre=/bin/sleep 6$' /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing ExecStartPre=/bin/sleep 6"
+grep -Eq '^ExecStartPre=-/usr/bin/setterm .*--clear all.*--msg off' \
+    /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing ExecStartPre=-/usr/bin/setterm with --clear all and --msg off"
+[[ -x /usr/bin/setterm ]] || fail "/usr/bin/setterm missing (util-linux base assumption)"
 
 # Getty@tty1 must be masked (symlinked to /dev/null) and NOT in
 # getty.target.wants/. Getty@tty2 must be in getty.target.wants/.
@@ -426,8 +449,29 @@ grep -q '^StartLimitIntervalSec=' /etc/systemd/system/airplanes-dashboard.servic
     || fail "stale getty@tty1.service wants symlink left behind"
 [[ -L /etc/systemd/system/getty.target.wants/getty@tty2.service ]] \
     || fail "getty@tty2.service enable symlink missing"
-[[ -L /etc/systemd/system/getty.target.wants/airplanes-dashboard.service ]] \
-    || fail "airplanes-dashboard.service enable symlink missing"
+# Dashboard's enable symlink moved from getty.target.wants/ to
+# multi-user.target.wants/ when WantedBy= was retargeted.
+[[ -L /etc/systemd/system/multi-user.target.wants/airplanes-dashboard.service ]] \
+    || fail "airplanes-dashboard.service enable symlink missing under multi-user.target.wants/"
+[[ ! -e /etc/systemd/system/getty.target.wants/airplanes-dashboard.service ]] \
+    || fail "stale airplanes-dashboard.service symlink left under getty.target.wants/"
+
+# Login-banner cleanup: /etc/motd is a regular empty file, default upstream
+# update-motd.d hooks are gone, and the only executable file remaining is
+# our 10-airplanes-status. The seeded payload sentinel must not appear.
+[[ -f /etc/motd && ! -L /etc/motd ]] || fail "/etc/motd is missing or a symlink"
+[[ "$(stat -c %s /etc/motd)" == "0" ]] || fail "/etc/motd is not empty"
+[[ "$(stat -c %a /etc/motd)" == "644" ]] || fail "/etc/motd mode != 0644"
+for hook in 10-uname 00-header 10-help-text 50-motd-news; do
+    [[ ! -e "/etc/update-motd.d/$hook" ]] \
+        || fail "seeded /etc/update-motd.d/$hook was not removed"
+done
+# Allowlist: nothing executable left under /etc/update-motd.d/ except ours.
+# Catches future Raspberry Pi OS additions we missed by name.
+unexpected="$(find /etc/update-motd.d -maxdepth 1 -type f -executable \
+    ! -name 10-airplanes-status -printf '%f\n')"
+[[ -z "$unexpected" ]] \
+    || fail "unexpected executables under /etc/update-motd.d/: $unexpected"
 
 # Renderer self-test: invoke --snapshot with every PATHS_* pointing at a
 # missing file. Must exit 0, render every section, and never leak a
