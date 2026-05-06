@@ -387,6 +387,65 @@ rm -f /etc/airplanes/feeder-id /etc/airplanes/feeder-claim-secret
 [[ -L /etc/systemd/system/multi-user.target.wants/airplanes-rfkill-unblock.service ]] \
     || fail "airplanes-rfkill-unblock.service enable symlink missing"
 
+# Hardening directives on the root-running stage-06 oneshots (airplanes-claim
+# and airplanes-first-run). Both must run as root because /etc/airplanes/ is
+# root-owned (deliberate — feed.env is shell-sourced as root by update.sh,
+# so a daemon-writable /etc/airplanes/ would let a compromised daemon
+# escalate). The systemd directives below shrink the blast radius of root
+# in those units.
+#
+# Common set both share:
+for unit in airplanes-claim.service airplanes-first-run.service; do
+    path=/etc/systemd/system/$unit
+    grep -q '^NoNewPrivileges=yes$' "$path" \
+        || fail "$unit missing NoNewPrivileges=yes"
+    grep -q '^ProtectHome=yes$' "$path" \
+        || fail "$unit missing ProtectHome=yes"
+    grep -q '^PrivateTmp=yes$' "$path" \
+        || fail "$unit missing PrivateTmp=yes"
+    grep -q '^ProtectKernelTunables=yes$' "$path" \
+        || fail "$unit missing ProtectKernelTunables=yes"
+    grep -q '^MemoryDenyWriteExecute=yes$' "$path" \
+        || fail "$unit missing MemoryDenyWriteExecute=yes"
+done
+
+# Claim service is tightly sandboxed: ProtectSystem=strict + a single
+# ReadWritePaths entry (only /etc/airplanes is mutated), CapabilityBoundingSet
+# limited to the two caps write_secret_file actually needs (CAP_CHOWN to
+# hand off to airplanes-feed, CAP_FOWNER to chmod after the chown), and
+# SupplementaryGroups=airplanes-feed so the retry path can read a pending
+# file already group-owned by airplanes-feed.
+claim=/etc/systemd/system/airplanes-claim.service
+grep -q '^ProtectSystem=strict$' "$claim" \
+    || fail "airplanes-claim.service missing ProtectSystem=strict"
+grep -q '^ReadWritePaths=/etc/airplanes$' "$claim" \
+    || fail "airplanes-claim.service missing ReadWritePaths=/etc/airplanes"
+grep -q '^CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER$' "$claim" \
+    || fail "airplanes-claim.service missing CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER"
+grep -q '^SupplementaryGroups=airplanes-feed$' "$claim" \
+    || fail "airplanes-claim.service missing SupplementaryGroups=airplanes-feed"
+grep -q '^RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX$' "$claim" \
+    || fail "airplanes-claim.service missing RestrictAddressFamilies for HTTPS POST"
+
+# First-run is sandboxed via ProtectSystem=full instead of strict: the
+# script touches many /etc subdirs (hostname, hosts, NetworkManager/,
+# wpa_supplicant/, default/, airplanes/) and writes-via-rename in /etc
+# itself; enumerating an exhaustive ReadWritePaths is brittle, so we let
+# /etc + /var stay writable while keeping /usr + /boot + /efi read-only.
+# Empty CapabilityBoundingSet (sethostname-fallback / raspi-config WiFi-
+# country path silently fail, primary hostnamectl + wpa_supplicant.conf
+# fallback paths don't need caps). PrivateNetwork=yes for defense in
+# depth (RestrictAddressFamilies=AF_UNIX already excludes inet sockets).
+firstrun=/etc/systemd/system/airplanes-first-run.service
+grep -q '^ProtectSystem=full$' "$firstrun" \
+    || fail "airplanes-first-run.service missing ProtectSystem=full"
+grep -q '^CapabilityBoundingSet=$' "$firstrun" \
+    || fail "airplanes-first-run.service missing empty CapabilityBoundingSet"
+grep -q '^RestrictAddressFamilies=AF_UNIX$' "$firstrun" \
+    || fail "airplanes-first-run.service missing RestrictAddressFamilies=AF_UNIX (dbus only)"
+grep -q '^PrivateNetwork=yes$' "$firstrun" \
+    || fail "airplanes-first-run.service missing PrivateNetwork=yes"
+
 # rfkill-unblock unit semantics: must order before NetworkManager.service,
 # must call `rfkill unblock wlan` (not `all`), and must clear NM.state.
 grep -q '^Before=.*NetworkManager\.service' /etc/systemd/system/airplanes-rfkill-unblock.service \
