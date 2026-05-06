@@ -17,7 +17,7 @@ Type=simple
 # sleep: coarse grace for late kmsg (USB enumeration, rfkill, NM late events)
 # that arrives after multi-user.target. Generous; multi-user→quiet is sub-
 # second in practice but the budget is free.
-ExecStartPre=/bin/sleep 6
+ExecStartPre=/usr/bin/sleep 6
 # `-` prefix → best-effort. setterm clears whatever boot output reached the
 # VT and disables kernel printk-on-VT for tty1 only (`--msg off` is per-VT,
 # so the serial console on serial0,115200 is unaffected). A failure here

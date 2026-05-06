@@ -432,8 +432,8 @@ grep -Eq '^After=.*multi-user\.target' /etc/systemd/system/airplanes-dashboard.s
 grep -q '^StartLimitIntervalSec=' /etc/systemd/system/airplanes-dashboard.service \
     || fail "dashboard service missing StartLimitIntervalSec"
 # Deferred-start machinery: sleep grace then best-effort kmsg-mute via setterm.
-grep -q '^ExecStartPre=/bin/sleep 6$' /etc/systemd/system/airplanes-dashboard.service \
-    || fail "dashboard service missing ExecStartPre=/bin/sleep 6"
+grep -q '^ExecStartPre=/usr/bin/sleep 6$' /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing ExecStartPre=/usr/bin/sleep 6"
 grep -Eq '^ExecStartPre=-/usr/bin/setterm .*--clear all.*--msg off' \
     /etc/systemd/system/airplanes-dashboard.service \
     || fail "dashboard service missing ExecStartPre=-/usr/bin/setterm with --clear all and --msg off"
