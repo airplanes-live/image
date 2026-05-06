@@ -24,6 +24,18 @@ visudo -cf /etc/sudoers.d/010_airplanes-webconfig
 # systemd-journal grants read access to the system journal without sudo.
 adduser airplanes-webconfig systemd-journal
 
+# Add airplanes-webconfig to the airplanes-feed group so the reveal handler
+# can read /etc/airplanes/feeder-claim-secret directly via group permissions
+# (mode 0640 group=airplanes-feed, set by feed/scripts/apl-feed/common.sh's
+# write_secret_file). Without this, the reveal would have to escalate via
+# sudo to a user that can read the file. Stage 01 ran feed install, which
+# creates the airplanes-feed user + group, so they exist by stage 05.
+#
+# Membership in airplanes-feed grants read access to the claim secret;
+# this is the only legitimate consumer added here. Adding other accounts
+# would broaden the read surface — don't.
+adduser airplanes-webconfig airplanes-feed
+
 # Enable mod_proxy via lighttpd's helper (handles dedup if another snippet
 # already loaded it) and link our snippet into conf-enabled.
 lighttpd-enable-mod proxy
