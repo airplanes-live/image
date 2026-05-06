@@ -43,6 +43,20 @@ Imager downloads and flashes the image for you. After first boot, browse to `htt
 
 You don't need to reflash. The [airplanes.live feed scripts](https://github.com/airplanes-live/feed) layer airplanes.live on top of an existing readsb setup (FlightAware, ADSBexchange, etc.).
 
+### Want a desktop GUI on the same Pi?
+
+This image is a headless appliance — no graphical environment. If you also want the Raspberry Pi OS desktop on the same Pi, don't flash this image; flash standard Raspberry Pi OS Desktop and layer the feeder stack on top.
+
+1. In [Raspberry Pi Imager](https://www.raspberrypi.com/software/), pick **Raspberry Pi OS (64-bit) with desktop** from the built-in OS list. Don't paste our Custom Repository URL here — that flashes the headless appliance.
+2. Boot the Pi, then install (in this order — each step depends on the one before it):
+   - [wiedehopf/readsb](https://github.com/wiedehopf/adsb-scripts/wiki/Automatic-installation-for-readsb) — the 1090 MHz decoder
+   - [wiedehopf/tar1090](https://github.com/wiedehopf/tar1090) — live map (requires readsb)
+   - [wiedehopf/graphs1090](https://github.com/wiedehopf/graphs1090) — performance graphs
+   - [airplanes-live/feed](https://github.com/airplanes-live/feed) — connects the decoder to `feed.airplanes.live`
+3. Configure receiver location, altitude, and MLAT display name by editing `/etc/airplanes/feed.env` directly. The appliance image's web admin UI is not part of this path.
+
+Recommended on Pi 4 and Pi 5. Pi 3 / 3B+ are not recommended once you also run a browser — expect swapping. Don't pair the desktop with the feeder stack on a Pi Zero 2 W (512 MB RAM); use the headless image on Zero 2 W.
+
 ## Configuration
 
 The web UI at `http://<hostname>.local/` is the recommended way to change settings after first boot:
