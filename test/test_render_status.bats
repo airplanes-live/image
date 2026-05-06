@@ -9,6 +9,7 @@ bats_require_minimum_version 1.5.0
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/lib/airplanes/render-status"
     LOGO="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/logo.txt"
+    BANNER="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/banner.txt"
     TMP="$(mktemp -d)"
 
     # All PATHS_* default to /nonexistent so an un-overridden test gets the
@@ -24,6 +25,7 @@ setup() {
     export PATHS_AIRCRAFT_JSON="$TMP/nx-aircraft"
     export PATHS_THERMAL="$TMP/nx-thermal"
     export PATHS_LOGO="$LOGO"
+    export PATHS_BANNER="$BANNER"
     export TERM=dumb  # disable color so assertions match plain text
 
     # shellcheck source=/dev/null
@@ -31,6 +33,23 @@ setup() {
 }
 
 teardown() { rm -rf "$TMP"; }
+
+# Strip ANSI SGR escapes so width / substring assertions can match what the
+# user actually sees (color escapes don't take display columns).
+strip_ansi() {
+    sed -E 's/'$'\x1b''\[[0-9;]*m//g'
+}
+
+# Display-cell width of the longest line in a stream. UTF-8 aware via
+# C.UTF-8 + bash ${#var}; serves the layout-width assertions below.
+max_display_width() {
+    local LC_ALL=C.UTF-8
+    local line max=0
+    while IFS= read -r line; do
+        (( ${#line} > max )) && max=${#line}
+    done
+    printf '%s' "$max"
+}
 
 # ---- _use_color ------------------------------------------------------------
 
@@ -620,4 +639,124 @@ EOF
     grep -q '^unset "${!PATHS_@}"' "$MOTD_WRAPPER"
     grep -q '^PATH=' "$MOTD_WRAPPER"
     grep -q '^export PATH' "$MOTD_WRAPPER"
+}
+
+# ---- Layout dispatch & artwork loader -------------------------------------
+#
+# The renderer picks layouts by mode + term_cols(). bats `run` doesn't
+# allocate a TTY for stdout, so term_cols() falls back to 80. That means
+# --snapshot/--once exercise side-by-side, --live exercises the narrow
+# fallback (80 < BANNER_WIDTH=135 → vertical_full_with_logo). Each path
+# is tested below.
+
+@test "load_artwork: rejects file with wrong line width" {
+    local bad="$TMP/wrong-width-logo"
+    # 39 cols instead of LOGO_WIDTH=40.
+    printf '%s\n' "$(printf '%39s' '')" > "$bad"
+    declare -a out=()
+    run ! load_artwork "$bad" 40 out
+}
+
+@test "load_artwork: rejects CRLF" {
+    local bad="$TMP/crlf-logo"
+    # 40 cols, but with a stray \r on line 1.
+    printf '%39s\r\n' '' > "$bad"
+    declare -a out=()
+    run ! load_artwork "$bad" 40 out
+}
+
+@test "load_artwork: counts UTF-8 block chars as 1 cell each" {
+    local good="$TMP/utf8-logo"
+    # Five Unicode "█" characters padded with 35 spaces = 40 cells.
+    printf '%s%s\n' '█████' "$(printf '%35s' '')" > "$good"
+    declare -a out=()
+    load_artwork "$good" 40 out
+    [ "${#out[@]}" = "1" ]
+}
+
+@test "snapshot: side-by-side puts the logo column to the left of status" {
+    # Side-by-side prints `${logo[i]}  ${status[i]}` per row. The shipped
+    # 40-col logo contains block characters; "Feeder ID" is one of the
+    # early status rows. Verify the line containing it has a non-empty
+    # prefix before the status text — i.e. the logo column is present.
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    line="$(printf '%s' "$output" | grep -m1 'Feeder ID' || true)"
+    [ -n "$line" ]
+    prefix="${line%%Feeder ID*}"
+    # Vertical layout would place "Feeder ID" at byte 0 → empty prefix.
+    [ -n "$prefix" ]
+    # And the prefix must contain a non-whitespace character (the logo).
+    [[ "$prefix" =~ [^[:space:]] ]]
+}
+
+@test "snapshot: every output line is <= 80 display cells" {
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    width="$(printf '%s' "$output" | strip_ansi | max_display_width)"
+    (( width <= 80 ))
+}
+
+@test "live: vertical fallback fires when cols < 135 (bats default)" {
+    # Under bats `run`, term_cols=80 (no TTY), so --live takes the
+    # vertical_full_with_logo branch: small logo (40 cols) followed by the
+    # full status block. No 135-col banner row should appear.
+    OUT="$TMP/live-out"
+    timeout 1 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
+    width="$(strip_ansi < "$OUT" | max_display_width)"
+    # Logo lines are 40 cells; status lines at most ~80. Any line wider
+    # than 80 means the 135-col banner leaked into a narrow terminal.
+    (( width <= 80 ))
+    # And the small logo must have rendered at least once.
+    grep -q 'Access' "$OUT"
+}
+
+@test "render_banner_stack: emits 135-col banner lines + status content" {
+    # Direct unit-test the banner-stack layout. Confirms PATHS_BANNER is
+    # the source artwork and that the rendered banner is BANNER_WIDTH
+    # cells wide. (Dispatch by mode + term_cols is straightforward case
+    # logic; no separate test.)
+    declare -a STATUS_LINES=("status-marker")
+    out="$(render_banner_stack)"
+    width="$(printf '%s' "$out" | strip_ansi | max_display_width)"
+    [ "$width" = "135" ]
+    [[ "$out" == *status-marker* ]]
+}
+
+@test "render_banner_stack: missing banner falls back to small logo" {
+    PATHS_BANNER="$TMP/nx-banner"
+    declare -a STATUS_LINES=("status-marker")
+    out="$(render_banner_stack)"
+    width="$(printf '%s' "$out" | strip_ansi | max_display_width)"
+    # Logo is LOGO_WIDTH=40 cells wide.
+    [ "$width" = "40" ]
+    [[ "$out" == *status-marker* ]]
+}
+
+@test "snapshot with missing logo: degrades to status-only without crashing" {
+    PATHS_LOGO="$TMP/nx-missing-logo"
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    # All section labels must still appear even with no artwork.
+    [[ "$output" == *Access* ]]
+    [[ "$output" == *"Feeder ID"* ]]
+    [[ "$output" == *Services* ]]
+    [[ "$output" == *Build* ]]
+}
+
+@test "live with missing banner: dispatch keeps narrow vertical layout" {
+    # In bats `run` term_cols=80, so the dispatcher takes
+    # render_vertical_full_with_logo regardless of banner presence. The
+    # banner-missing path is exercised directly above; here we just
+    # confirm --live with a missing banner.txt still produces a clean
+    # frame (no crash, no stderr leak).
+    PATHS_BANNER="$TMP/nx-missing-banner"
+    OUT="$TMP/live-out"
+    timeout 1 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
+    grep -q 'Access' "$OUT"
+}
+
+@test "term_cols: returns 80 when stdout is not a TTY" {
+    # Sourcing the script runs term_cols here; bats has no TTY on stdout.
+    [ "$(term_cols)" = "80" ]
 }

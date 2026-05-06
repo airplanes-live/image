@@ -1,6 +1,6 @@
 # 06b-console-dashboard
 
-Adds an ASCII-logo + status dashboard on `/dev/tty1` (refreshes every 5s)
+Adds an ASCII-art status dashboard on `/dev/tty1` (refreshes every 5s)
 and the same dashboard as a one-shot snapshot at SSH login (via
 `update-motd.d`). Local console login moves to TTY2 (Alt+F2).
 
@@ -28,7 +28,12 @@ else (besides sshd's own `Last login:` line, which is out of scope).
   modes: `--snapshot` (one-shot, no clear; used by the MOTD hook),
   `--live` (loop with home-cursor + erase-to-end every 5s; used by the
   systemd unit), `--once` (one-shot with screen clear).
-- `/usr/local/share/airplanes/logo.txt` — pre-rendered ASCII logo.
+- `/usr/local/share/airplanes/logo.txt` — 40×22 plane-badge artwork
+  used in the SSH/TTY2 side-by-side layout (and as the narrow-terminal
+  fallback for `--live`).
+- `/usr/local/share/airplanes/banner.txt` — 135×20 banner artwork
+  (badge + "airplanes.live" wordmark) used at the top of the HDMI
+  dashboard.
 - `/etc/systemd/system/airplanes-dashboard.service` — owns `/dev/tty1`,
   `Conflicts=getty@tty1.service`, `WantedBy=multi-user.target`.
 - `/etc/systemd/system/getty@tty1.service.d/override.conf` —
@@ -56,50 +61,70 @@ not tripped):
 is still on the kernel cmdline, so a UART recovery login remains
 available.
 
-## Logo regeneration
+## Layout dispatch
 
-The committed `logo.txt` was generated from
-`https://www.airplanes.live/img/airplanes-live-logo.png` (1029×287 PNG).
-There is no runtime image-conversion dependency; the file is shipped
-verbatim.
+The renderer picks one of two layouts based on mode, with a runtime
+width guard so under-sized terminals degrade rather than wrap:
+
+| Mode         | Wide enough                          | Narrow fallback                        |
+|--------------|--------------------------------------|----------------------------------------|
+| `--live`     | banner (`banner.txt`, 135 cols) on top, full status below (≥ 135 cols) | small logo on top, full status below (< 135 cols) |
+| `--snapshot` | logo (`logo.txt`, 40 cols) on the left, 38-col compact status panel on the right (≥ 80 cols) | compact status only, no logo (< 80 cols) |
+| `--once`     | same as `--snapshot`                 | same as `--snapshot`                   |
+
+`term_cols()` reports `tput cols` when stdout is a TTY, else 80. The
+update-motd.d hook is captured by `pam_motd` (no TTY on stdout), so it
+deterministically uses the 80-col path.
+
+If `banner.txt` fails to load (missing, CRLF, or wrong width),
+`--live` falls back to the small logo. If `logo.txt` also fails, the
+art is skipped and only the status block prints.
+
+## Charset note
+
+The shipped artwork uses Unicode block characters (`█▓▒░`). Any modern
+terminal (HDMI framebuffer console, all common SSH clients, recent
+serial-emulator clients) renders these as expected. A serial-recovery
+session on a non-UTF-8 locale will see replacement glyphs in place of
+the block art — cosmetic only; the status block remains plain ASCII
+and fully readable.
+
+## Artwork regeneration
+
+The committed `logo.txt` and `banner.txt` were rendered from
+`https://www.airplanes.live/img/airplanes-live-logo.png` (1029×287 PNG)
+with `chafa` and hand-trimmed. Both files are shipped verbatim — no
+runtime image-conversion dependency.
 
 To regenerate when the upstream logo changes:
 
 ```sh
-# On a workstation with chafa or imagemagick + python3-pil:
 curl -L -o /tmp/aplogo.png \
     https://www.airplanes.live/img/airplanes-live-logo.png
 
-# Option A — chafa (preferred when available):
-chafa --symbols=ascii --colors=2 --bg=none --fg=blue --size=78x10 \
+# logo.txt — 40 cols × 22 rows, badge only (the side-by-side panel
+# already prints "airplanes.live" in its status section, so the small
+# logo doesn't need the wordmark).
+chafa --symbols=block --bg=none --size=40x22 \
     /tmp/aplogo.png \
     > files/usr/local/share/airplanes/logo.txt
 
-# Option B — python3-pil with the contrast-boosted ramp used at first cut:
-python3 - <<'PY' > files/usr/local/share/airplanes/logo.txt
-from PIL import Image, ImageEnhance, ImageOps
-img = Image.open('/tmp/aplogo.png').convert('L')
-img = ImageOps.autocontrast(img, cutoff=5)
-img = ImageEnhance.Contrast(img).enhance(1.5)
-W, H = img.size
-target_w = 78
-target_h = max(1, round(H * target_w / W / 2.1))
-img = img.resize((target_w, target_h), Image.LANCZOS)
-ramp = ' .:-=+*#%@'
-out = []
-for y in range(target_h):
-    out.append(''.join(
-        ramp[min(len(ramp)-1, int((255 - img.getpixel((x, y))) * len(ramp) / 256))]
-        for x in range(target_w)
-    ).rstrip())
-while out and not out[0].strip(): out.pop(0)
-while out and not out[-1].strip(): out.pop()
-print('\n'.join(out))
-PY
-
-sed -i 's/[[:space:]]*$//' files/usr/local/share/airplanes/logo.txt
+# banner.txt — 135 cols × 20 rows, badge + wordmark (the HDMI dashboard
+# has the headroom; it's the user's first impression on boot).
+chafa --symbols=block --bg=none --size=135x20 \
+    /tmp/aplogo.png \
+    > files/usr/local/share/airplanes/banner.txt
 ```
 
-Hand-trim if the auto-render is ugly. Constraints: ≤ 80 cols, ≤ 12 rows,
-plain ASCII (no Unicode block chars — survives serial UART users with
-non-UTF-8 locales).
+Constraints, enforced by `load_artwork` in the renderer:
+
+- Each line in `logo.txt` is exactly **40 display columns** wide; the
+  file has at least one line.
+- Each line in `banner.txt` is exactly **135 display columns** wide;
+  the file has at least one line.
+- No CRLF (LF only).
+- Trailing whitespace **must be preserved** so each line is padded to
+  the expected width — do **not** run `sed 's/[[:space:]]*$//'`.
+
+If a regenerated file violates any of these, the renderer falls back
+silently (banner→logo→no-art) so SSH login is never broken.

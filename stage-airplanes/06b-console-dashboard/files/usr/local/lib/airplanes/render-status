@@ -1,16 +1,29 @@
 #!/bin/bash
 # Render the airplanes.live feeder status dashboard.
 #
-# Modes:
+# Modes & layouts:
 #   --snapshot   one-shot, no cursor moves, exit 0 (used by update-motd.d)
-#   --live       loop forever (default for the systemd service): home cursor,
-#                render frame, erase from cursor to end-of-screen, sleep 5
-#   --once       one-shot WITH a screen clear (manual `apl-status` use)
+#                Side-by-side: 40-col logo on the left, 38-col compact
+#                status panel on the right (= 80 cols total).
+#   --live       loop forever (default for the systemd service): home
+#                cursor, render frame, erase from cursor to end-of-screen,
+#                sleep 5. Banner-on-top: 135-col banner above the
+#                full-width 80-col status block.
+#   --once       one-shot WITH a screen clear (manual `apl-status` use).
+#                Same side-by-side layout as --snapshot.
+#
+# A runtime width guard (term_cols) falls back to a vertical layout
+# when the terminal isn't wide enough:
+#   --live   needs >= 135 cols; otherwise prints the small logo above
+#            the full status block.
+#   --snapshot/--once need >= 80 cols; otherwise stack compact status
+#            with no logo (it would wrap at the terminal edge).
 #
 # Reads only local files / systemctl. Never the network. Tolerates every
-# input being absent (degrades to "-" or "(...)" strings instead of failing).
-# Wraps systemctl calls in `timeout 2` so a stalled dbus cannot freeze SSH
-# login when this script runs as the update-motd.d snapshot.
+# input being absent (degrades to "-" or "(...)" strings instead of
+# failing). Wraps systemctl calls in `timeout 2` so a stalled dbus
+# cannot freeze SSH login when this script runs as the update-motd.d
+# snapshot.
 
 set -u
 LC_ALL=C
@@ -26,6 +39,12 @@ LC_ALL=C
 : "${PATHS_AIRCRAFT_JSON:=/run/readsb/aircraft.json}"
 : "${PATHS_THERMAL:=/sys/class/thermal/thermal_zone0/temp}"
 : "${PATHS_LOGO:=/usr/local/share/airplanes/logo.txt}"
+: "${PATHS_BANNER:=/usr/local/share/airplanes/banner.txt}"
+
+readonly LOGO_WIDTH=40
+readonly BANNER_WIDTH=135
+readonly SIDE_BY_SIDE_MIN_COLS=80
+readonly STATUS_PANEL_WIDTH=38
 
 readonly UNITS=(
     airplanes-feed.service
@@ -257,23 +276,35 @@ read_uptime_human() {
     fi
 }
 
-# IP primary; .local secondary. Suppress .local when hostname is the Pi OS
-# default `raspberrypi` (collides with every other default-hostname Pi on
-# the LAN — mDNS resolution is undefined).
-read_local_urls() {
-    local h ip parts=()
-    h="$(hostname -s 2>/dev/null || true)"
-    h="$(sanitize "$h" 32)"
+# IPv4 URL. Empty when no scoped global address is found.
+read_url_ip() {
+    local ip
     ip="$(ip -4 -o addr show scope global 2>/dev/null \
             | awk '{print $4}' | cut -d/ -f1 | head -n1)"
     ip="$(sanitize "$ip" 39)"  # IPv4 max length
+    [[ -n "$ip" ]] && printf 'http://%s' "$ip"
+}
 
-    if [[ -n "$ip" ]]; then
-        parts+=("http://${ip}")
-    fi
-    if [[ -n "$h" && "$h" != "localhost" && "$h" != "raspberrypi" ]]; then
-        parts+=("http://${h}.local")
-    fi
+# .local URL. Suppressed when hostname is the Pi OS default `raspberrypi`
+# (collides with every other default-hostname Pi on the LAN — mDNS
+# resolution is undefined) or `localhost`.
+read_url_local() {
+    local h
+    h="$(hostname -s 2>/dev/null || true)"
+    h="$(sanitize "$h" 32)"
+    [[ -z "$h" || "$h" == "localhost" || "$h" == "raspberrypi" ]] && return 0
+    printf 'http://%s.local' "$h"
+}
+
+# Joined IP-or-.local string, kept for the full-width formatter and unit
+# tests that depend on the historical contract: "(not connected)" when
+# both URL parts are empty, joined with "  or  " otherwise.
+read_local_urls() {
+    local ip h parts=()
+    ip="$(read_url_ip)"
+    h="$(read_url_local)"
+    [[ -n "$ip" ]] && parts+=("$ip")
+    [[ -n "$h" ]] && parts+=("$h")
     if (( ${#parts[@]} == 0 )); then
         printf '%s' '(not connected)'
         return
@@ -283,33 +314,93 @@ read_local_urls() {
     printf '%s' "${joined//@/  or  }"
 }
 
+# ---- Terminal-width helper. ------------------------------------------------
+# Returns the visible terminal width in columns. Defaults to 80 when stdout
+# is not a TTY (update-motd.d capture, bats `run`, or a piped invocation)
+# or when `tput` is unavailable, so the renderer's layout decisions stay
+# deterministic.
+term_cols() {
+    local cols=""
+    if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+        cols="$(tput cols 2>/dev/null || true)"
+    fi
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+    printf '%s' "$cols"
+}
+
+# ---- Artwork loader. -------------------------------------------------------
+# Reads $1 into the array named by $3, validates each line is exactly $2
+# display columns wide, and rejects CRLF. On any failure the array is
+# emptied and rc != 0; callers fall back to a layout that doesn't need
+# the artwork.
+#
+# Width is measured by bash's ${#var}, which counts characters when the
+# locale supports multibyte. The script's top-level `LC_ALL=C` would
+# otherwise count bytes, so we switch to C.UTF-8 with `local` (auto-
+# scoped to this function) before measuring. Avoids an awk dependency
+# whose multibyte support varies (gawk: yes, mawk: no).
+load_artwork() {
+    local path="$1" expected_cols="$2"
+    local -n arr_ref="$3"
+    local LC_ALL=C.UTF-8
+    arr_ref=()
+    [[ -r "$path" ]] || return 1
+    local line
+    while IFS= read -r line; do
+        if [[ "$line" == *$'\r'* ]]; then
+            arr_ref=()
+            return 1
+        fi
+        if (( ${#line} != expected_cols )); then
+            arr_ref=()
+            return 1
+        fi
+        arr_ref+=("$line")
+    done < "$path"
+    (( ${#arr_ref[@]} > 0 ))
+}
+
 # ---- Per-frame state for msgs/sec (live mode only). -----------------------
 PREV_MSGS=""
 PREV_TS=""
 
-# ---- Render a single frame. ------------------------------------------------
-# Args: $1 = mode hint ("snapshot" suppresses the rate field).
-render_once() {
-    local mode="${1:-live}"
+# ---- Status data globals (populated by collect_status_data). --------------
+SD_ID=""
+SD_CHANNEL=""
+SD_BUILD=""
+SD_CLAIM=""
+SD_URLS_JOINED=""
+SD_URL_IP=""
+SD_URL_LOCAL=""
+SD_AIRCRAFT_CNT=""
+SD_MPS="-"
+SD_MLAT_WARN=""
+SD_CPU_TEMP=""
+SD_UPTIME=""
+SD_LOAD=""
 
-    local id channel build claim urls
-    id="$(read_feeder_id)"
-    channel="$(read_channel)"
-    build="$(read_build_short_sha)"
-    claim="$(claim_state)"
-    urls="$(read_local_urls)"
+# Populate the SD_* globals from disk / systemctl. msgs/s rate is computed
+# only in live mode so snapshot/once stay deterministic and side-effect
+# free.
+collect_status_data() {
+    local mode="$1"
 
-    # Aircraft + msgs/sec. Validate counters are unsigned-int strings before
-    # bash arithmetic — readsb's contract is integers, but defending here
-    # means a corrupted aircraft.json (e.g. "messages":"bad", "messages":1.5)
-    # cannot crash the renderer under set -u.
-    local snap cnt msgs now mps='-'
+    SD_ID="$(read_feeder_id)"
+    SD_CHANNEL="$(read_channel)"
+    SD_BUILD="$(read_build_short_sha)"
+    SD_CLAIM="$(claim_state)"
+    SD_URLS_JOINED="$(read_local_urls)"
+    SD_URL_IP="$(read_url_ip)"
+    SD_URL_LOCAL="$(read_url_local)"
+
+    local snap msgs now
     snap="$(read_aircraft_snapshot)"
-    IFS='|' read -r cnt msgs now <<< "$snap"
+    IFS='|' read -r SD_AIRCRAFT_CNT msgs now <<< "$snap"
     [[ "$msgs" =~ ^[0-9]+$ ]] || msgs=""
     [[ "$now" =~ ^[0-9]+(\.[0-9]+)?$ ]] || now=""
 
-    if [[ "$mode" != "snapshot" ]] \
+    SD_MPS='-'
+    if [[ "$mode" == "live" ]] \
         && [[ -n "$msgs" && -n "$now" \
             && -n "$PREV_MSGS" && -n "$PREV_TS" ]]; then
         local d_msgs d_t
@@ -319,76 +410,29 @@ render_once() {
         # delta. Don't print a bogus negative rate; show "-" and let the
         # next tick re-baseline.
         if (( d_msgs < 0 )); then
-            mps='-'
+            SD_MPS='-'
         elif awk -v dt="$d_t" 'BEGIN{exit (dt<=0)}'; then
-            mps="$(awk -v m="$d_msgs" -v dt="$d_t" \
+            SD_MPS="$(awk -v m="$d_msgs" -v dt="$d_t" \
                 'BEGIN{printf "%.1f", m/dt}')"
         fi
     fi
     PREV_MSGS="$msgs"
     PREV_TS="$now"
 
-    # MLAT-warning banner: lat/lon=0 means user has not configured location.
-    local lat lon mlat_warn=""
+    local lat lon
     lat="$(read_feed_env_var LATITUDE)"
     lon="$(read_feed_env_var LONGITUDE)"
+    SD_MLAT_WARN=""
     if [[ "${lat:-0}" == "0" || "${lon:-0}" == "0" ]]; then
-        mlat_warn="${C_WARN}Set lat/lon to enable MLAT.${C_RESET}"
+        SD_MLAT_WARN="${C_WARN}Set lat/lon to enable MLAT.${C_RESET}"
     fi
 
-    # ---- Output. ---------
-    if [[ -r "$PATHS_LOGO" ]]; then
-        printf '%s' "$C_HDR"
-        cat "$PATHS_LOGO"
-        printf '%s\n\n' "$C_RESET"
-    fi
-
-    printf '%bAccess%b      %s\n'    "$C_BOLD" "$C_RESET" "$urls"
-    printf '%bFeeder ID%b   %s\n'    "$C_BOLD" "$C_RESET" "${id:-(not yet generated)}"
-    printf '%bClaim%b       %s\n\n'  "$C_BOLD" "$C_RESET" "$(claim_color "$claim")"
-
-    printf '%bServices%b    ' "$C_BOLD" "$C_RESET"
-    local first=1 u s
-    for u in "${UNITS[@]}"; do
-        s="$(unit_state "$u")"
-        (( first )) || printf '  '
-        first=0
-        printf '%s' "$(svc_marker "$u" "$s")"
-    done
-    printf '\n\n'
-
-    if [[ "$mode" == "snapshot" ]]; then
-        printf '%bFeed%b        aircraft: %s   %s\n' \
-            "$C_BOLD" "$C_RESET" "${cnt:--}" "$mlat_warn"
-    else
-        printf '%bFeed%b        aircraft: %s   msgs/s: %s   %s\n' \
-            "$C_BOLD" "$C_RESET" "${cnt:--}" "$mps" "$mlat_warn"
-    fi
-    printf '%bBuild%b       channel=%s  sha=%s\n' \
-        "$C_BOLD" "$C_RESET" "${channel:-?}" "${build:-?}"
-    local cpu_temp uptime_h load_1m
-    cpu_temp="$(read_cpu_temp_c)"
-    uptime_h="$(read_uptime_human)"
-    load_1m="$(read_load_1m)"
-    if [[ -n "$cpu_temp" ]]; then
-        printf '%bSystem%b      uptime %s%s%s   load %s%s%s   CPU %s%s°C%s\n' \
-            "$C_BOLD" "$C_RESET" \
-            "$C_DIM" "${uptime_h:--}" "$C_RESET" \
-            "$C_DIM" "${load_1m:--}" "$C_RESET" \
-            "$C_DIM" "$cpu_temp" "$C_RESET"
-    else
-        printf '%bSystem%b      uptime %s%s%s   load %s%s%s\n' \
-            "$C_BOLD" "$C_RESET" \
-            "$C_DIM" "${uptime_h:--}" "$C_RESET" \
-            "$C_DIM" "${load_1m:--}" "$C_RESET"
-    fi
-
-    if [[ "$mode" != "snapshot" ]]; then
-        printf '\n%bLocal login moved to TTY2 (Alt+F2). Refreshing every 5s.%b\n' \
-            "$C_DIM" "$C_RESET"
-    fi
+    SD_CPU_TEMP="$(read_cpu_temp_c)"
+    SD_UPTIME="$(read_uptime_human)"
+    SD_LOAD="$(read_load_1m)"
 }
 
+# ---- Color helpers shared by both formatters. -----------------------------
 claim_color() {
     case "$1" in
         registered*)
@@ -398,6 +442,20 @@ claim_color() {
         *)
             printf '%b%s%b — sudo apl-feed claim register' \
                 "$C_WARN" "$1" "$C_RESET" ;;
+    esac
+}
+
+# Compact variant: never inlines the action hint (it gets its own line in
+# the panel below), so an unclaimed feeder doesn't overflow the 38-col
+# panel.
+claim_color_compact() {
+    case "$1" in
+        registered*)
+            printf '%b%s%b' "$C_OK" "$1" "$C_RESET" ;;
+        secret-saved|rotation-pending|registration-pending)
+            printf '%b%s%b' "$C_WARN" "$1" "$C_RESET" ;;
+        *)
+            printf '%b%s%b' "$C_WARN" "$1" "$C_RESET" ;;
     esac
 }
 
@@ -429,6 +487,259 @@ svc_marker() {
     esac
 }
 
+# ---- Status-line builders. Each writes into the STATUS_LINES array. -------
+declare -a STATUS_LINES
+
+# Full 80-col status (today's format) — used for live and as the HDMI
+# narrow-fallback companion to the small logo.
+build_status_lines_full() {
+    local mode="$1"
+    STATUS_LINES=()
+
+    STATUS_LINES+=("$(printf '%bAccess%b      %s' "$C_BOLD" "$C_RESET" "$SD_URLS_JOINED")")
+    STATUS_LINES+=("$(printf '%bFeeder ID%b   %s' "$C_BOLD" "$C_RESET" "${SD_ID:-(not yet generated)}")")
+    STATUS_LINES+=("$(printf '%bClaim%b       %s' "$C_BOLD" "$C_RESET" "$(claim_color "$SD_CLAIM")")")
+    STATUS_LINES+=("")
+
+    local svc_row first=1 u s marker
+    svc_row="$(printf '%bServices%b    ' "$C_BOLD" "$C_RESET")"
+    for u in "${UNITS[@]}"; do
+        s="$(unit_state "$u")"
+        marker="$(svc_marker "$u" "$s")"
+        if (( first )); then first=0; else svc_row+="  "; fi
+        svc_row+="$marker"
+    done
+    STATUS_LINES+=("$svc_row")
+    STATUS_LINES+=("")
+
+    if [[ "$mode" == "snapshot" ]]; then
+        STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s   %s' \
+            "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" "$SD_MLAT_WARN")")
+    else
+        STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s   msgs/s: %s   %s' \
+            "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" "$SD_MPS" "$SD_MLAT_WARN")")
+    fi
+    STATUS_LINES+=("$(printf '%bBuild%b       channel=%s  sha=%s' \
+        "$C_BOLD" "$C_RESET" "${SD_CHANNEL:-?}" "${SD_BUILD:-?}")")
+
+    if [[ -n "$SD_CPU_TEMP" ]]; then
+        STATUS_LINES+=("$(printf '%bSystem%b      uptime %s%s%s   load %s%s%s   CPU %s%s°C%s' \
+            "$C_BOLD" "$C_RESET" \
+            "$C_DIM" "${SD_UPTIME:--}" "$C_RESET" \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET" \
+            "$C_DIM" "$SD_CPU_TEMP" "$C_RESET")")
+    else
+        STATUS_LINES+=("$(printf '%bSystem%b      uptime %s%s%s   load %s%s%s' \
+            "$C_BOLD" "$C_RESET" \
+            "$C_DIM" "${SD_UPTIME:--}" "$C_RESET" \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET")")
+    fi
+
+    if [[ "$mode" != "snapshot" ]]; then
+        STATUS_LINES+=("")
+        STATUS_LINES+=("$(printf '%bLocal login moved to TTY2 (Alt+F2). Refreshing every 5s.%b' \
+            "$C_DIM" "$C_RESET")")
+    fi
+}
+
+# Truncate a plain-ASCII string to the panel width, appending "..." when
+# it would otherwise overflow. Operates on bytes; only safe for the
+# ASCII-only fields we feed it (URLs, ID prefix).
+_compact_truncate() {
+    local s="$1"
+    local max="$STATUS_PANEL_WIDTH"
+    if (( ${#s} > max )); then
+        printf '%s...' "${s:0:$((max - 3))}"
+    else
+        printf '%s' "$s"
+    fi
+}
+
+# Compact 38-col status panel — used for snapshot/once side-by-side.
+# Every line, after ANSI strip, is <= STATUS_PANEL_WIDTH cells wide.
+build_status_lines_compact() {
+    STATUS_LINES=()
+
+    # Access — header on its own line, URLs indented two spaces.
+    STATUS_LINES+=("$(printf '%bAccess%b' "$C_BOLD" "$C_RESET")")
+    if [[ -n "$SD_URL_IP" || -n "$SD_URL_LOCAL" ]]; then
+        [[ -n "$SD_URL_IP" ]] && STATUS_LINES+=("  $(_compact_truncate "$SD_URL_IP")")
+        [[ -n "$SD_URL_LOCAL" ]] && STATUS_LINES+=("  $(_compact_truncate "$SD_URL_LOCAL")")
+    else
+        STATUS_LINES+=("  (not connected)")
+    fi
+
+    # Feeder ID — first 8 chars of the UUID (full UUID stays in
+    # /etc/airplanes/feeder-id for support reference). Empty file falls
+    # back to the same "(not yet generated)" string the full layout uses.
+    local id_short
+    if [[ -n "$SD_ID" ]]; then
+        id_short="${SD_ID:0:8}"
+    else
+        id_short="(not yet generated)"
+    fi
+    # 11-char label section keeps Feeder ID / Claim / Feed / Build /
+    # System / continuation-indent visually aligned in the panel. (The
+    # full-width formatter uses 12-char alignment because it has the
+    # column budget; the compact panel doesn't.)
+    STATUS_LINES+=("$(printf '%bFeeder ID%b  %s' "$C_BOLD" "$C_RESET" "$id_short")")
+
+    # Claim — colored value on its own row; for unclaimed/secret states
+    # the action hint goes on a second indented line so the panel never
+    # overflows.
+    STATUS_LINES+=("$(printf '%bClaim%b      %s' "$C_BOLD" "$C_RESET" "$(claim_color_compact "$SD_CLAIM")")")
+    case "$SD_CLAIM" in
+        registered*) ;;
+        *) STATUS_LINES+=("  sudo apl-feed claim register") ;;
+    esac
+
+    STATUS_LINES+=("")
+
+    # Services — header + 2-marker rows (5 services → 3 rows max).
+    STATUS_LINES+=("$(printf '%bServices%b' "$C_BOLD" "$C_RESET")")
+    local row_buf="" in_row=0 u
+    for u in "${UNITS[@]}"; do
+        local marker
+        marker="$(svc_marker "$u" "$(unit_state "$u")")"
+        if (( in_row == 0 )); then
+            row_buf="  $marker"
+            in_row=1
+        else
+            row_buf+="   $marker"
+            STATUS_LINES+=("$row_buf")
+            row_buf=""
+            in_row=0
+        fi
+    done
+    [[ -n "$row_buf" ]] && STATUS_LINES+=("$row_buf")
+    STATUS_LINES+=("")
+
+    # Feed (compact never shows msgs/s — that's a live-only signal).
+    # Label column width is 11, matching Feeder ID / Claim / Services /
+    # Build / System below — the panel reads as one consistent column.
+    STATUS_LINES+=("$(printf '%bFeed%b       aircraft: %s' \
+        "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}")")
+    # Build — single space between channel and sha so the realistic worst
+    # case ("channel=stable sha=abcdef1") still fits the 38-col panel.
+    STATUS_LINES+=("$(printf '%bBuild%b      channel=%s sha=%s' \
+        "$C_BOLD" "$C_RESET" "${SD_CHANNEL:-?}" "${SD_BUILD:-?}")")
+
+    # System — split across two indented rows so a worst-case "999d 23h
+    # 59m" + load + CPU never crosses 38 cols. ASCII "C" (no ° degree
+    # sign) keeps the second row to ASCII-only and shaves one cell.
+    STATUS_LINES+=("$(printf '%bSystem%b     uptime %s%s%s' \
+        "$C_BOLD" "$C_RESET" \
+        "$C_DIM" "${SD_UPTIME:--}" "$C_RESET")")
+    if [[ -n "$SD_CPU_TEMP" ]]; then
+        STATUS_LINES+=("$(printf '           load %s%s%s CPU %s%s%sC' \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET" \
+            "$C_DIM" "$SD_CPU_TEMP" "$C_RESET")")
+    else
+        STATUS_LINES+=("$(printf '           load %s%s%s' \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET")")
+    fi
+
+    if [[ -n "$SD_MLAT_WARN" ]]; then
+        STATUS_LINES+=("")
+        STATUS_LINES+=("$SD_MLAT_WARN")
+    fi
+}
+
+# ---- Layout renderers. ----------------------------------------------------
+# Each consumes STATUS_LINES (already populated) and writes the frame to
+# stdout. Choose the right layout in render_once based on mode + cols.
+
+render_banner_stack() {
+    # Banner above full status. Falls back to the small logo if the banner
+    # file is missing/malformed; ultimately to no-art if neither loads.
+    local artwork=()
+    if ! load_artwork "$PATHS_BANNER" "$BANNER_WIDTH" artwork; then
+        load_artwork "$PATHS_LOGO" "$LOGO_WIDTH" artwork || artwork=()
+    fi
+    if (( ${#artwork[@]} > 0 )); then
+        printf '%s' "$C_HDR"
+        printf '%s\n' "${artwork[@]}"
+        printf '%s\n' "$C_RESET"
+    fi
+    printf '%s\n' "${STATUS_LINES[@]}"
+}
+
+render_side_by_side() {
+    # 40-col logo on the left, 38-col compact status on the right, 2-col
+    # gutter. If the logo is missing/malformed, fall back to plain
+    # vertical: status only.
+    local logo=()
+    if ! load_artwork "$PATHS_LOGO" "$LOGO_WIDTH" logo; then
+        printf '%s\n' "${STATUS_LINES[@]}"
+        return
+    fi
+    local logo_n=${#logo[@]}
+    local status_n=${#STATUS_LINES[@]}
+    local n=$(( logo_n > status_n ? logo_n : status_n ))
+    local i pad
+    pad="$(printf '%*s' "$LOGO_WIDTH" '')"
+    for (( i = 0; i < n; i++ )); do
+        if (( i < logo_n )); then
+            printf '%s%s%s  %s\n' "$C_HDR" "${logo[i]}" "$C_RESET" "${STATUS_LINES[i]:-}"
+        else
+            printf '%s  %s\n' "$pad" "${STATUS_LINES[i]:-}"
+        fi
+    done
+}
+
+render_vertical_compact() {
+    # Narrow-terminal fallback for snapshot/once: the logo would wrap so
+    # we drop it and print the compact status only.
+    printf '%s\n' "${STATUS_LINES[@]}"
+}
+
+render_vertical_full_with_logo() {
+    # --live fallback when cols < BANNER_WIDTH: print the small logo above
+    # the full-width status block.
+    local logo=()
+    if load_artwork "$PATHS_LOGO" "$LOGO_WIDTH" logo; then
+        printf '%s' "$C_HDR"
+        printf '%s\n' "${logo[@]}"
+        printf '%s\n' "$C_RESET"
+    fi
+    printf '%s\n' "${STATUS_LINES[@]}"
+}
+
+# ---- Single-frame entry point. --------------------------------------------
+# Existing bats tests call `render_once live` directly; keep the name and
+# preserve the side effect on PREV_MSGS / PREV_TS.
+render_once() {
+    local mode="${1:-live}"
+    collect_status_data "$mode"
+    local cols
+    cols="$(term_cols)"
+
+    case "$mode" in
+        live)
+            build_status_lines_full live
+            if (( cols >= BANNER_WIDTH )); then
+                render_banner_stack
+            else
+                render_vertical_full_with_logo
+            fi
+            ;;
+        snapshot|once)
+            build_status_lines_compact
+            if (( cols >= SIDE_BY_SIDE_MIN_COLS )); then
+                render_side_by_side
+            else
+                render_vertical_compact
+            fi
+            ;;
+        *)
+            # Defensive fallthrough for unknown modes — render the live
+            # layout, matching the historical dispatcher behaviour.
+            build_status_lines_full live
+            render_vertical_full_with_logo
+            ;;
+    esac
+}
+
 # ---- Mode dispatcher. ------------------------------------------------------
 # Skip when sourced (bats tests source us to call helpers directly).
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
@@ -439,7 +750,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             ;;
         --once)
             printf '%s[2J%s[H' "$ESC" "$ESC"
-            render_once live
+            render_once once
             ;;
         --live|*)
             # Full clear before every frame (\e[H = home, \e[J = erase from
