@@ -90,12 +90,61 @@ RELEASE_DATE="$(date -u -r "$INPUT_ABS" +%Y-%m-%d)"
 NAME="airplanes.live feeder (${CHANNEL})"
 DESCRIPTION="airplanes.live ADS-B/MLAT/UAT feeder image (${CHANNEL} channel). Edit Settings to set WiFi, hostname, SSH key, and feeder claim secret before flashing."
 
-# Pi 3 / 4 / 5 (64-bit). rpi-imager filters the os_list with the connected
-# device's id; both blocks must agree (the top-level `imager.devices` is what
-# the Custom Repository fetcher reads to decide whether this manifest is
-# relevant for the connected device, the per-entry `devices` is what the OS
-# entry advertises).
-DEVICES_JSON='["pi5-64bit","pi4-64bit","pi3-64bit"]'
+# Tag list the OS entry advertises. arm64-only — this image is not built for
+# 32-bit Pis. rpi-imager's filterOsListWithHWTags keeps an entry when any of
+# its `devices` tags matches the user-selected device's tag set.
+OS_DEVICE_TAGS_JSON='["pi5-64bit","pi4-64bit","pi3-64bit"]'
+
+# Rich device entries for rpi-imager's device-selection screen. Mirrors
+# upstream's os_list_imagingutility_v4.json shape (downloads.raspberrypi.com)
+# so the screen renders Pi names, icons, and descriptions instead of empty
+# rows. Restricted to arm64-capable Pis (Pi 3 / 4 / 5 / Zero 2 W) since this
+# image only runs on those. "No filtering" mirrors upstream's escape hatch so
+# the user can still see our entry if their Pi tag is unfamiliar.
+IMAGER_DEVICES_JSON=$(cat <<'JSON'
+[
+  {
+    "name": "Raspberry Pi 5",
+    "tags": ["pi5-64bit", "pi5-32bit"],
+    "icon": "https://downloads.raspberrypi.com/imager/icons/RPi_5.png",
+    "description": "Raspberry Pi 5, 500 / 500+, and Compute Module 5",
+    "matching_type": "exclusive",
+    "capabilities": []
+  },
+  {
+    "name": "Raspberry Pi 4",
+    "tags": ["pi4-64bit", "pi4-32bit"],
+    "icon": "https://downloads.raspberrypi.com/imager/icons/RPi_4.png",
+    "description": "Raspberry Pi 4 Model B, 400, and Compute Module 4 / 4S",
+    "matching_type": "inclusive",
+    "capabilities": []
+  },
+  {
+    "name": "Raspberry Pi 3",
+    "tags": ["pi3-64bit", "pi3-32bit"],
+    "icon": "https://downloads.raspberrypi.com/imager/icons/RPi_3.png",
+    "description": "Raspberry Pi 3 Model A+ / B / B+ and Compute Module 3 / 3+",
+    "matching_type": "inclusive",
+    "capabilities": []
+  },
+  {
+    "name": "Raspberry Pi Zero 2 W",
+    "tags": ["pi3-64bit", "pi3-32bit"],
+    "icon": "https://downloads.raspberrypi.com/imager/icons/RPi_Zero_2_W.png",
+    "description": "Raspberry Pi Zero 2 W",
+    "matching_type": "inclusive",
+    "capabilities": []
+  },
+  {
+    "name": "No filtering",
+    "tags": [],
+    "description": "Show every possible image",
+    "matching_type": "inclusive",
+    "capabilities": []
+  }
+]
+JSON
+)
 
 # Same-directory mktemp keeps the final `mv` atomic (rename within one fs).
 # Avoids predictable `$$`-based names that could conflict with a shared
@@ -111,9 +160,10 @@ jq -n \
     --argjson extract_size "$EXTRACT_SIZE" \
     --arg extract_sha256 "$EXTRACT_SHA256" \
     --argjson image_download_size "$IMAGE_DOWNLOAD_SIZE" \
-    --argjson devices "$DEVICES_JSON" \
+    --argjson os_device_tags "$OS_DEVICE_TAGS_JSON" \
+    --argjson imager_devices "$IMAGER_DEVICES_JSON" \
     '{
-        imager: { devices: $devices },
+        imager: { devices: $imager_devices },
         os_list: [
             {
                 name: $name,
@@ -125,7 +175,7 @@ jq -n \
                 extract_size: $extract_size,
                 extract_sha256: $extract_sha256,
                 image_download_size: $image_download_size,
-                devices: $devices,
+                devices: $os_device_tags,
                 capabilities: []
             }
         ]
