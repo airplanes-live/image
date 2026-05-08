@@ -40,6 +40,19 @@ LC_ALL=C
 : "${PATHS_THERMAL:=/sys/class/thermal/thermal_zone0/temp}"
 : "${PATHS_LOGO:=/usr/local/share/airplanes/logo.txt}"
 : "${PATHS_BANNER:=/usr/local/share/airplanes/banner.txt}"
+: "${PATHS_STATE_FILE_MLAT:=/run/airplanes-mlat/state}"
+: "${PATHS_STATE_FILE_FEED:=/run/airplanes-feed/state}"
+: "${PATHS_STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
+
+# State reader. Defensive — if the lib is missing (mid-update transient or
+# pi-gen build older than feed PR 1+2), fall back to a stub so consumers
+# degrade to systemd-only rendering.
+if [[ -r "$PATHS_STATE_READER_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$PATHS_STATE_READER_LIB"
+else
+    airplanes_read_state() { return 1; }
+fi
 
 readonly LOGO_WIDTH=40
 readonly BANNER_WIDTH=135
@@ -187,37 +200,72 @@ claim_state() {
 # USER=0|disable when MLAT_ENABLED isn't set yet (a feed.env from before
 # the schema split, or a daemon read between a legacy webconfig write and
 # the next update.sh sweep).
-mlat_disabled_by_config() {
-    local lat lon mlat_enabled user
-    lat="$(read_feed_env_var LATITUDE)"
-    lon="$(read_feed_env_var LONGITUDE)"
-    mlat_enabled="$(read_feed_env_var MLAT_ENABLED)"
-    user="$(read_feed_env_var USER)"
-    if [[ -z "$mlat_enabled" && -n "$user" ]]; then
-        case "$user" in
-            0|disable) mlat_enabled="false" ;;
-            *)         mlat_enabled="true" ;;
-        esac
-    fi
-    # Mirror airplanes-mlat.sh exactly: any value other than "true" disables.
-    # If MLAT_ENABLED is hand-edited to "False" or "yes" or "1", the daemon
-    # would refuse to run and the dashboard must say so too.
-    [[ ( -n "$mlat_enabled" && "$mlat_enabled" != "true" ) \
-        || "${lat:-0}" == "0" || "${lon:-0}" == "0" ]]
+# Classify the airplanes-mlat daemon's runtime decision.
+# Echoes "<state> <reason>" on a single line.
+#   state   ∈ { enabled, disabled, misconfigured, failed, inactive, unknown }
+#   reason  is a stable token; "-" when no reason applies.
+#
+# Daemon publishes its decision to /run/airplanes-mlat/state when active or
+# transitioning. For the failed terminal state with ExecMainStatus=64
+# (strict misconfig fail), the file persists across the failure via
+# RuntimeDirectoryPreserve=yes and we surface its reason. Otherwise we
+# render systemd-derived state.
+mlat_config_state() {
+    local active_state="$1"
+    local decision reason exit_code
+    case "$active_state" in
+        active|activating|reloading)
+            if decision="$(airplanes_read_state "$PATHS_STATE_FILE_MLAT" state)" \
+                && reason="$(airplanes_read_state "$PATHS_STATE_FILE_MLAT" reason)"; then
+                printf '%s %s' "$decision" "$reason"
+                return
+            fi
+            printf 'unknown -'
+            ;;
+        failed)
+            exit_code="$(timeout 2 systemctl show --property=ExecMainStatus --value airplanes-mlat.service 2>/dev/null || true)"
+            if [[ "$exit_code" == "64" ]]; then
+                if reason="$(airplanes_read_state "$PATHS_STATE_FILE_MLAT" reason)" && [[ -n "$reason" ]]; then
+                    printf 'misconfigured %s' "$reason"
+                    return
+                fi
+                printf 'misconfigured unknown'
+                return
+            fi
+            printf 'failed exit_%s' "${exit_code:-unknown}"
+            ;;
+        *)
+            printf 'inactive -'
+            ;;
+    esac
 }
 
 # Service state. Bounded by `timeout 2` so stalled dbus / systemd cannot
 # freeze us (critical for the snapshot path that runs at SSH login).
-unit_state() {
-    local unit="$1" enabled enabled_rc active_rc
+# For airplanes-mlat the renderer also wants the reason token; this
+# variant returns "<state> <reason>" so callers can plumb both through.
+unit_state_with_reason() {
+    local unit="$1" enabled enabled_rc active_state
     if ! command -v systemctl >/dev/null 2>&1; then
-        printf 'unknown'
+        printf 'unknown -'
         return
     fi
-    # MLAT: synthesize "disabled by config" before consulting systemd.
-    if [[ "$unit" == 'airplanes-mlat.service' ]] && mlat_disabled_by_config; then
-        printf 'disabled-by-config'
-        return
+    # MLAT: classify via daemon's published state file.
+    if [[ "$unit" == 'airplanes-mlat.service' ]]; then
+        active_state="$(timeout 2 systemctl show --property=ActiveState --value "$unit" 2>/dev/null || true)"
+        case "$active_state" in
+            active|activating|reloading|failed)
+                local config_state config_reason
+                read -r config_state config_reason <<<"$(mlat_config_state "$active_state")"
+                case "$config_state" in
+                    disabled)      printf 'disabled-by-config %s' "$config_reason"; return ;;
+                    misconfigured) printf 'misconfigured %s' "$config_reason"; return ;;
+                    failed)        printf 'fail %s' "$config_reason"; return ;;
+                    unknown)       printf 'unknown -'; return ;;
+                    enabled)       ;;  # fall through to plain ok
+                esac
+                ;;
+        esac
     fi
     # Capture rcs explicitly. `if cmd; then …; fi; rc=$?` does NOT preserve
     # the condition's exit status when the body is skipped — bash sets $? to
@@ -226,23 +274,31 @@ unit_state() {
     enabled="$(timeout 2 systemctl is-enabled "$unit" 2>/dev/null)"
     enabled_rc=$?
     if (( enabled_rc == 124 )); then
-        printf 'timeout'
+        printf 'timeout -'
         return
     fi
     case "$enabled" in
-        masked) printf 'masked'; return ;;
+        masked) printf 'masked -'; return ;;
     esac
 
+    local active_rc
     timeout 2 systemctl is-active --quiet "$unit" 2>/dev/null
     active_rc=$?
     case "$active_rc" in
-        0)   printf 'ok';      return ;;
-        124) printf 'timeout'; return ;;
+        0)   printf 'ok -';      return ;;
+        124) printf 'timeout -'; return ;;
     esac
     case "$enabled" in
-        disabled) printf 'disabled' ;;
-        *)        printf 'fail' ;;
+        disabled) printf 'disabled -' ;;
+        *)        printf 'fail -' ;;
     esac
+}
+
+# Backwards-compatible wrapper — most callers only want the state token.
+unit_state() {
+    local with_reason
+    with_reason="$(unit_state_with_reason "$1")"
+    printf '%s' "${with_reason%% *}"
 }
 
 # Aircraft snapshot. Returns "<count>|<msgs>|<now>" or "||" on any failure.
@@ -431,13 +487,46 @@ collect_status_data() {
     PREV_MSGS="$msgs"
     PREV_TS="$now"
 
-    local lat lon
-    lat="$(read_feed_env_var LATITUDE)"
-    lon="$(read_feed_env_var LONGITUDE)"
-    SD_MLAT_WARN=""
-    if [[ "${lat:-0}" == "0" || "${lon:-0}" == "0" ]]; then
-        SD_MLAT_WARN="${C_WARN}Set lat/lon to enable MLAT.${C_RESET}"
+    # MLAT note. Replaces the old config-derived "Set lat/lon to enable MLAT"
+    # with text driven by the daemon's published decision (PR 1+2 contract).
+    # Falls back to the legacy text only if the state file isn't readable
+    # (e.g. image built off a feed snapshot older than PR 1).
+    SD_MLAT_NOTE=""
+    local mlat_active_state
+    mlat_active_state="$(timeout 2 systemctl show --property=ActiveState --value airplanes-mlat.service 2>/dev/null || true)"
+    local mlat_state mlat_reason
+    read -r mlat_state mlat_reason <<<"$(mlat_config_state "$mlat_active_state")"
+    case "$mlat_state" in
+        disabled)
+            case "$mlat_reason" in
+                mlat_enabled_false) SD_MLAT_NOTE="${C_DIM}MLAT disabled in config.${C_RESET}" ;;
+                latitude_zero)      SD_MLAT_NOTE="${C_WARN}Set lat to enable MLAT.${C_RESET}" ;;
+                longitude_zero)     SD_MLAT_NOTE="${C_WARN}Set lon to enable MLAT.${C_RESET}" ;;
+            esac
+            ;;
+        misconfigured)
+            case "$mlat_reason" in
+                mlat_user_empty) SD_MLAT_NOTE="${C_FAIL}MLAT_USER empty (fix config).${C_RESET}" ;;
+                *)               SD_MLAT_NOTE="${C_FAIL}MLAT misconfigured.${C_RESET}" ;;
+            esac
+            ;;
+        unknown)
+            SD_MLAT_NOTE="${C_WARN}MLAT state unknown.${C_RESET}"
+            ;;
+    esac
+    # Legacy fallback when the daemon has never written a state file
+    # (image built off feed pre-PR-1, or daemon never ran).
+    if [[ -z "$SD_MLAT_NOTE" && "$mlat_state" == 'inactive' ]]; then
+        local lat lon
+        lat="$(read_feed_env_var LATITUDE)"
+        lon="$(read_feed_env_var LONGITUDE)"
+        if [[ "${lat:-0}" == "0" || "${lon:-0}" == "0" ]]; then
+            SD_MLAT_NOTE="${C_WARN}Set lat/lon to enable MLAT.${C_RESET}"
+        fi
     fi
+    # Maintain the SD_MLAT_WARN alias so the panel renderers below don't
+    # need wholesale edits — both names point at the same content.
+    SD_MLAT_WARN="$SD_MLAT_NOTE"
 
     SD_CPU_TEMP="$(read_cpu_temp_c)"
     SD_UPTIME="$(read_uptime_human)"
@@ -484,11 +573,17 @@ svc_marker() {
         fail)
             printf '%b%s:FAIL%b' "$C_FAIL" "$short" "$C_RESET"
             ;;
+        misconfigured)
+            printf '%b%s:!!%b' "$C_FAIL" "$short" "$C_RESET"
+            ;;
         masked)
             printf '%b%s:MASK%b' "$C_FAIL" "$short" "$C_RESET"
             ;;
         disabled|disabled-by-config)
             printf '%b%s:off%b' "$C_DIM" "$short" "$C_RESET"
+            ;;
+        unknown)
+            printf '%b%s:?%b' "$C_WARN" "$short" "$C_RESET"
             ;;
         timeout)
             printf '%b%s:?%b' "$C_DIM" "$short" "$C_RESET"

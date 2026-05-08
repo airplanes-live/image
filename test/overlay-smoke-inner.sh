@@ -104,6 +104,28 @@ grep -qE '^After=.*airplanes-first-run.service' /etc/systemd/system/airplanes-ml
 grep -q 'feed2.airplanes.live,64004' /usr/local/share/airplanes/airplanes-feed.sh \
     || fail "airplanes-feed.sh missing feed2 connector"
 
+# Daemon runtime state-file dependencies (PR 1+2 in feed; consumed by
+# render-status, apl-feed status, and the webconfig server).
+# RuntimeDirectoryPreserve=yes is required so the misconfig state file
+# survives the daemon's failed terminal state (RestartPreventExitStatus=64).
+grep -qE '^RuntimeDirectoryPreserve=yes$' /etc/systemd/system/airplanes-feed.service \
+    || fail "airplanes-feed.service missing RuntimeDirectoryPreserve=yes (consumers can't read state across restart cycles)"
+grep -qE '^RuntimeDirectoryPreserve=yes$' /etc/systemd/system/airplanes-mlat.service \
+    || fail "airplanes-mlat.service missing RuntimeDirectoryPreserve=yes (misconfig state would vanish across exit-64 fail)"
+grep -qE '^RuntimeDirectory=airplanes-feed$' /etc/systemd/system/airplanes-feed.service \
+    || fail "airplanes-feed.service missing RuntimeDirectory=airplanes-feed"
+grep -qE '^RuntimeDirectory=airplanes-mlat$' /etc/systemd/system/airplanes-mlat.service \
+    || fail "airplanes-mlat.service missing RuntimeDirectory=airplanes-mlat"
+
+# Daemon-time runtime libs installed by feed's update.sh. render-status
+# and apl-feed status source state-reader.sh; the daemons source state-writer.sh.
+[[ -f /usr/local/share/airplanes/lib/state-writer.sh ]] \
+    || fail "state-writer.sh missing at /usr/local/share/airplanes/lib/ (daemons can't publish state)"
+[[ -f /usr/local/share/airplanes/lib/state-reader.sh ]] \
+    || fail "state-reader.sh missing at /usr/local/share/airplanes/lib/ (consumers can't read state)"
+[[ -r /usr/local/share/airplanes/lib/state-reader.sh ]] \
+    || fail "state-reader.sh not readable (mode 0644 expected)"
+
 # enable links exist (proves systemctl enable was effective via the stub).
 # Image services use [Install] WantedBy=default.target, mlat-client venv
 # install also enables a unit; either default.target.wants or
