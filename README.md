@@ -44,6 +44,12 @@ Imager downloads and flashes the image for you. After first boot, browse to `htt
 
 You don't need to reflash. The [airplanes.live feed scripts](https://github.com/airplanes-live/feed) layer airplanes.live on top of an existing readsb setup (FlightAware, ADSBexchange, etc.).
 
+### Coming from the legacy airplanes.live image?
+
+There's no in-place upgrade from the [legacy image](https://github.com/airplanes-live/image-releases) to this one — base OS, web UI, and on-disk layout all differ. To run this image, reflash a microSD card following the steps above.
+
+If you only need the current feeder scripts on your existing legacy install, you don't need to reflash. From the legacy web UI, click **Update Webconfig**, then **Update Feeder**. That gives you everything from [airplanes-live/feed](https://github.com/airplanes-live/feed) without disturbing the legacy web UI or base OS.
+
 ### Want a desktop GUI on the same Pi?
 
 This image is a headless appliance — no graphical environment. If you also want the Raspberry Pi OS desktop on the same Pi, don't flash this image; flash standard Raspberry Pi OS Desktop and layer the feeder stack on top.
