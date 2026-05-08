@@ -76,13 +76,14 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 0 ]
 }
 
-@test "10: USER has no sentinel — template default propagates" {
-    # USER is intentionally not sentinel-gated. The template ships
-    # `USER=airplanes-live-image` so unconfigured feeders show identifiably
-    # on the MLAT map instead of taking feed.env's generic placeholder.
-    echo "USER=airplanes-live-image" > "$FIXTURE"
+@test "10: MLAT_USER has no sentinel — template default propagates" {
+    # MLAT_USER is intentionally not sentinel-gated. The template ships
+    # `MLAT_USER=airplanes-live-image` so unconfigured feeders show
+    # identifiably on the MLAT map instead of taking feed.env's generic
+    # placeholder.
+    echo "MLAT_USER=airplanes-live-image" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
-    [ "${BOOT_CFG[USER]}" = "airplanes-live-image" ]
+    [ "${BOOT_CFG[MLAT_USER]}" = "airplanes-live-image" ]
     [ "${#BOOT_CFG[@]}" -eq 1 ]
 }
 
@@ -176,17 +177,17 @@ EOF
 }
 
 @test "25: mixed real + sentinel keeps only the real ones" {
-    # LATITUDE=0 is sentinel-filtered; LONGITUDE=-0.1, USER (no sentinel),
+    # LATITUDE=0 is sentinel-filtered; LONGITUDE=-0.1, MLAT_USER (no sentinel),
     # and DUMP978=yes propagate.
     cat > "$FIXTURE" <<'EOF'
 LATITUDE=0
 LONGITUDE=-0.1
-USER=airplanes-live-image
+MLAT_USER=airplanes-live-image
 DUMP978=yes
 EOF
     parse_boot_config "$FIXTURE"
     [ "${BOOT_CFG[LONGITUDE]}" = "-0.1" ]
-    [ "${BOOT_CFG[USER]}" = "airplanes-live-image" ]
+    [ "${BOOT_CFG[MLAT_USER]}" = "airplanes-live-image" ]
     [ "${BOOT_CFG[DUMP978]}" = "yes" ]
     [ "${#BOOT_CFG[@]}" -eq 3 ]
 }
@@ -226,29 +227,78 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 1 ]
 }
 
-@test "31: shipped airplanes-config.txt template parses to only the friendly USER default" {
+@test "31: shipped airplanes-config.txt template parses to friendly MLAT defaults" {
     # Alignment guard: if anyone adds a non-sentinel default to the template
-    # other than USER, OR drops USER from the template, OR re-adds USER as
-    # a sentinel, this test fails. Sentinel-gated keys (LATITUDE, LONGITUDE,
-    # ALTITUDE, DUMP978) must still parse to "not in BOOT_CFG"; USER alone
-    # propagates the friendly default airplanes-live-image.
+    # other than MLAT_USER / MLAT_ENABLED, OR drops them, this fails.
+    # Sentinel-gated keys (LATITUDE, LONGITUDE, ALTITUDE, DUMP978) still
+    # parse to "not in BOOT_CFG"; MLAT_USER + MLAT_ENABLED propagate.
     parse_boot_config "$TEMPLATE"
-    [ "${BOOT_CFG[USER]}" = "airplanes-live-image" ]
-    [ "${#BOOT_CFG[@]}" -eq 1 ]
+    [ "${BOOT_CFG[MLAT_USER]}" = "airplanes-live-image" ]
+    [ "${BOOT_CFG[MLAT_ENABLED]}" = "true" ]
+    [ "${#BOOT_CFG[@]}" -eq 2 ]
 }
 
 @test "32: merge_feed_env output round-trips through 'source' safely" {
     FEED_ENV="$TMP/feed.env"
     LOCK_FILE="$TMP/lock"
     : > "$FEED_ENV"
-    BOOT_CFG=([USER]='Dave Display' [LATITUDE]=51.5)
+    BOOT_CFG=([MLAT_USER]='Dave Display' [LATITUDE]=51.5)
     merge_feed_env
     set -a
     # shellcheck source=/dev/null
     source "$FEED_ENV"
     set +a
-    [ "$USER" = "Dave Display" ]
+    [ "$MLAT_USER" = "Dave Display" ]
     [ "$LATITUDE" = "51.5" ]
+}
+
+# --- apply_user_to_mlat_split ---
+
+@test "33a: apply_user_to_mlat_split: USER=name -> MLAT_USER=name + MLAT_ENABLED=true, USER unset" {
+    BOOT_CFG=([USER]='alice')
+    apply_user_to_mlat_split
+    [ "${BOOT_CFG[MLAT_USER]}" = "alice" ]
+    [ "${BOOT_CFG[MLAT_ENABLED]}" = "true" ]
+    [ -z "${BOOT_CFG[USER]+set}" ]
+}
+
+@test "33b: apply_user_to_mlat_split: USER=0 -> MLAT_USER='', MLAT_ENABLED=false" {
+    BOOT_CFG=([USER]='0')
+    apply_user_to_mlat_split
+    [ "${BOOT_CFG[MLAT_USER]}" = "" ]
+    [ "${BOOT_CFG[MLAT_ENABLED]}" = "false" ]
+    [ -z "${BOOT_CFG[USER]+set}" ]
+}
+
+@test "33c: apply_user_to_mlat_split: USER=disable -> MLAT_USER='', MLAT_ENABLED=false" {
+    BOOT_CFG=([USER]='disable')
+    apply_user_to_mlat_split
+    [ "${BOOT_CFG[MLAT_USER]}" = "" ]
+    [ "${BOOT_CFG[MLAT_ENABLED]}" = "false" ]
+}
+
+@test "33d: apply_user_to_mlat_split: explicit MLAT_USER wins, USER dropped" {
+    BOOT_CFG=([MLAT_USER]='from-new' [USER]='from-legacy')
+    apply_user_to_mlat_split
+    [ "${BOOT_CFG[MLAT_USER]}" = "from-new" ]
+    [ -z "${BOOT_CFG[USER]+set}" ]
+}
+
+@test "33e: apply_user_to_mlat_split: explicit MLAT_ENABLED wins, USER dropped" {
+    BOOT_CFG=([MLAT_ENABLED]='false' [USER]='alice')
+    apply_user_to_mlat_split
+    [ "${BOOT_CFG[MLAT_ENABLED]}" = "false" ]
+    [ -z "${BOOT_CFG[MLAT_USER]+set}" ] || [ "${BOOT_CFG[MLAT_USER]}" = "" ]
+    [ -z "${BOOT_CFG[USER]+set}" ]
+}
+
+@test "33f: apply_user_to_mlat_split: no USER, no MLAT_* -> no-op" {
+    BOOT_CFG=([LATITUDE]=51.5)
+    apply_user_to_mlat_split
+    [ -z "${BOOT_CFG[USER]+set}" ]
+    [ -z "${BOOT_CFG[MLAT_USER]+set}" ]
+    [ -z "${BOOT_CFG[MLAT_ENABLED]+set}" ]
+    [ "${BOOT_CFG[LATITUDE]}" = "51.5" ]
 }
 
 # Helper: install a PATH-prepended mock systemctl that records argv.

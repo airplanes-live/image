@@ -23,10 +23,10 @@ HOSTNAME_FILE="${HOSTNAME_FILE:-/etc/hostname}"
 HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 
 # Sentinel values map to "user has not configured this" — they exist so the
-# template parses, not so they get propagated into feed.env. USER is not
-# sentinel-gated: the template ships a friendly default (airplanes-live-image)
-# that we want propagated so unconfigured feeders show identifiably on the
-# MLAT map instead of as the generic upstream placeholder.
+# template parses, not so they get propagated into feed.env. MLAT_USER is
+# not sentinel-gated: the template ships a friendly default
+# (airplanes-live-image) that we want propagated so unconfigured feeders
+# show identifiably on the MLAT map instead of as the generic placeholder.
 declare -gA SENTINELS=(
 	[LATITUDE]=0
 	[LONGITUDE]=0
@@ -459,6 +459,36 @@ _feed_host_drop_lone_override() {
 	fi
 }
 
+# Translate a legacy USER= entry in BOOT_CFG into the new MLAT_USER /
+# MLAT_ENABLED schema. Idempotent: if the boot config sets either of the new
+# keys, those win and any USER= is dropped (the boot template is the user's
+# edit surface and we never want both schemas living together in feed.env).
+#
+# Legacy mapping mirrors update.sh's migrate_user_to_mlat_split:
+#   USER=0 or USER=disable  → MLAT_USER="", MLAT_ENABLED=false
+#   USER=<other>            → MLAT_USER=<value>, MLAT_ENABLED=true
+apply_user_to_mlat_split() {
+	if [[ -v "BOOT_CFG[MLAT_USER]" || -v "BOOT_CFG[MLAT_ENABLED]" ]]; then
+		# Explicit new schema wins; drop any legacy USER alongside it.
+		unset 'BOOT_CFG[USER]' 2>/dev/null || true
+		return 0
+	fi
+	if [[ ! -v "BOOT_CFG[USER]" ]]; then
+		return 0
+	fi
+	case "${BOOT_CFG[USER]}" in
+		0|disable)
+			BOOT_CFG[MLAT_USER]=""
+			BOOT_CFG[MLAT_ENABLED]="false"
+			;;
+		*)
+			BOOT_CFG[MLAT_USER]="${BOOT_CFG[USER]}"
+			BOOT_CFG[MLAT_ENABLED]="true"
+			;;
+	esac
+	unset 'BOOT_CFG[USER]'
+}
+
 # Atomic merge under flock: write a tmp file in the target directory, fsync
 # it, rename onto feed.env, then sync the parent directory. The flock makes
 # concurrent webconfig writes impossible during first-run.
@@ -532,6 +562,7 @@ main() {
 			fi
 			apply_hostname || true
 			expand_feed_host
+			apply_user_to_mlat_split
 			if (( ${#BOOT_CFG[@]} > 0 )); then
 				if ! merge_feed_env; then
 					log "failed to merge boot config into $FEED_ENV"

@@ -104,7 +104,8 @@ cat > "$ROOT_MNT/boot/firmware/airplanes-config.txt" <<'CFG'
 LATITUDE=51.5
 LONGITUDE=-0.1
 ALTITUDE=42m
-USER=ci-smoke
+MLAT_USER=ci-smoke
+MLAT_ENABLED=true
 DUMP978=no
 HOSTNAME=ci-smoke-feeder
 FEED_HOST=test.local
@@ -147,13 +148,15 @@ echo "==> asserting first-run-done marker exists"
 	|| { echo "first-run-done marker missing"; exit 1; }
 
 echo "==> asserting feed.env merged the seeded boot config"
-unset LATITUDE LONGITUDE ALTITUDE USER MLATSERVER TARGET FEED_HOST
+unset LATITUDE LONGITUDE ALTITUDE USER MLAT_USER MLAT_ENABLED MLATSERVER TARGET FEED_HOST
 # shellcheck source=/dev/null
 ( set -a; source "$ROOT_MNT/etc/airplanes/feed.env"; set +a; \
 	[[ "$LATITUDE" == "51.5" ]] || { echo "LATITUDE not merged: $LATITUDE"; exit 1; }; \
 	[[ "$LONGITUDE" == "-0.1" ]] || { echo "LONGITUDE not merged: $LONGITUDE"; exit 1; }; \
 	[[ "$ALTITUDE" == "42m" ]] || { echo "ALTITUDE not merged: $ALTITUDE"; exit 1; }; \
-	[[ "$USER" == "ci-smoke" ]] || { echo "USER not merged: $USER"; exit 1; }; \
+	[[ "$MLAT_USER" == "ci-smoke" ]] || { echo "MLAT_USER not merged: $MLAT_USER"; exit 1; }; \
+	[[ "$MLAT_ENABLED" == "true" ]] || { echo "MLAT_ENABLED not merged: $MLAT_ENABLED"; exit 1; }; \
+	[[ -z "${USER:-}" ]] || { echo "legacy USER leaked into feed.env: $USER"; exit 1; }; \
 	[[ "$MLATSERVER" == "test.local:31090" ]] || { echo "MLATSERVER not derived from FEED_HOST: $MLATSERVER"; exit 1; }; \
 	[[ "$TARGET" == "--net-connector test.local,30004,beast_reduce_plus_out" ]] || { echo "TARGET not derived from FEED_HOST: $TARGET"; exit 1; }; \
 	[[ -z "${FEED_HOST:-}" ]] || { echo "FEED_HOST leaked into feed.env: $FEED_HOST"; exit 1; } \
