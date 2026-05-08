@@ -95,11 +95,11 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # Service files contain expected directives
 grep -q 'ExecStart=/usr/local/share/airplanes/airplanes-feed.sh' /etc/systemd/system/airplanes-feed.service \
     || fail "airplanes-feed.service missing ExecStart=…/airplanes-feed.sh"
-grep -q 'After=airplanes-first-run.service' /etc/systemd/system/airplanes-feed.service \
+grep -qE '^After=.*airplanes-first-run.service' /etc/systemd/system/airplanes-feed.service \
     || fail "airplanes-feed.service missing After=airplanes-first-run.service"
 grep -q 'ExecStart=/usr/local/share/airplanes/airplanes-mlat.sh' /etc/systemd/system/airplanes-mlat.service \
     || fail "airplanes-mlat.service missing ExecStart=…/airplanes-mlat.sh"
-grep -q 'After=airplanes-first-run.service' /etc/systemd/system/airplanes-mlat.service \
+grep -qE '^After=.*airplanes-first-run.service' /etc/systemd/system/airplanes-mlat.service \
     || fail "airplanes-mlat.service missing After=airplanes-first-run.service"
 grep -q 'feed2.airplanes.live,64004' /usr/local/share/airplanes/airplanes-feed.sh \
     || fail "airplanes-feed.sh missing feed2 connector"
