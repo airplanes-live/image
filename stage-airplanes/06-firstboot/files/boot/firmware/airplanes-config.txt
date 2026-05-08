@@ -10,7 +10,7 @@
 # webconfig writes that preserve these keys.)
 # Sentinel defaults (LATITUDE=0, LONGITUDE=0, ALTITUDE=0m, DUMP978=no) are
 # placeholders meaning "not configured" and are NOT propagated into the
-# running config. Other defaults (e.g. USER) are propagated as-is.
+# running config. Other defaults (e.g. MLAT_USER) are propagated as-is.
 
 # Receiver location (decimal degrees, WGS84). MLAT requires accurate values.
 LATITUDE=0
@@ -19,7 +19,11 @@ ALTITUDE=0m
 
 # MLAT display name shown on airplanes.live/myfeed/. Personalize this so your
 # feeder is identifiable on the map; the default below is a generic placeholder.
-USER=airplanes-live-image
+MLAT_USER=airplanes-live-image
+
+# Whether to participate in MLAT (multilateration). Set to false to skip the
+# mlat-client daemon entirely; ADS-B feeding continues regardless.
+MLAT_ENABLED=true
 
 # Optional: override the network hostname so you can reach this Pi as
 # <hostname>.local instead of raspberrypi.local. Useful if you run multiple

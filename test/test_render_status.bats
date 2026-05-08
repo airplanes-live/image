@@ -220,6 +220,39 @@ EOF
     mlat_disabled_by_config
 }
 
+# --- New schema: MLAT_ENABLED-driven ---
+
+@test "mlat_disabled_by_config: MLAT_ENABLED=false -> disabled" {
+    cat > "$PATHS_FEED_ENV" <<'EOF'
+LATITUDE=48.123
+LONGITUDE=11.456
+MLAT_USER=alice
+MLAT_ENABLED=false
+EOF
+    mlat_disabled_by_config
+}
+
+@test "mlat_disabled_by_config: MLAT_ENABLED=true with valid lat/lon -> not disabled" {
+    cat > "$PATHS_FEED_ENV" <<'EOF'
+LATITUDE=48.123
+LONGITUDE=11.456
+MLAT_USER=alice
+MLAT_ENABLED=true
+EOF
+    run ! mlat_disabled_by_config
+}
+
+@test "mlat_disabled_by_config: MLAT_ENABLED wins over orphan USER=0" {
+    cat > "$PATHS_FEED_ENV" <<'EOF'
+LATITUDE=48.123
+LONGITUDE=11.456
+MLAT_USER=alice
+MLAT_ENABLED=true
+USER=0
+EOF
+    run ! mlat_disabled_by_config
+}
+
 # ---- read_aircraft_snapshot -----------------------------------------------
 
 @test "read_aircraft_snapshot: missing file -> ||" {
