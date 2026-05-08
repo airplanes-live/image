@@ -21,7 +21,8 @@ You'll need a Raspberry Pi (Pi Zero 2 W or newer — 512 MB RAM minimum), an RTL
 Flash the image to the microSD card with any tool (`dd`, balenaEtcher, Win32 Disk Imager, etc.). **Before ejecting**, mount the FAT (boot) partition and edit `/boot/firmware/airplanes-config.txt`:
 
 - `LATITUDE`, `LONGITUDE`, `ALTITUDE` — your receiver's location (decimal degrees, WGS84). MLAT requires accurate values.
-- `USER` — your MLAT display name (shows up on airplanes.live).
+- `MLAT_USER` — your MLAT display name (shows up on airplanes.live).
+- `MLAT_ENABLED` — `true` (default) or `false` to opt out of MLAT entirely. ADS-B feeding works either way.
 - `HOSTNAME` — set this if you run more than one Pi on your network (otherwise they'll all collide on `raspberrypi.local`). E.g. `HOSTNAME=airplanes-feeder` makes the Pi reachable at `airplanes-feeder.local`.
 - `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY` — only if you're not on Ethernet.
 

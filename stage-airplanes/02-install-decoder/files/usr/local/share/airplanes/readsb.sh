@@ -2,8 +2,8 @@
 set -e
 
 # /etc/airplanes/feed.env may not include readsb-related keys (feed/install.sh
-# only writes LATITUDE/LONGITUDE/ALTITUDE/USER). Defaults below are the safe
-# production values; webconfig writes the rest later.
+# only writes LATITUDE/LONGITUDE/ALTITUDE/MLAT_USER/MLAT_ENABLED). Defaults
+# below are the safe production values; webconfig writes the rest later.
 GAIN="${GAIN:-auto}"
 LATITUDE="${LATITUDE:-0}"
 LONGITUDE="${LONGITUDE:-0}"

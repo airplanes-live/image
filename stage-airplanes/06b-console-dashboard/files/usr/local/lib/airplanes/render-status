@@ -115,7 +115,10 @@ read_build_short_sha() {
 # match `^\s*KEY=(?:"value"|unquoted)\s*$`, never `source` the file.
 # Last-wins on duplicate keys (matches the Go parser's loop, which keeps
 # overwriting `out[key]`). Whitelist callers; here only LATITUDE / LONGITUDE
-# / USER are needed.
+# / MLAT_USER / MLAT_ENABLED are needed (legacy USER stays in the whitelist
+# until airplanes-update is archived; the legacy fallback in
+# mlat_disabled_by_config reads it to handle a feed.env from before the
+# schema split).
 read_feed_env_var() {
     local key="$1" line val have=0
     [[ -r "$PATHS_FEED_ENV" ]] || return 0
@@ -196,7 +199,10 @@ mlat_disabled_by_config() {
             *)         mlat_enabled="true" ;;
         esac
     fi
-    [[ "$mlat_enabled" == "false" \
+    # Mirror airplanes-mlat.sh exactly: any value other than "true" disables.
+    # If MLAT_ENABLED is hand-edited to "False" or "yes" or "1", the daemon
+    # would refuse to run and the dashboard must say so too.
+    [[ ( -n "$mlat_enabled" && "$mlat_enabled" != "true" ) \
         || "${lat:-0}" == "0" || "${lon:-0}" == "0" ]]
 }
 
