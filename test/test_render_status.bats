@@ -26,6 +26,13 @@ setup() {
     export PATHS_THERMAL="$TMP/nx-thermal"
     export PATHS_LOGO="$LOGO"
     export PATHS_BANNER="$BANNER"
+    # State-file paths default to non-existent so the defensive
+    # `airplanes_read_state() { return 1; }` stub kicks in. Tests that
+    # exercise the state-file path call `setup_mlat_state_test_env` to
+    # install a working stub and point PATHS_STATE_FILE_MLAT at a fixture.
+    export PATHS_STATE_FILE_MLAT="$TMP/nx-mlat-state"
+    export PATHS_STATE_FILE_FEED="$TMP/nx-feed-state"
+    export PATHS_STATE_READER_LIB="$TMP/nx-state-reader-lib"
     export TERM=dumb  # disable color so assertions match plain text
 
     # shellcheck source=/dev/null
@@ -165,92 +172,151 @@ EOF
     [[ "$out" != *A1B2C3D4* ]]
 }
 
-# ---- mlat_disabled_by_config ----------------------------------------------
+# ---- mlat_config_state (state-file-driven, replaces mlat_disabled_by_config) ----
 
-@test "mlat_disabled_by_config: feed.env absent -> disabled (treated as 0)" {
-    mlat_disabled_by_config
+# Helper: write a fixture state file under the test root.
+write_mlat_state() {
+    # write_mlat_state <decision> <reason>
+    local decision="$1" reason="$2"
+    mkdir -p "$(dirname "$PATHS_STATE_FILE_MLAT")"
+    {
+        printf 'schema_version=1\n'
+        printf 'service=airplanes-mlat\n'
+        printf 'state=%s\n' "$decision"
+        printf 'reason=%s\n' "$reason"
+    } > "$PATHS_STATE_FILE_MLAT"
 }
 
-@test "mlat_disabled_by_config: LAT/LON set, USER set -> not disabled" {
-    cat > "$PATHS_FEED_ENV" <<'EOF'
-LATITUDE=48.123
-LONGITUDE=11.456
-USER=alice
-EOF
-    run ! mlat_disabled_by_config
+# Helper: stub airplanes_read_state to read from PATHS_STATE_FILE_MLAT
+# in test mode (mirrors the production lib's contract closely enough).
+# Tests that don't want the stub call `unset_state_reader_stub` to
+# return to the source-time stub (always returns 1).
+install_state_reader_stub() {
+    airplanes_read_state() {
+        local file="$1" key="$2"
+        [[ -f "$file" && -r "$file" ]] || return 1
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+        local first=1 line value
+        while IFS= read -r line; do
+            if (( first )); then
+                first=0
+                [[ "$line" == 'schema_version=1' ]] || return 1
+                continue
+            fi
+            case "$line" in
+                "${key}="*)
+                    value="${line#"${key}="}"
+                    printf '%s' "$value"
+                    return 0
+                    ;;
+            esac
+        done < "$file"
+        return 1
+    }
 }
 
-@test "mlat_disabled_by_config: USER=changeme is NOT disabled (mirrors airplanes-mlat.sh)" {
-    # The upstream wrapper only short-circuits on USER in {0, disable};
-    # `changeme` is the unconfigured-image default but the wrapper still
-    # runs, and the server rejects upstream. The dashboard reflects
-    # systemctl state in that case rather than fabricating "off".
-    cat > "$PATHS_FEED_ENV" <<'EOF'
-LATITUDE=48.123
-LONGITUDE=11.456
-USER=changeme
-EOF
-    run ! mlat_disabled_by_config
+# Helper: stub systemctl to return chosen ActiveState / ExecMainStatus.
+stub_systemctl() {
+    local active_state="$1" exec_main_status="${2:-0}"
+    cat > "$TMP/systemctl" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2 \$3" in
+    "show --property=ActiveState --value") shift 3; printf '%s\n' '$active_state'; exit 0 ;;
+    "show --property=ExecMainStatus --value") shift 3; printf '%s\n' '$exec_main_status'; exit 0 ;;
+esac
+case "\$1" in
+    is-enabled) shift; printf 'enabled\n'; exit 0 ;;
+    is-active) [[ '$active_state' == 'active' ]] && exit 0 || exit 3 ;;
+esac
+exit 0
+STUB
+    chmod +x "$TMP/systemctl"
+    PATH="$TMP:$PATH"
 }
 
-@test "mlat_disabled_by_config: USER=disable -> disabled" {
-    cat > "$PATHS_FEED_ENV" <<'EOF'
-LATITUDE=48.123
-LONGITUDE=11.456
-USER=disable
-EOF
-    mlat_disabled_by_config
+# Test setup amendment: each test overrides the state-reader source
+# path to a non-existent file (causing the defensive stub to kick in)
+# OR calls install_state_reader_stub for a working stub.
+setup_mlat_state_test_env() {
+    install_state_reader_stub
+    PATHS_STATE_FILE_MLAT="$TMP/run/airplanes-mlat/state"
 }
 
-@test "mlat_disabled_by_config: USER=0 -> disabled" {
-    cat > "$PATHS_FEED_ENV" <<'EOF'
-LATITUDE=48.123
-LONGITUDE=11.456
-USER=0
-EOF
-    mlat_disabled_by_config
+@test "mlat_config_state: active + state file present + state=enabled,reason=ok" {
+    setup_mlat_state_test_env
+    write_mlat_state enabled ok
+    run mlat_config_state active
+    [ "$status" -eq 0 ]
+    [ "$output" = 'enabled ok' ]
 }
 
-@test "mlat_disabled_by_config: LAT=0 -> disabled even with valid USER" {
-    cat > "$PATHS_FEED_ENV" <<'EOF'
-LATITUDE=0
-LONGITUDE=11.456
-USER=alice
-EOF
-    mlat_disabled_by_config
+@test "mlat_config_state: active + state=disabled,reason=mlat_enabled_false" {
+    setup_mlat_state_test_env
+    write_mlat_state disabled mlat_enabled_false
+    run mlat_config_state active
+    [ "$output" = 'disabled mlat_enabled_false' ]
 }
 
-# --- New schema: MLAT_ENABLED-driven ---
-
-@test "mlat_disabled_by_config: MLAT_ENABLED=false -> disabled" {
-    cat > "$PATHS_FEED_ENV" <<'EOF'
-LATITUDE=48.123
-LONGITUDE=11.456
-MLAT_USER=alice
-MLAT_ENABLED=false
-EOF
-    mlat_disabled_by_config
+@test "mlat_config_state: active + state=disabled,reason=latitude_zero" {
+    setup_mlat_state_test_env
+    write_mlat_state disabled latitude_zero
+    run mlat_config_state active
+    [ "$output" = 'disabled latitude_zero' ]
 }
 
-@test "mlat_disabled_by_config: MLAT_ENABLED=true with valid lat/lon -> not disabled" {
-    cat > "$PATHS_FEED_ENV" <<'EOF'
-LATITUDE=48.123
-LONGITUDE=11.456
-MLAT_USER=alice
-MLAT_ENABLED=true
-EOF
-    run ! mlat_disabled_by_config
+@test "mlat_config_state: active + state=misconfigured,reason=mlat_user_empty" {
+    setup_mlat_state_test_env
+    write_mlat_state misconfigured mlat_user_empty
+    run mlat_config_state active
+    [ "$output" = 'misconfigured mlat_user_empty' ]
 }
 
-@test "mlat_disabled_by_config: MLAT_ENABLED wins over orphan USER=0" {
-    cat > "$PATHS_FEED_ENV" <<'EOF'
-LATITUDE=48.123
-LONGITUDE=11.456
-MLAT_USER=alice
-MLAT_ENABLED=true
-USER=0
-EOF
-    run ! mlat_disabled_by_config
+@test "mlat_config_state: activating + state=disabled (continuous across restart cycle)" {
+    setup_mlat_state_test_env
+    write_mlat_state disabled mlat_enabled_false
+    run mlat_config_state activating
+    [ "$output" = 'disabled mlat_enabled_false' ]
+}
+
+@test "mlat_config_state: active + no state file -> 'unknown -'" {
+    setup_mlat_state_test_env
+    # No write_mlat_state — file is absent.
+    run mlat_config_state active
+    [ "$output" = 'unknown -' ]
+}
+
+@test "mlat_config_state: failed + ExecMainStatus=64 + state file present -> misconfigured reason" {
+    setup_mlat_state_test_env
+    write_mlat_state misconfigured mlat_user_empty
+    stub_systemctl failed 64
+    run mlat_config_state failed
+    [ "$output" = 'misconfigured mlat_user_empty' ]
+}
+
+@test "mlat_config_state: failed + ExecMainStatus=64 + no state file -> 'misconfigured unknown'" {
+    setup_mlat_state_test_env
+    stub_systemctl failed 64
+    run mlat_config_state failed
+    [ "$output" = 'misconfigured unknown' ]
+}
+
+@test "mlat_config_state: failed + ExecMainStatus=1 -> 'failed exit_1'" {
+    setup_mlat_state_test_env
+    stub_systemctl failed 1
+    run mlat_config_state failed
+    [ "$output" = 'failed exit_1' ]
+}
+
+@test "mlat_config_state: inactive -> 'inactive -'" {
+    setup_mlat_state_test_env
+    run mlat_config_state inactive
+    [ "$output" = 'inactive -' ]
+}
+
+@test "mlat_config_state: empty active_state -> 'inactive -'" {
+    setup_mlat_state_test_env
+    run mlat_config_state ''
+    [ "$output" = 'inactive -' ]
 }
 
 # ---- read_aircraft_snapshot -----------------------------------------------
