@@ -58,29 +58,31 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 0 ]
 }
 
-@test "07: sentinel LATITUDE=0 is filtered" {
+@test "07: literal LATITUDE=0 propagates (no sentinel filter)" {
+    # PR 4.5 retired the sentinel pattern; optional keys are now commented
+    # out in the template. Any uncommented value is treated as user-set,
+    # including a literal zero (the user knowingly set it).
     echo "LATITUDE=0" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
-    [ "${#BOOT_CFG[@]}" -eq 0 ]
+    [ "${BOOT_CFG[LATITUDE]}" = "0" ]
 }
 
-@test "08: sentinel LONGITUDE=0 is filtered" {
+@test "08: literal LONGITUDE=0 propagates" {
     echo "LONGITUDE=0" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
-    [ "${#BOOT_CFG[@]}" -eq 0 ]
+    [ "${BOOT_CFG[LONGITUDE]}" = "0" ]
 }
 
-@test "09: sentinel ALTITUDE=0m is filtered" {
+@test "09: literal ALTITUDE=0m propagates" {
     echo "ALTITUDE=0m" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
-    [ "${#BOOT_CFG[@]}" -eq 0 ]
+    [ "${BOOT_CFG[ALTITUDE]}" = "0m" ]
 }
 
-@test "10: MLAT_USER has no sentinel — template default propagates" {
-    # MLAT_USER is intentionally not sentinel-gated. The template ships
-    # `MLAT_USER=airplanes-live-image` so unconfigured feeders show
-    # identifiably on the MLAT map instead of taking feed.env's generic
-    # placeholder.
+@test "10: MLAT_USER propagates" {
+    # MLAT_USER ships uncommented in the template so unconfigured feeders
+    # show identifiably on the MLAT map instead of taking feed.env's
+    # generic placeholder.
     echo "MLAT_USER=airplanes-live-image" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
     [ "${BOOT_CFG[MLAT_USER]}" = "airplanes-live-image" ]
@@ -103,15 +105,16 @@ EOF
     [ "${BOOT_CFG[DUMP978]}" = "yes" ]
 }
 
-@test "13: LATITUDE=0.5 (close to sentinel 0 but distinct) propagates" {
+@test "13: LATITUDE=0.5 propagates verbatim" {
     echo "LATITUDE=0.5" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
     [ "${BOOT_CFG[LATITUDE]}" = "0.5" ]
 }
 
-@test "14: LATITUDE=0.0 (numeric-equivalent zero) is treated as REAL value" {
-    # User decision: literal-string sentinel match only. 0.0 is the equator,
-    # a real coordinate distinct from the unconfigured sentinel "0".
+@test "14: LATITUDE=0.0 propagates verbatim" {
+    # PR 4.5: with sentinels retired, literal "0" / "0.0" / "0m" all
+    # propagate the same way — the user uncommented the key, so the value
+    # is intent.
     echo "LATITUDE=0.0" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
     [ "${BOOT_CFG[LATITUDE]}" = "0.0" ]
@@ -142,21 +145,20 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 0 ]
 }
 
-@test "19: trailing space on unquoted sentinel still matches sentinel after trim" {
+@test "19: unquoted value with trailing space is trimmed" {
     printf 'LATITUDE=0 \n' > "$FIXTURE"
     parse_boot_config "$FIXTURE"
-    [ "${#BOOT_CFG[@]}" -eq 0 ]
+    [ "${BOOT_CFG[LATITUDE]}" = "0" ]
 }
 
-@test "20: surrounding whitespace on unquoted sentinel still matches" {
+@test "20: unquoted value with surrounding whitespace is trimmed" {
     printf 'LATITUDE=  0  \n' > "$FIXTURE"
     parse_boot_config "$FIXTURE"
-    [ "${#BOOT_CFG[@]}" -eq 0 ]
+    [ "${BOOT_CFG[LATITUDE]}" = "0" ]
 }
 
 @test "21: quoted value with trailing space preserves whitespace verbatim" {
-    # Quoted values express explicit intent — do NOT trim. Result is a real
-    # value (not sentinel) because the literal "0 " != "0".
+    # Quoted values express explicit intent — do NOT trim.
     echo 'LATITUDE="0 "' > "$FIXTURE"
     parse_boot_config "$FIXTURE"
     [ "${BOOT_CFG[LATITUDE]}" = "0 " ]
@@ -180,10 +182,9 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 0 ]
 }
 
-@test "25: mixed real + sentinel keeps only the real ones" {
-    # LATITUDE=0 is sentinel-filtered; LONGITUDE=-0.1, MLAT_USER (no sentinel),
-    # and DUMP978=yes propagate. (DUMP978 is no longer sentinel-gated since
-    # PR 4 retired the legacy toggle in favour of UAT_INPUT translation.)
+@test "25: every uncommented key propagates verbatim" {
+    # No sentinel filtering after PR 4.5 — uncommented values are user intent,
+    # including literal zero. Comments and blank lines are still skipped.
     cat > "$FIXTURE" <<'EOF'
 LATITUDE=0
 LONGITUDE=-0.1
@@ -191,10 +192,11 @@ MLAT_USER=airplanes-live-image
 DUMP978=yes
 EOF
     parse_boot_config "$FIXTURE"
+    [ "${BOOT_CFG[LATITUDE]}" = "0" ]
     [ "${BOOT_CFG[LONGITUDE]}" = "-0.1" ]
     [ "${BOOT_CFG[MLAT_USER]}" = "airplanes-live-image" ]
     [ "${BOOT_CFG[DUMP978]}" = "yes" ]
-    [ "${#BOOT_CFG[@]}" -eq 3 ]
+    [ "${#BOOT_CFG[@]}" -eq 4 ]
 }
 
 # ---- DUMP978 → UAT_INPUT translation (apply_dump978_to_uat_input) ----------
@@ -291,13 +293,13 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 1 ]
 }
 
-@test "31: shipped airplanes-config.txt template parses to friendly MLAT defaults + DUMP978=no" {
-    # Alignment guard: if anyone adds a non-sentinel default to the template,
+@test "31: shipped airplanes-config.txt template parses to MLAT defaults + DUMP978=no" {
+    # Alignment guard: if anyone adds a non-commented key to the template
     # OR changes the MLAT defaults, this fails.
-    # Sentinel-gated keys (LATITUDE, LONGITUDE, ALTITUDE) parse to "not in
-    # BOOT_CFG"; MLAT_USER + MLAT_ENABLED + DUMP978 propagate. DUMP978 is
-    # no longer sentinel-gated (PR 4): apply_dump978_to_uat_input handles
-    # the legacy translation downstream.
+    # PR 4.5: optional keys (LATITUDE/LONGITUDE/ALTITUDE/UAT_INPUT/etc.)
+    # ship commented out; the only uncommented values are MLAT_USER,
+    # MLAT_ENABLED, and DUMP978=no. apply_dump978_to_uat_input strips DUMP978
+    # downstream, leaving feed.env with just the MLAT keys.
     parse_boot_config "$TEMPLATE"
     [ "${BOOT_CFG[MLAT_USER]}" = "airplanes-live-image" ]
     [ "${BOOT_CFG[MLAT_ENABLED]}" = "true" ]

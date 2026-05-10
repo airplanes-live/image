@@ -5,12 +5,10 @@
 # to this file after first boot are NOT re-merged.
 #
 # Format: KEY=value or KEY="value" (one per line, # for comments).
+# Optional keys are commented out; uncomment and set the value to apply.
 # Active lines must NOT carry inline comments — '#' only starts a comment at
 # the start of a line. (Inline '#' would survive first-boot but break later
 # webconfig writes that preserve these keys.)
-# Sentinel defaults (LATITUDE=0, LONGITUDE=0, ALTITUDE=0m) are placeholders
-# meaning "not configured" and are NOT propagated into the running config.
-# Other defaults (e.g. MLAT_USER) are propagated as-is.
 #
 # 978 services (dump978-fa, airplanes-978) are systemctl-enabled at install
 # and self-disable when UAT_INPUT is empty/invalid. As a result, an idle
@@ -18,9 +16,10 @@
 # with airplanes-mlat when MLAT is off in config).
 
 # Receiver location (decimal degrees, WGS84). MLAT requires accurate values.
-LATITUDE=0
-LONGITUDE=0
-ALTITUDE=0m
+# Examples below are placeholders — replace with your coordinates and altitude.
+#LATITUDE=51.5
+#LONGITUDE=-0.1
+#ALTITUDE=20m
 
 # MLAT display name shown on airplanes.live/myfeed/. Personalize this so your
 # feeder is identifiable on the map; the default below is a generic placeholder.
