@@ -8,9 +8,14 @@
 # Active lines must NOT carry inline comments — '#' only starts a comment at
 # the start of a line. (Inline '#' would survive first-boot but break later
 # webconfig writes that preserve these keys.)
-# Sentinel defaults (LATITUDE=0, LONGITUDE=0, ALTITUDE=0m, DUMP978=no) are
-# placeholders meaning "not configured" and are NOT propagated into the
-# running config. Other defaults (e.g. MLAT_USER) are propagated as-is.
+# Sentinel defaults (LATITUDE=0, LONGITUDE=0, ALTITUDE=0m) are placeholders
+# meaning "not configured" and are NOT propagated into the running config.
+# Other defaults (e.g. MLAT_USER) are propagated as-is.
+#
+# 978 services (dump978-fa, airplanes-978) are systemctl-enabled at install
+# and self-disable when UAT_INPUT is empty/invalid. As a result, an idle
+# feeder will show two units in `systemctl --failed` (intended; symmetric
+# with airplanes-mlat when MLAT is off in config).
 
 # Receiver location (decimal degrees, WGS84). MLAT requires accurate values.
 LATITUDE=0
@@ -33,6 +38,8 @@ MLAT_ENABLED=true
 #HOSTNAME=airplanes-feeder
 
 # Enable 978 MHz UAT (US-only; second SDR required). yes|no.
+# This is a one-time first-boot hint that translates to UAT_INPUT below;
+# after first boot, set UAT_INPUT directly via webconfig.
 # Convention: flash the 978 dongle's serial via:
 #   sudo apt install rtl-sdr && rtl_eeprom -s 00000978
 # Override DUMP978_SDR_SERIAL below if you provisioned a different serial.
@@ -59,7 +66,12 @@ DUMP978=no
 # than one non-978 SDR. Single-SDR setups can leave this unset.
 #READSB_SDR_SERIAL=
 
-# 978 UAT options (only consulted when DUMP978=yes).
+# UAT_INPUT directly enables/disables 978 (preferred over DUMP978 above).
+# Empty disables; "127.0.0.1:30978" enables. Anything else makes the wrappers
+# refuse to start (state=misconfigured). webconfig is the normal edit surface.
+#UAT_INPUT="127.0.0.1:30978"
+
+# 978 UAT options (only consulted when 978 is enabled).
 #DUMP978_SDR_SERIAL=978
 #DUMP978_GAIN=42.1
 

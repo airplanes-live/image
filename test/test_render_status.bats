@@ -32,6 +32,7 @@ setup() {
     # install a working stub and point PATHS_STATE_FILE_MLAT at a fixture.
     export PATHS_STATE_FILE_MLAT="$TMP/nx-mlat-state"
     export PATHS_STATE_FILE_FEED="$TMP/nx-feed-state"
+    export PATHS_STATE_FILE_978="$TMP/nx-978-state"
     export PATHS_STATE_READER_LIB="$TMP/nx-state-reader-lib"
     export TERM=dumb  # disable color so assertions match plain text
 
@@ -858,4 +859,120 @@ EOF
 @test "term_cols: returns 80 when stdout is not a TTY" {
     # Sourcing the script runs term_cols here; bats has no TTY on stdout.
     [ "$(term_cols)" = "80" ]
+}
+
+# ---- _978_config_state (PR 4) — same shape as mlat_config_state -----------
+
+write_978_state() {
+    # write_978_state <decision> <reason>
+    local decision="$1" reason="$2"
+    mkdir -p "$(dirname "$PATHS_STATE_FILE_978")"
+    {
+        printf 'schema_version=1\n'
+        printf 'service=airplanes-978\n'
+        printf 'state=%s\n' "$decision"
+        printf 'reason=%s\n' "$reason"
+    } > "$PATHS_STATE_FILE_978"
+}
+
+setup_978_state_test_env() {
+    install_state_reader_stub
+    PATHS_STATE_FILE_978="$TMP/run/airplanes-978/state"
+}
+
+# Stub systemctl returning chosen ActiveState/ExecMainStatus for the
+# 978-specific unit (mirrors stub_systemctl but parameterizes on unit
+# so we can simulate dump978-fa.service exit-64 separately).
+stub_systemctl_978() {
+    local active_state="$1" exec_main_status="${2:-0}"
+    cat > "$TMP/systemctl" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2 \$3" in
+    "show --property=ActiveState --value") shift 3; printf '%s\n' '$active_state'; exit 0 ;;
+    "show --property=ExecMainStatus --value") shift 3; printf '%s\n' '$exec_main_status'; exit 0 ;;
+esac
+case "\$1" in
+    is-enabled) shift; printf 'enabled\n'; exit 0 ;;
+    is-active) [[ '$active_state' == 'active' ]] && exit 0 || exit 3 ;;
+esac
+exit 0
+STUB
+    chmod +x "$TMP/systemctl"
+    PATH="$TMP:$PATH"
+}
+
+@test "_978_config_state: active + state=enabled,reason=ok" {
+    setup_978_state_test_env
+    write_978_state enabled ok
+    run _978_config_state active
+    [ "$status" -eq 0 ]
+    [ "$output" = 'enabled ok' ]
+}
+
+@test "_978_config_state: active + state=disabled,reason=uat_disabled" {
+    setup_978_state_test_env
+    write_978_state disabled uat_disabled
+    run _978_config_state active
+    [ "$output" = 'disabled uat_disabled' ]
+}
+
+@test "_978_config_state: active + state=misconfigured,reason=uat_input_invalid" {
+    setup_978_state_test_env
+    write_978_state misconfigured uat_input_invalid
+    run _978_config_state active
+    [ "$output" = 'misconfigured uat_input_invalid' ]
+}
+
+@test "_978_config_state: failed + ExecMainStatus=64 + state file present → propagates state+reason" {
+    setup_978_state_test_env
+    write_978_state disabled uat_disabled
+    stub_systemctl_978 failed 64
+    run _978_config_state failed airplanes-978.service
+    [ "$output" = 'disabled uat_disabled' ]
+}
+
+@test "_978_config_state: failed + ExecMainStatus=64 + state file absent → 'misconfigured unknown'" {
+    setup_978_state_test_env
+    # Do NOT write state file — race window where dump978-fa exited 64
+    # before airplanes-978 wrote state.
+    stub_systemctl_978 failed 64
+    run _978_config_state failed dump978-fa.service
+    [ "$output" = 'misconfigured unknown' ]
+}
+
+@test "_978_config_state: failed + ExecMainStatus=1 → 'failed exit_1'" {
+    setup_978_state_test_env
+    write_978_state enabled ok
+    stub_systemctl_978 failed 1
+    run _978_config_state failed airplanes-978.service
+    [ "$output" = 'failed exit_1' ]
+}
+
+@test "_978_config_state: inactive → 'inactive -'" {
+    setup_978_state_test_env
+    run _978_config_state inactive
+    [ "$output" = 'inactive -' ]
+}
+
+@test "_978_config_state: active + no state file → 'unknown -'" {
+    setup_978_state_test_env
+    # No write_978_state — file is absent.
+    run _978_config_state active
+    [ "$output" = 'unknown -' ]
+}
+
+@test "unit_state_with_reason: dump978-fa active + state=disabled → 'disabled-by-config uat_disabled'" {
+    setup_978_state_test_env
+    write_978_state disabled uat_disabled
+    stub_systemctl_978 active 0
+    run unit_state_with_reason dump978-fa.service
+    [ "$output" = 'disabled-by-config uat_disabled' ]
+}
+
+@test "unit_state_with_reason: airplanes-978 failed + exit-64 + state=misconfigured → 'misconfigured uat_input_invalid'" {
+    setup_978_state_test_env
+    write_978_state misconfigured uat_input_invalid
+    stub_systemctl_978 failed 64
+    run unit_state_with_reason airplanes-978.service
+    [ "$output" = 'misconfigured uat_input_invalid' ]
 }

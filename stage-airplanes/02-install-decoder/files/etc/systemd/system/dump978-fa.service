@@ -10,6 +10,9 @@ ExecStart=/usr/local/share/airplanes/dump978-fa.sh
 SyslogIdentifier=dump978-fa
 Restart=always
 RestartSec=15
+# Wrapper exits 64 when UAT_INPUT is empty/invalid (parallel to airplanes-mlat).
+# Without this, systemd would restart it every 15s into the same exit-64.
+RestartPreventExitStatus=64
 Nice=-5
 
 [Install]
