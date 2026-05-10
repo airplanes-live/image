@@ -22,19 +22,6 @@ WIFI_KEYFILE="${WIFI_KEYFILE:-${WIFI_KEYFILE_DIR}/airplanes-config-wifi.nmconnec
 HOSTNAME_FILE="${HOSTNAME_FILE:-/etc/hostname}"
 HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 
-# Sentinel values map to "user has not configured this" — they exist so the
-# template parses, not so they get propagated into feed.env. MLAT_USER is
-# not sentinel-gated: the template ships a friendly default
-# (airplanes-live-image) that we want propagated so unconfigured feeders
-# show identifiably on the MLAT map instead of as the generic placeholder.
-# DUMP978 is intentionally NOT here: it's the legacy 978 knob and is
-# translated into UAT_INPUT (and stripped) by apply_dump978_to_uat_input.
-declare -gA SENTINELS=(
-	[LATITUDE]=0
-	[LONGITUDE]=0
-	[ALTITUDE]=0m
-)
-
 # FEED_HOST shorthand: when set, expand_feed_host derives both MLATSERVER and
 # TARGET from one hostname so users editing airplanes-config.txt cannot leak
 # half of the traffic to production by setting only one of the two endpoints.
@@ -84,9 +71,6 @@ parse_boot_config() {
 				value="${value%"${value##*[![:space:]]}"}"
 			fi
 			[[ -z "$value" ]] && continue
-			if [[ -v "SENTINELS[$key]" && "${SENTINELS[$key]}" == "$value" ]]; then
-				continue
-			fi
 			# Shell-metachar reject is for values that get sourced into bash via
 			# feed.env. WIFI_* values are written into an NM keyfile (line-based,
 			# not eval'd) so common password chars like $ and \ are safe there.
