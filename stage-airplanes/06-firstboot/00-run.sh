@@ -24,29 +24,33 @@ install -d -m 755 "${ROOTFS_DIR}/usr/local/sbin"
 install -m 755 files/usr/local/sbin/airplanes-first-run \
 	"${ROOTFS_DIR}/usr/local/sbin/airplanes-first-run"
 
-# Pin the runtime-update branch to the channel this image was built from, so
-# `apl-feed update` (which invokes feed/update.sh) doesn't silently fall back
-# to feed/main on a dev image. update.sh reads this file as the fallback for
-# AIRPLANES_FEED_BRANCH; without it the script defaults to "main" regardless
-# of channel. The file is image-identity, not user state — feed.env stays
-# user-editable.
+# Pin the runtime-update channel this image ships on, so `apl-feed update`
+# (which invokes feed/update.sh) resolves to the right release stream. The
+# build-time clone target (AIRPLANES_FEED_BRANCH) and the runtime update
+# channel are different concerns — the former is a SHA/branch/tag the image
+# was built from, the latter is "stable" or "dev" telling the feed-side
+# resolver which release stream to track at update time. We write only the
+# update channel here.
 #
-# Allowlist mirrors the feed-side validation: only main / dev. Refusing to
-# ship a bogus pin here surfaces release-config typos at build time instead
-# of at every operator's update.
-case "${AIRPLANES_FEED_BRANCH:-}" in
-	main|dev) ;;
+# Allowlist mirrors the feed-side validation: only stable / dev. Refusing
+# to ship a bogus pin here surfaces release-config typos at build time
+# instead of at every operator's update. The feed-side parser additionally
+# accepts "main" as a legacy alias for stable so older images shipped
+# before this rename still resolve correctly; new images should write
+# only the canonical names.
+case "${AIRPLANES_FEED_UPDATE_CHANNEL:-}" in
+	stable|dev) ;;
 	"")
-		echo "AIRPLANES_FEED_BRANCH unset; refusing to ship release-channel" >&2
+		echo "AIRPLANES_FEED_UPDATE_CHANNEL unset; refusing to ship release-channel" >&2
 		exit 1
 		;;
 	*)
-		echo "AIRPLANES_FEED_BRANCH=${AIRPLANES_FEED_BRANCH} not in {main, dev}; refusing to ship release-channel" >&2
+		echo "AIRPLANES_FEED_UPDATE_CHANNEL=${AIRPLANES_FEED_UPDATE_CHANNEL} not in {stable, dev}; refusing to ship release-channel" >&2
 		exit 1
 		;;
 esac
 install -d -m 755 "${ROOTFS_DIR}/etc/airplanes"
-printf '%s\n' "${AIRPLANES_FEED_BRANCH}" \
+printf '%s\n' "${AIRPLANES_FEED_UPDATE_CHANNEL}" \
 	> "${ROOTFS_DIR}/etc/airplanes/release-channel"
 chmod 0644 "${ROOTFS_DIR}/etc/airplanes/release-channel"
 
