@@ -53,7 +53,7 @@ bats test/test_first_run_basic.bats
 ```
 stage0  stage1  stage2          ← upstream pi-gen (base OS, boot files, networking)
 stage-airplanes/                 ← fork-specific
-  00-prep                        ssh / NetworkManager / rfkill setup
+  00-prep                        build deps + chroot hygiene (policy-rc.d, systemctl shim) + SSH posture + cloud-init/first-boot-wizard mask
   01-install-feed                clones airplanes-live/feed, installs apl-feed
   02-install-decoder             builds readsb + dump978
   03-install-tar1090             tar1090 + tar1090-db
@@ -69,9 +69,9 @@ Each substage has `00-run.sh` (host-side: clone, copy files into rootfs) and/or 
 
 ### First-boot flow
 
-Pi boots → cloud-init reads `/boot/firmware/airplanes-config.txt` (template lands there during image build) → `airplanes-first-run.service` runs `/usr/local/sbin/airplanes-first-run` → script parses the config, writes `/etc/airplanes/feed.env`, enables/masks services accordingly → `airplanes-feed.service` connects to `feed.airplanes.live` → `airplanes-claim.timer` periodically polls the claim endpoint until claimed.
+Pi boots → cloud-init runs (handles user-data / WiFi / hostname injected by rpi-imager) → `airplanes-first-run.service` reads `/boot/firmware/airplanes-config.txt` (template lands there during image build), writes `/etc/airplanes/feed.env`, applies HOSTNAME / WiFi keyfile / FEED_HOST translations → `airplanes-feed.service` connects to `feed.airplanes.live` → `airplanes-claim.timer` periodically polls the claim endpoint until claimed. cloud-init does not read `airplanes-config.txt`; that file is exclusively `airplanes-first-run`'s input.
 
-`airplanes-config.txt` keys: `LATITUDE`, `LONGITUDE`, `ALTITUDE`, `MLAT_USER`, `MLAT_ENABLED`, `HOSTNAME`, `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY`, `FEED_HOST`, `MLATSERVER`, `TARGET`. Once boot finishes, the web UI at `http://<hostname>.local/` becomes the canonical config interface (writes to `feed.env`, restarts services). See `stage-airplanes/06-firstboot/README.md` for the parser detail.
+`airplanes-config.txt` keys: `LATITUDE`, `LONGITUDE`, `ALTITUDE`, `MLAT_USER`, `MLAT_ENABLED`, `UAT_INPUT`, `HOSTNAME`, `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY`, `FEED_HOST`, `MLATSERVER`, `TARGET`. Once boot finishes, the web UI at `http://<hostname>.local/` becomes the canonical config interface (writes to `feed.env`, restarts services). See `stage-airplanes/06-firstboot/README.md` for the parser detail.
 
 ### Console dashboard
 
@@ -94,7 +94,7 @@ Both export via `export-image/`. Stable images are reproducible from the pinned 
 
 ## Cross-repo coupling with `airplanes-live/feed`
 
-The boot config schema in `/boot/firmware/airplanes-config.txt` (notably `MLAT_USER` + `MLAT_ENABLED`), the `airplanes-first-run.service` ordering, and the daemon runtime state-file pattern at `/run/<service>/state` are coordinated with `airplanes-live/feed`. Concretely:
+The boot config schema in `/boot/firmware/airplanes-config.txt` (notably `MLAT_USER` + `MLAT_ENABLED` + `UAT_INPUT`), the `airplanes-first-run.service` ordering, and the daemon runtime state-file pattern at `/run/<service>/state` are coordinated with `airplanes-live/feed`. The image-shipped 978 wrappers (`airplanes-978.sh`, `dump978-fa.sh`) read `UAT_INPUT` from feed.env and publish their decision via `state-writer.sh` from `/usr/local/share/airplanes/lib/` (a feed-installed library), so the contract is symmetric with airplanes-feed and airplanes-mlat. Concretely:
 
 - `stage-airplanes/01-install-feed/` clones `airplanes-live/feed` at the ref pinned in `config-{dev,stable}` and installs `apl-feed` plus systemd units.
 - `stage-airplanes/06-firstboot/00-run.sh` writes `/etc/airplanes/release-channel` (read by `feed/update.sh`'s allowlist for `AIRPLANES_FEED_BRANCH`).
