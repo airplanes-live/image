@@ -111,6 +111,67 @@ jobs:
           path: deploy/
           if-no-files-found: error
 
+  publish-dev-latest:
+    # Maintain a single rolling `dev-latest` GitHub prerelease that always
+    # points at the most recent successful push-to-dev build. Downstream
+    # consumers (feed/ CI's mounted-image-smoke-new and image-boot-smoke
+    # `new` matrix cell) resolve the latest dev image via this prerelease
+    # rather than the workflow-artifact API; releases don't expire, so the
+    # 90-day artifact retention window is no longer a coverage concern.
+    name: Update rolling dev-latest prerelease
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && success()
+    runs-on: ubuntu-24.04
+    permissions:
+      # Scoped to this job only — the `build` job stays at the workflow-level
+      # `contents: read`. Keeps the long-running build chroot (which runs
+      # third-party pi-gen stages and downloaded readsb/feed sources) from
+      # holding write permissions to the repo's contents.
+      contents: write
+    concurrency:
+      # Serialize concurrent dev pushes' publish steps. cancel-in-progress
+      # is false so a second dev push doesn't tear an in-flight `--clobber`
+      # upload from a still-running first publish.
+      group: dev-latest-release-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image-dev-arm64
+          path: deploy
+
+      - name: Upsert dev-latest prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(deploy/airplanes-feeder-dev-*.img.xz)
+          shopt -u nullglob
+          if (( ${#assets[@]} != 1 )); then
+              echo "expected exactly 1 airplanes-feeder-dev-*.img.xz under deploy/, found ${#assets[@]}" >&2
+              ls -la deploy/ >&2 || true
+              exit 1
+          fi
+          asset="${assets[0]}"
+          notes="Updated automatically on every push to dev. Overwritten in place; not a per-build release. For stable builds, see release tags.
+
+          Built from $GITHUB_REPOSITORY @ ${SHA}."
+          # Race-safe upsert: try upload first (which fails fast with a
+          # release-not-found error when the release doesn't yet exist),
+          # then fall back to create. Avoids the gh-release-view-then-
+          # create race that two concurrent first-time publishes could hit.
+          if ! gh release upload dev-latest "$asset" --clobber -R "$GITHUB_REPOSITORY" 2>/dev/null; then
+              gh release create dev-latest --prerelease \
+                  --title "Bleeding-edge dev build (rolling)" \
+                  --notes "$notes" \
+                  "$asset" -R "$GITHUB_REPOSITORY"
+          else
+              # Refresh body to reflect the SHA whose asset we just uploaded.
+              gh release edit dev-latest --notes "$notes" -R "$GITHUB_REPOSITORY"
+          fi
+
   cleanup-dev-artifacts:
     # Keep only the newest image-dev-arm64 artifact. Without this, every dev
     # push leaves a ~700MB artifact behind for the default 90-day retention,
