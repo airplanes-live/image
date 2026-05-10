@@ -183,13 +183,25 @@ fi
 [[ -s /etc/airplanes/.build-dump978-sha ]] || fail ".build-dump978-sha missing or empty"
 [[ ! -d /usr/local/src/airplanes-readsb-build ]] || fail "readsb build dir not cleaned up"
 [[ ! -d /usr/local/src/airplanes-dump978-build ]] || fail "dump978 build dir not cleaned up"
-# readsb enabled; 978 services explicitly NOT enabled (first-run flips them on
-# DUMP978=yes, not at image-build time).
+# PR 4: readsb + 978 units are all enabled at install. The 978 wrappers
+# self-disable via exit 64 when UAT_INPUT is empty/invalid (parallel to
+# airplanes-mlat); first-run translates DUMP978=yes into UAT_INPUT and the
+# wrappers handle the rest.
 have_enable_link readsb.service || fail "readsb.service enable symlink missing"
 have_enable_link dump978-fa.service \
-    && fail "dump978-fa.service unexpectedly enabled at build time"
+    || fail "dump978-fa.service should be enabled at install (PR 4: self-disables via exit 64)"
 have_enable_link airplanes-978.service \
-    && fail "airplanes-978.service unexpectedly enabled at build time"
+    || fail "airplanes-978.service should be enabled at install (PR 4: self-disables via exit 64)"
+
+# 978 unit-file directives required for the self-disable pattern: exit 64
+# without RestartPreventExitStatus=64 would loop the unit, and on
+# airplanes-978 the state file must survive the failed terminal state.
+grep -qE '^RestartPreventExitStatus=64$' /etc/systemd/system/dump978-fa.service \
+    || fail "dump978-fa.service missing RestartPreventExitStatus=64 (would restart-loop on UAT_INPUT empty)"
+grep -qE '^RestartPreventExitStatus=64$' /etc/systemd/system/airplanes-978.service \
+    || fail "airplanes-978.service missing RestartPreventExitStatus=64"
+grep -qE '^RuntimeDirectoryPreserve=yes$' /etc/systemd/system/airplanes-978.service \
+    || fail "airplanes-978.service missing RuntimeDirectoryPreserve=yes (state file would vanish across exit-64)"
 
 # Stage 02 fuller-features wiring (consumed by tar1090 heatmap/coverage).
 grep -q -- '--write-json-globe-index' /usr/local/share/airplanes/readsb.sh \
@@ -315,13 +327,26 @@ grep -Eq '^d /run/airplanes 0755 root root' /usr/lib/tmpfiles.d/airplanes-webcon
     || fail "tmpfiles.d snippet wrong shape"
 
 # Sudoers expected set: apply-config + every systemctl verb the write
-# handlers use + reboot + systemd-run. The reveal handler reads the claim
-# secret directly via airplanes-feed group membership (mode 0640) — no
-# sudoers entry required for `apl-feed claim show`.
+# handlers use + reboot + systemd-run. PR 4 collapsed the 8 978-related
+# enable/start/stop/disable entries into 2 plain restart lines (the daemons
+# self-decide on UAT_INPUT, so reconcile is no longer needed).
 for entry in \
     'apply-config' \
     'systemctl restart airplanes-feed.service' \
     'systemctl restart airplanes-mlat.service' \
+    'systemctl restart dump978-fa.service' \
+    'systemctl restart airplanes-978.service' \
+    'systemctl reboot' \
+    'systemd-run --unit=airplanes-update --collect /usr/local/share/airplanes/update.sh'
+do
+    grep -F -q "$entry" /etc/sudoers.d/010_airplanes-webconfig \
+        || fail "sudoers missing entry: $entry"
+done
+
+# PR 4 retired the 8 enable/start/stop/disable 978 entries — none of these
+# legacy verbs should remain in the policy. A leftover line is dead authorization
+# (still a valid sudo escalation surface).
+for stale in \
     'systemctl start dump978-fa.service' \
     'systemctl start airplanes-978.service' \
     'systemctl stop dump978-fa.service' \
@@ -329,12 +354,11 @@ for entry in \
     'systemctl enable dump978-fa.service' \
     'systemctl enable airplanes-978.service' \
     'systemctl disable dump978-fa.service' \
-    'systemctl disable airplanes-978.service' \
-    'systemctl reboot' \
-    'systemd-run --unit=airplanes-update --collect /usr/local/share/airplanes/update.sh'
+    'systemctl disable airplanes-978.service'
 do
-    grep -F -q "$entry" /etc/sudoers.d/010_airplanes-webconfig \
-        || fail "sudoers missing entry: $entry"
+    if grep -F -q "$stale" /etc/sudoers.d/010_airplanes-webconfig; then
+        fail "sudoers still contains retired 978 entry: $stale (PR 4 collapsed these into restart)"
+    fi
 done
 
 # claim-show MUST NOT be in sudoers — webconfig reads the secret directly

@@ -10,15 +10,8 @@ airplanes-webconfig ALL=(root) NOPASSWD: /usr/local/lib/airplanes-webconfig/appl
 
 airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl restart airplanes-feed.service
 airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl restart airplanes-mlat.service
-
-airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl start dump978-fa.service
-airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl start airplanes-978.service
-airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl stop dump978-fa.service
-airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl stop airplanes-978.service
-airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl enable dump978-fa.service
-airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl enable airplanes-978.service
-airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl disable dump978-fa.service
-airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl disable airplanes-978.service
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl restart dump978-fa.service
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl restart airplanes-978.service
 
 airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemd-run --unit=airplanes-update --collect /usr/local/share/airplanes/update.sh

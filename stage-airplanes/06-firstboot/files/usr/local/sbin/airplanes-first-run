@@ -27,11 +27,12 @@ HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 # not sentinel-gated: the template ships a friendly default
 # (airplanes-live-image) that we want propagated so unconfigured feeders
 # show identifiably on the MLAT map instead of as the generic placeholder.
+# DUMP978 is intentionally NOT here: it's the legacy 978 knob and is
+# translated into UAT_INPUT (and stripped) by apply_dump978_to_uat_input.
 declare -gA SENTINELS=(
 	[LATITUDE]=0
 	[LONGITUDE]=0
 	[ALTITUDE]=0m
-	[DUMP978]=no
 )
 
 # FEED_HOST shorthand: when set, expand_feed_host derives both MLATSERVER and
@@ -527,19 +528,39 @@ merge_feed_env() {
 	) 9>"$LOCK_FILE"
 }
 
-# Enable + start (non-blocking) the 978 services iff DUMP978=yes (literal). The
-# units are After=airplanes-first-run.service, so a blocking `enable --now`
-# would deadlock — start jobs queue and run after this script exits.
-toggle_978_services() {
-	[[ "${BOOT_CFG[DUMP978]:-no}" != "yes" ]] && return 0
-	if ! systemctl enable dump978-fa.service airplanes-978.service; then
-		log "failed to enable 978 services"
-		return 1
+# Translate the legacy boot-config DUMP978=yes knob into the canonical
+# UAT_INPUT key consumed by airplanes-978.sh / dump978-fa.sh wrappers. After
+# this pass, DUMP978 is never persisted into feed.env — UAT_INPUT is the
+# single source of truth.
+#
+# Precedence:
+#   - explicit BOOT_CFG[UAT_INPUT] wins if it validates ("" or
+#     "127.0.0.1:30978"); invalid values are dropped with a log line so they
+#     can't poison feed.env (the wrappers would refuse to start anyway).
+#   - else BOOT_CFG[DUMP978]=yes maps to UAT_INPUT=127.0.0.1:30978.
+#   - DUMP978=no is sentinel-stripped earlier; if it reaches us anyway,
+#     unset_ing DUMP978 below ensures it never lands in feed.env.
+#
+# The 978 systemd units are systemctl-enabled at install time and self-disable
+# via exit 64 when UAT_INPUT is empty/invalid, so first-run no longer flips
+# them — replacing the old `enable + start --no-block` flow that lived here.
+apply_dump978_to_uat_input() {
+	if [[ -v "BOOT_CFG[UAT_INPUT]" ]]; then
+		case "${BOOT_CFG[UAT_INPUT]}" in
+			""|"127.0.0.1:30978")
+				;;
+			*)
+				log "rejecting invalid UAT_INPUT=${BOOT_CFG[UAT_INPUT]} from boot config (must be empty or '127.0.0.1:30978')"
+				unset 'BOOT_CFG[UAT_INPUT]'
+				;;
+		esac
 	fi
-	if ! systemctl start --no-block dump978-fa.service airplanes-978.service; then
-		log "failed to queue 978 service starts"
-		return 1
+
+	if [[ ! -v "BOOT_CFG[UAT_INPUT]" && "${BOOT_CFG[DUMP978]:-}" == "yes" ]]; then
+		BOOT_CFG[UAT_INPUT]="127.0.0.1:30978"
 	fi
+
+	unset 'BOOT_CFG[DUMP978]' 2>/dev/null || true
 }
 
 main() {
@@ -563,13 +584,13 @@ main() {
 			apply_hostname || true
 			expand_feed_host
 			apply_user_to_mlat_split
+			apply_dump978_to_uat_input
 			if (( ${#BOOT_CFG[@]} > 0 )); then
 				if ! merge_feed_env; then
 					log "failed to merge boot config into $FEED_ENV"
 				fi
 			fi
 		fi
-		toggle_978_services || true
 	fi
 
 	mkdir -p "$(dirname "$DONE_MARKER")"

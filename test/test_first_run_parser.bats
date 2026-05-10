@@ -87,13 +87,17 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 1 ]
 }
 
-@test "11: sentinel DUMP978=no is filtered" {
+@test "11: DUMP978=no propagates (no longer a sentinel; legacy translation handles it)" {
+    # DUMP978 used to be sentinel-filtered, but PR 4 retired the legacy 978
+    # toggle. Both DUMP978=no and DUMP978=yes now propagate through parse_boot_config;
+    # apply_dump978_to_uat_input is the gate that translates DUMP978=yes into
+    # UAT_INPUT and unsets DUMP978 entirely.
     echo "DUMP978=no" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
-    [ "${#BOOT_CFG[@]}" -eq 0 ]
+    [ "${BOOT_CFG[DUMP978]}" = "no" ]
 }
 
-@test "12: DUMP978=yes (real value, key has sentinel) propagates" {
+@test "12: DUMP978=yes propagates" {
     echo "DUMP978=yes" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
     [ "${BOOT_CFG[DUMP978]}" = "yes" ]
@@ -178,7 +182,8 @@ EOF
 
 @test "25: mixed real + sentinel keeps only the real ones" {
     # LATITUDE=0 is sentinel-filtered; LONGITUDE=-0.1, MLAT_USER (no sentinel),
-    # and DUMP978=yes propagate.
+    # and DUMP978=yes propagate. (DUMP978 is no longer sentinel-gated since
+    # PR 4 retired the legacy toggle in favour of UAT_INPUT translation.)
     cat > "$FIXTURE" <<'EOF'
 LATITUDE=0
 LONGITUDE=-0.1
@@ -190,6 +195,65 @@ EOF
     [ "${BOOT_CFG[MLAT_USER]}" = "airplanes-live-image" ]
     [ "${BOOT_CFG[DUMP978]}" = "yes" ]
     [ "${#BOOT_CFG[@]}" -eq 3 ]
+}
+
+# ---- DUMP978 → UAT_INPUT translation (apply_dump978_to_uat_input) ----------
+
+@test "30: apply_dump978_to_uat_input: DUMP978=yes alone → UAT_INPUT=127.0.0.1:30978" {
+    BOOT_CFG=()
+    BOOT_CFG[DUMP978]="yes"
+    apply_dump978_to_uat_input
+    [ "${BOOT_CFG[UAT_INPUT]}" = "127.0.0.1:30978" ]
+    [ ! -v "BOOT_CFG[DUMP978]" ]
+}
+
+@test "31: apply_dump978_to_uat_input: DUMP978=no alone → UAT_INPUT not set, DUMP978 unset" {
+    BOOT_CFG=()
+    BOOT_CFG[DUMP978]="no"
+    apply_dump978_to_uat_input
+    [ ! -v "BOOT_CFG[UAT_INPUT]" ]
+    [ ! -v "BOOT_CFG[DUMP978]" ]
+}
+
+@test "32: apply_dump978_to_uat_input: explicit UAT_INPUT=127.0.0.1:30978 wins over DUMP978=no" {
+    BOOT_CFG=()
+    BOOT_CFG[DUMP978]="no"
+    BOOT_CFG[UAT_INPUT]="127.0.0.1:30978"
+    apply_dump978_to_uat_input
+    [ "${BOOT_CFG[UAT_INPUT]}" = "127.0.0.1:30978" ]
+    [ ! -v "BOOT_CFG[DUMP978]" ]
+}
+
+@test "33: apply_dump978_to_uat_input: explicit empty UAT_INPUT wins over DUMP978=yes" {
+    BOOT_CFG=()
+    BOOT_CFG[DUMP978]="yes"
+    BOOT_CFG[UAT_INPUT]=""
+    apply_dump978_to_uat_input
+    [ -v "BOOT_CFG[UAT_INPUT]" ]
+    [ "${BOOT_CFG[UAT_INPUT]}" = "" ]
+    [ ! -v "BOOT_CFG[DUMP978]" ]
+}
+
+@test "34: apply_dump978_to_uat_input: invalid UAT_INPUT is dropped (DUMP978=yes then maps to default)" {
+    BOOT_CFG=()
+    BOOT_CFG[UAT_INPUT]="10.0.0.5:30978"
+    BOOT_CFG[DUMP978]="yes"
+    apply_dump978_to_uat_input
+    [ "${BOOT_CFG[UAT_INPUT]}" = "127.0.0.1:30978" ]
+    [ ! -v "BOOT_CFG[DUMP978]" ]
+}
+
+@test "35: apply_dump978_to_uat_input: invalid UAT_INPUT is dropped, no DUMP978 → no UAT_INPUT" {
+    BOOT_CFG=()
+    BOOT_CFG[UAT_INPUT]="evil-host;rm -rf /"
+    apply_dump978_to_uat_input
+    [ ! -v "BOOT_CFG[UAT_INPUT]" ]
+}
+
+@test "36: apply_dump978_to_uat_input: empty BOOT_CFG → no-op" {
+    BOOT_CFG=()
+    apply_dump978_to_uat_input
+    [ "${#BOOT_CFG[@]}" -eq 0 ]
 }
 
 @test "26: shell-injection \$(...) is rejected" {
@@ -227,15 +291,18 @@ EOF
     [ "${#BOOT_CFG[@]}" -eq 1 ]
 }
 
-@test "31: shipped airplanes-config.txt template parses to friendly MLAT defaults" {
-    # Alignment guard: if anyone adds a non-sentinel default to the template
-    # other than MLAT_USER / MLAT_ENABLED, OR drops them, this fails.
-    # Sentinel-gated keys (LATITUDE, LONGITUDE, ALTITUDE, DUMP978) still
-    # parse to "not in BOOT_CFG"; MLAT_USER + MLAT_ENABLED propagate.
+@test "31: shipped airplanes-config.txt template parses to friendly MLAT defaults + DUMP978=no" {
+    # Alignment guard: if anyone adds a non-sentinel default to the template,
+    # OR changes the MLAT defaults, this fails.
+    # Sentinel-gated keys (LATITUDE, LONGITUDE, ALTITUDE) parse to "not in
+    # BOOT_CFG"; MLAT_USER + MLAT_ENABLED + DUMP978 propagate. DUMP978 is
+    # no longer sentinel-gated (PR 4): apply_dump978_to_uat_input handles
+    # the legacy translation downstream.
     parse_boot_config "$TEMPLATE"
     [ "${BOOT_CFG[MLAT_USER]}" = "airplanes-live-image" ]
     [ "${BOOT_CFG[MLAT_ENABLED]}" = "true" ]
-    [ "${#BOOT_CFG[@]}" -eq 2 ]
+    [ "${BOOT_CFG[DUMP978]}" = "no" ]
+    [ "${#BOOT_CFG[@]}" -eq 3 ]
 }
 
 @test "32: merge_feed_env output round-trips through 'source' safely" {
@@ -314,40 +381,14 @@ EOF
     PATH="$TMP/bin:$PATH"
 }
 
-@test "33: toggle_978_services with DUMP978=yes invokes enable + start --no-block" {
-    mock_systemctl
-    BOOT_CFG=([DUMP978]=yes)
-    toggle_978_services
-    grep -Fxq 'enable dump978-fa.service airplanes-978.service' "$SYSCTL_LOG"
-    grep -Fxq 'start --no-block dump978-fa.service airplanes-978.service' "$SYSCTL_LOG"
-}
+# PR 4 retired toggle_978_services — the 978 units are systemctl-enabled at
+# install time and self-disable via exit 64 when UAT_INPUT is empty/invalid.
+# DUMP978 → UAT_INPUT translation is now apply_dump978_to_uat_input, covered
+# by tests 30-36 above; tests 33-37 (toggle_978_services systemctl invocations)
+# were removed with that function.
 
-@test "34: toggle_978_services with DUMP978=no is a no-op" {
-    mock_systemctl
-    BOOT_CFG=([DUMP978]=no)
-    toggle_978_services
-    [ ! -s "$SYSCTL_LOG" ]
-}
-
-@test "35: toggle_978_services with DUMP978=YES (uppercase) is a no-op (literal-yes only)" {
-    mock_systemctl
-    BOOT_CFG=([DUMP978]=YES)
-    toggle_978_services
-    [ ! -s "$SYSCTL_LOG" ]
-}
-
-@test "36: toggle_978_services with DUMP978=true is a no-op (literal-yes only)" {
-    mock_systemctl
-    BOOT_CFG=([DUMP978]=true)
-    toggle_978_services
-    [ ! -s "$SYSCTL_LOG" ]
-}
-
-@test "37: toggle_978_services with DUMP978 unset is a no-op" {
-    mock_systemctl
-    BOOT_CFG=()
-    toggle_978_services
-    [ ! -s "$SYSCTL_LOG" ]
+@test "37: toggle_978_services is no longer defined (PR 4 retired the function)" {
+    ! type -t toggle_978_services >/dev/null 2>&1
 }
 
 # WIFI_* keys must NOT be subject to the shell-metachar reject — common WiFi
