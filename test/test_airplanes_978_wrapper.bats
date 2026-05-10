@@ -12,17 +12,33 @@
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/02-install-decoder/files/usr/local/share/airplanes/airplanes-978.sh"
-    # state-writer.sh is shipped from the feed repo; the worktree is the
-    # image repo, so point at the workspace-rooted feed path.
-    STATE_WRITER_LIB="$BATS_TEST_DIRNAME/../../../../../../feed/scripts/lib/state-writer.sh"
-    if [[ ! -r "$STATE_WRITER_LIB" ]]; then
-        # Fallback: many CI envs unpack feed sibling-of-image. Try the standard
-        # workspace layout above the .claude path traversal.
-        STATE_WRITER_LIB="$BATS_TEST_DIRNAME/../../../../../feed/scripts/lib/state-writer.sh"
-    fi
-    [ -r "$STATE_WRITER_LIB" ]
-
     TMP="$(mktemp -d)"
+
+    # CI bats job only checks out the image repo, not feed/. Inline a
+    # minimal airplanes_write_state mirroring the contract from
+    # feed/scripts/lib/state-writer.sh: schema_version=1 first line, KEY=VALUE
+    # in caller order, 0644 mode, atomic via mktemp+rename. The full feed
+    # implementation also validates keys + rejects CR/LF; the wrapper only
+    # supplies safe values, so the mock skips that for test self-containment.
+    STATE_WRITER_LIB="$TMP/state-writer.sh"
+    cat > "$STATE_WRITER_LIB" <<'WRITER'
+airplanes_write_state() {
+    local target="$1"; shift
+    local kv key value tmp
+    tmp="$(mktemp "${target}.XXXXXX")" || return 1
+    {
+        printf 'schema_version=1\n'
+        for kv in "$@"; do
+            key="${kv%%=*}"
+            value="${kv#*=}"
+            printf '%s=%s\n' "$key" "$value"
+        done
+    } > "$tmp" || { rm -f "$tmp"; return 1; }
+    chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$target"
+}
+WRITER
+
     AIRPLANES_978_RUNTIME_DIR="$TMP/run-airplanes-978"
     mkdir -p "$AIRPLANES_978_RUNTIME_DIR"
 
