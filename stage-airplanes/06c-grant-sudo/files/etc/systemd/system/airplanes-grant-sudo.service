@@ -1,0 +1,57 @@
+[Unit]
+Description=airplanes.live sudo grant for cloud-init-created users
+# Gated on file presence. The script handles its own per-user idempotency
+# (skip if /etc/sudoers.d/099_airplanes-sudo-<name> already exists), so
+# the marker only short-circuits the second-boot-onward systemd transaction.
+# A failed run does NOT write the marker, so systemd retries next boot.
+ConditionPathExists=!/var/lib/airplanes/grant-sudo-done
+# cloud-final.service runs cloud-init's cc_users_groups module — that is
+# where rpi-imager-supplied users actually appear on disk. Without this
+# ordering, the script may race the user creation and find an empty
+# /etc/passwd to grant against.
+After=cloud-final.service
+Wants=cloud-final.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/airplanes-grant-sudo
+
+# Sandboxing. Deliberately mirrors airplanes-first-run.service's posture
+# after commit 21b7100, which switched ProtectSystem=full -> true after the
+# `full` variant silently re-mounted /etc read-only and broke writes to
+# /etc/airplanes/feeder-id. This unit writes to /etc/sudoers.d/ and
+# /var/lib/airplanes/, both of which need /etc and /var writable.
+#
+# ProtectSystem=true keeps /usr and /boot read-only but leaves /etc, /var,
+# /run writable. ProtectSystem=full would re-mount /etc read-only and
+# silently break the per-user grant writes — this is the same trap we are
+# explicitly NOT repeating here.
+#
+# CapabilityBoundingSet is left unrestricted because visudo's pre-validation
+# of the temp file plus the final rename into /etc/sudoers.d/ relies on
+# DAC capabilities. An empty bounding set (as airplanes-first-run uses)
+# works there because hostnamectl does the privileged operation over D-Bus;
+# we have no such proxy.
+ProtectSystem=true
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# AF_UNIX for journal logging via `logger`. PrivateNetwork=yes is defense
+# in depth — sudoers writes are local file ops only.
+RestrictAddressFamilies=AF_UNIX
+PrivateNetwork=yes
+
+[Install]
+WantedBy=multi-user.target
