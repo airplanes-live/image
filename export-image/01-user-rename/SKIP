@@ -1,0 +1,14 @@
+# pi-gen skips a substage when this file exists (build.sh: `[ ! -f SKIP ]`).
+#
+# 01-user-rename/01-run.sh would run `rename-user -f -s` inside the chroot,
+# which creates /etc/ssh/sshd_banner and /etc/ssh/sshd_config.d/rename_user.conf
+# to drive the upstream "first-boot user rename" flow. We don't use that
+# flow — cloud-init / airplanes-first-run owns user creation — so the
+# banner and drop-in just lie to every SSH session ("SSH may not work
+# until a valid user has been set up") after our user is already created.
+#
+# Skipping the whole substage means rename-user never runs and neither
+# file is created. piwiz.desktop cleanup in the else branch is moot:
+# piwiz ships with the desktop OS, not the lite base this image is built
+# from. scripts/first-run-chroot-smoke.sh asserts both files are absent
+# as a regression guard against accidental removal of this SKIP.
