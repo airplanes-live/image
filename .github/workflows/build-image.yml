@@ -161,37 +161,89 @@ jobs:
           fi
           asset="${assets[0]}"
           asset_basename="$(basename -- "$asset")"
-          # Release-asset URL is stable: tag is `dev-latest` and the asset
-          # filename never changes (channel + arch only). rpi-imager fetches
-          # this URL when the user picks our entry from the OS list.
-          asset_url="https://github.com/$GITHUB_REPOSITORY/releases/download/dev-latest/$asset_basename"
-          scripts/make-imager-manifest.sh --image-url "$asset_url" "$asset"
+          short_sha="${SHA:0:12}"
+
+          # Stage an immutable per-commit copy of the .img.xz. The rpi-imager
+          # manifest's `url` field references this SHA-tagged asset so its
+          # extract_sha256 can never go stale relative to the bytes rpi-imager
+          # downloads. The rolling-name .img.xz is replaced each push and is
+          # therefore racy by construction (gh release upload --clobber
+          # deletes then re-POSTs, leaving a brief window where readers see
+          # 404 / partial bytes / mismatched bytes) — pointing the manifest
+          # at an immutable URL keeps the rpi-imager flow coherent even
+          # while the rolling .img.xz is being clobbered. Older immutable
+          # copies are pruned at the end of this step.
+          immutable_basename="${asset_basename%.img.xz}-${short_sha}.img.xz"
+          immutable_path="$(dirname -- "$asset")/$immutable_basename"
+          cp -f -- "$asset" "$immutable_path"
+
+          # extract_sha256 in the manifest comes from the local .img.xz
+          # bytes — those bytes are identical in $asset and $immutable_path
+          # (same cp source), so running the generator against $asset and
+          # overriding only `url` is correct.
+          immutable_url="https://github.com/$GITHUB_REPOSITORY/releases/download/dev-latest/$immutable_basename"
+          scripts/make-imager-manifest.sh --image-url "$immutable_url" "$asset"
           manifest="${asset%.img.xz}.rpi-imager-manifest.json"
           if [[ ! -f "$manifest" ]]; then
               echo "manifest not produced at expected path: $manifest" >&2
               exit 1
           fi
+
           notes="Updated automatically on every push to dev. Overwritten in place; not a per-build release. For stable builds, see release tags.
 
           Built from $GITHUB_REPOSITORY @ ${SHA}."
+
+          # Upload order matters for atomicity (gh release upload processes
+          # files in argument order):
+          #   1. Immutable .img.xz first — this is the asset the new manifest
+          #      references, so it has to be live before the manifest swap.
+          #   2. Rolling-name .img.xz — kept for direct-download consumers
+          #      that bookmark the stable URL. Hash verification of the
+          #      rolling-name .xz against the rolling-name manifest is no
+          #      longer the contract; rpi-imager always reads the manifest's
+          #      url field, which points at the immutable copy.
+          #   3. Manifest — the "commit". Clients see the swap from old→new
+          #      the moment this small file is replaced. The previous
+          #      manifest still references the previous immutable .xz, which
+          #      is kept around (see pruning step) so in-flight rpi-imager
+          #      downloads against the old manifest still complete.
           # Race-safe upsert: try upload first (which fails fast with a
           # release-not-found error when the release doesn't yet exist),
           # then fall back to create. Avoids the gh-release-view-then-
           # create race that two concurrent first-time publishes could hit.
-          # Upload .img.xz and the manifest together so the release never
-          # serves a half-updated state (old .xz + new manifest, or vice
-          # versa). The manifest's extract_sha256 was just computed from
-          # the .xz we're uploading, so rpi-imager's verification will
-          # match.
-          if ! gh release upload dev-latest "$asset" "$manifest" --clobber -R "$GITHUB_REPOSITORY" 2>/dev/null; then
+          upload_args=("$immutable_path" "$asset" "$manifest")
+          if ! gh release upload dev-latest "${upload_args[@]}" --clobber -R "$GITHUB_REPOSITORY" 2>/dev/null; then
               gh release create dev-latest --prerelease \
                   --title "Bleeding-edge dev build (rolling)" \
                   --notes "$notes" \
-                  "$asset" "$manifest" -R "$GITHUB_REPOSITORY"
+                  "${upload_args[@]}" -R "$GITHUB_REPOSITORY"
           else
               # Refresh body to reflect the SHA whose asset we just uploaded.
               gh release edit dev-latest --notes "$notes" -R "$GITHUB_REPOSITORY"
           fi
+
+          # Prune older immutable .img.xz copies. Keep the 3 most recent so
+          # an rpi-imager session that fetched a previous manifest still has
+          # its (immutable) target asset live for the duration of its
+          # download. Without this, the release would accumulate ~800MB per
+          # push indefinitely. The just-uploaded asset sorts first by
+          # createdAt and is therefore preserved.
+          mapfile -t old_asset_urls < <(
+              gh release view dev-latest -R "$GITHUB_REPOSITORY" --json assets \
+                  --jq '.assets
+                        | map(select(.name | test("^airplanes-feeder-dev-[a-z0-9]+-[a-f0-9]{7,}\\.img\\.xz$")))
+                        | sort_by(.createdAt) | reverse | .[3:] | .[].apiUrl'
+          )
+          for asset_url in "${old_asset_urls[@]}"; do
+              # Guard against jq returning something unexpected. Only delete
+              # URLs that look like the release-assets API endpoint.
+              if [[ "$asset_url" != https://api.github.com/repos/*/releases/assets/* ]]; then
+                  echo "skipping unexpected asset URL: $asset_url" >&2
+                  continue
+              fi
+              echo "deleting old immutable asset: $asset_url"
+              gh api --method DELETE "$asset_url"
+          done
 
   cleanup-dev-artifacts:
     # Keep only the newest image-dev-arm64 artifact. Without this, every dev
