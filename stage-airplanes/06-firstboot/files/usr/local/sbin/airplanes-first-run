@@ -81,11 +81,22 @@ declare -gA _BOOT_CFG_WEBCONFIG_KEYS=(
 	[GAIN]=1 [UAT_INPUT]=1
 )
 
+# Set by reject_unknown_boot_key when it rejects a WIFI_* typo. consume_wifi_config
+# inspects this and drops all _WIFI_* state on a true value — without that, a
+# typo like WIFI_PASSWORD="..." paired with a valid WIFI_SSID would still produce
+# an NM keyfile (open network, no [wifi-security] block) because the typo was
+# stripped at parse time before validate_wifi_inputs could see it. Dropping the
+# whole WiFi block on any WIFI_* typo keeps the contract: either ALL three keys
+# land correctly or NONE do.
+declare -g _WIFI_TYPO_REJECTED=0
+
 # Emit a category-specific allowlist-rejection error. Caller must already
 # know the key is outside BOOT_CFG_ALLOWLIST. Three buckets:
 #   - WIFI_* typos → "use WIFI_SSID / WIFI_PASS / WIFI_COUNTRY" (preserves
 #     the secret-safe phrasing of the previous typo guard; never echoes the
-#     value).
+#     value). Also flips _WIFI_TYPO_REJECTED so consume_wifi_config drops the
+#     whole WiFi block — preventing a WIFI_PASSWORD typo from silently
+#     downgrading a WPA SSID to an open-network keyfile.
 #   - configspec.go WriteKeys → "use the webconfig UI" (these are the keys
 #     the UI's form actually writes).
 #   - everything else (MLATSERVER, TARGET, INPUT, INPUT_TYPE, READSB_SDR_*,
@@ -95,6 +106,7 @@ declare -gA _BOOT_CFG_WEBCONFIG_KEYS=(
 reject_unknown_boot_key() {
 	local key="$1" lineno="$2"
 	if [[ "$key" == WIFI_* ]]; then
+		_WIFI_TYPO_REJECTED=1
 		record_error "line $lineno: unrecognized WiFi key $key (use WIFI_SSID, WIFI_PASS, or WIFI_COUNTRY)"
 	elif [[ -n "${_BOOT_CFG_WEBCONFIG_KEYS[$key]:-}" ]]; then
 		record_error "line $lineno: $key is configured via the webconfig UI at http://<hostname>.local/ after first boot, not airplanes-config.txt"
@@ -140,6 +152,7 @@ preflight_boot_dir_writable() {
 declare -gA BOOT_CFG=()
 parse_boot_config() {
 	BOOT_CFG=()
+	_WIFI_TYPO_REJECTED=0
 	local file="$1" first=1 line key value lineno=0
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		lineno=$((lineno + 1))
@@ -235,8 +248,20 @@ validate_wifi_inputs() {
 # WIFI_* typos with the secret-safe "use WIFI_SSID / WIFI_PASS / WIFI_COUNTRY"
 # message before they enter BOOT_CFG; this sweep is defense in depth in case
 # future code seeds BOOT_CFG by some other path.
+#
+# If _WIFI_TYPO_REJECTED is set (parse-time saw a WIFI_* typo like
+# WIFI_PASSWORD), drop _WIFI_SSID / _WIFI_PASS / _WIFI_COUNTRY so write_nm_keyfile
+# becomes a no-op. Otherwise a typo like WIFI_SSID=... + WIFI_PASSWORD=... would
+# write an open-network keyfile for the SSID — silently downgrading the user's
+# intended WPA connection to open (which an attacker could SSID-spoof). The
+# error file already names the typo; the right repair is "fix and reboot,"
+# not "join the wrong network in the meantime."
 consume_wifi_config() {
 	validate_wifi_inputs || true
+
+	if (( _WIFI_TYPO_REJECTED )); then
+		_WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
+	fi
 
 	local key
 	for key in "${!BOOT_CFG[@]}"; do
