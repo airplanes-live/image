@@ -28,13 +28,13 @@ CI (`.github/workflows/ci.yml`) runs on push to `main`/`dev` and on PRs:
 
 | Job | What it does |
 |---|---|
-| `lint` | shellcheck + `bash -n` over stage and test scripts |
-| `bats` | `bats test/` — first-run parsing, WiFi config, hostname handling, FEED_HOST override, webconfig manifest, render-status, sudoers, systemctl stubs |
-| `overlay-smoke` | Checks out `airplanes-live/feed` `dev`, mounts the built image, runs `test/overlay-smoke.sh` integration |
-| `go-test` | `go vet` + `go mod verify` + unit tests for `webconfig/` |
-| `go-cross-build` | `webconfig` cross-compile to arm64 + armhf |
-| `unit-files` | `systemd-analyze verify` against all `.service` files (with stubbed binaries and fetched upstream tar1090 / graphs1090 units) |
-| `update-regression` | Checks out feed `dev`, runs `test/update-regression-smoke.sh` |
+| `shell-lint` | shellcheck + `bash -n` over stage and test scripts |
+| `shell-tests` | `bats test/` — first-run parsing, WiFi config, hostname handling, FEED_HOST override, webconfig manifest, render-status, sudoers, systemctl stubs |
+| `feed-overlay-smoke` | Checks out `airplanes-live/feed` `dev`, mounts the built image, runs `test/overlay-smoke.sh` integration |
+| `webconfig-test` | `go vet` + `go mod verify` + unit tests for `webconfig/` |
+| `webconfig-cross-build` | `webconfig` cross-compile (matrix `webconfig-cross-build-arm64`, `webconfig-cross-build-armhf`) |
+| `systemd-verify` | `systemd-analyze verify` against all `.service` files (with stubbed binaries and fetched upstream tar1090 / graphs1090 units) |
+| `feed-update-regression` | Checks out feed `dev`, runs `test/update-regression-smoke.sh` |
 
 Image builds run separately via `.github/workflows/build-image.yml` on `ubuntu-24.04-arm` (native arm64, no qemu) with per-channel artifact retention plus per-cell rootfs and first-run chroot smoke validation.
 
@@ -100,7 +100,7 @@ The boot config schema in `/boot/firmware/airplanes-config.txt` (notably `MLAT_U
 
 - `stage-airplanes/01-install-feed/` clones `airplanes-live/feed` at the ref pinned in `config-{dev,stable}` and installs `apl-feed` plus systemd units.
 - `stage-airplanes/06-firstboot/00-run.sh` writes `/etc/airplanes/release-channel` (read by `feed/update.sh`'s allowlist for `AIRPLANES_FEED_BRANCH`).
-- CI's `overlay-smoke` and `update-regression` jobs check out feed `dev` and exercise its smoke scripts (`test/image-release-rootfs-smoke.sh`, `test/update-regression-smoke.sh`) against the built image.
+- CI's `feed-overlay-smoke` and `feed-update-regression` jobs check out feed `dev` and exercise its smoke scripts (`test/image-release-rootfs-smoke.sh`, `test/update-regression-smoke.sh`) against the built image.
 
 Changes to the boot config schema, the `airplanes-first-run` parser, or the unit ordering need a paired feed PR (typically against `feed/dev`); see `feed/.claude/rules/architecture.md` for the daemon-side contract — the daemons own the `/run/<service>/state` format and the `MLAT_ENABLED`-before-geo classifier.
 
