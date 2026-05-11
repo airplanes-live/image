@@ -168,14 +168,11 @@ jobs:
           # Stage an immutable per-run copy of the .img.xz keyed on commit
           # SHA + workflow run id + attempt number. The rpi-imager manifest's
           # `url` field references this asset, so its extract_sha256 can
-          # never go stale relative to the bytes rpi-imager downloads. The
-          # rolling-name .img.xz is still --clobbered each push (kept for
-          # direct-download consumers bookmarking the stable URL), but that
-          # race is orthogonal — the rolling .xz is not what rpi-imager
-          # verifies against. RUN_ID + RUN_ATTEMPT means same-SHA re-runs
-          # never collide on an asset name, so we never have to --clobber
-          # an immutable URL that a previously-published manifest may still
-          # reference. Older immutable copies are pruned below.
+          # never go stale relative to the bytes rpi-imager downloads.
+          # RUN_ID + RUN_ATTEMPT means same-SHA re-runs never collide on an
+          # asset name, so we never have to --clobber an immutable URL that
+          # a previously-published manifest may still reference. Older
+          # immutable copies are pruned below.
           immutable_basename="${asset_basename%.img.xz}-${short_sha}-r${RUN_ID}-a${RUN_ATTEMPT}.img.xz"
           immutable_path="$(dirname -- "$asset")/$immutable_basename"
           cp -f -- "$asset" "$immutable_path"
@@ -217,18 +214,37 @@ jobs:
           # sees a manifest whose `url` points at a not-yet-uploaded asset.
           #   1. Immutable .img.xz under a per-run unique name (no
           #      --clobber: name cannot collide with an existing asset).
-          #   2. Rolling-name .img.xz with --clobber.
-          #   3. Manifest with --clobber. This is the "commit": clients see
+          #   2. Manifest with --clobber. This is the "commit": clients see
           #      the swap from old→new the moment this small file is
           #      replaced. The previous manifest still references the
           #      previous immutable .xz, which the pruner keeps around so
           #      in-flight rpi-imager downloads against the old manifest
           #      still complete.
           gh release upload dev-latest "$immutable_path" -R "$GITHUB_REPOSITORY"
-          gh release upload dev-latest "$asset" --clobber -R "$GITHUB_REPOSITORY"
           gh release upload dev-latest "$manifest" --clobber -R "$GITHUB_REPOSITORY"
           # Refresh body to reflect the SHA whose assets we just uploaded.
           gh release edit dev-latest --notes "$notes" -R "$GITHUB_REPOSITORY"
+
+          # One-time cleanup: delete the rolling-name .img.xz asset left
+          # behind by the previous publish flow. feed/test/lib/image-source.sh
+          # now resolves via the manifest's `url` field (which always points
+          # at the immutable asset), so no internal consumer needs the
+          # rolling name. The block is idempotent: subsequent runs find no
+          # rolling-name asset and the conditional below is skipped.
+          rolling_name="airplanes-feeder-${CHANNEL}-arm64.img.xz"
+          rolling_url="$(
+              gh release view dev-latest -R "$GITHUB_REPOSITORY" --json assets \
+                  | jq -r --arg name "$rolling_name" \
+                      '[.assets[]? | select(.name == $name)] | first | .apiUrl // empty'
+          )"
+          if [[ -n "$rolling_url" ]]; then
+              if [[ "$rolling_url" != https://api.github.com/repos/*/releases/assets/* ]]; then
+                  echo "unexpected rolling-asset api URL: $rolling_url" >&2
+                  exit 1
+              fi
+              echo "deleting stale rolling-name asset: $rolling_url"
+              gh api --method DELETE "$rolling_url"
+          fi
 
           # Prune older immutable .img.xz copies. Keep the 3 most recent so
           # an rpi-imager session that fetched a previous manifest still has
