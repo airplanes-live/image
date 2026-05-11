@@ -112,6 +112,14 @@ jobs:
           # is created by stage-airplanes/01-install-feed; here we have to
           # materialise it ourselves.
           sudo install -d -m 0755 /usr/local/share/airplanes
+          # apply_hostname rewrites the /etc/hosts 127.0.1.1 line whose
+          # hostname matches /etc/hostname's current value. GitHub-hosted
+          # runners don't always have a 127.0.1.1 entry that matches, so
+          # set a known baseline (clean hostname + matching /etc/hosts line)
+          # before starting the unit.
+          echo 'ci-runner-baseline' | sudo tee /etc/hostname >/dev/null
+          sudo sh -c "grep -v '^127\\.0\\.1\\.1' /etc/hosts > /etc/hosts.new || true; mv /etc/hosts.new /etc/hosts"
+          echo '127.0.1.1 ci-runner-baseline' | sudo tee -a /etc/hosts >/dev/null
           sudo systemctl daemon-reload
 
       - name: Happy path — apply succeeds, source renamed to .applied.txt
