@@ -231,7 +231,11 @@ jobs:
           # at the immutable asset), so no internal consumer needs the
           # rolling name. The block is idempotent: subsequent runs find no
           # rolling-name asset and the conditional below is skipped.
-          rolling_name="airplanes-feeder-${CHANNEL}-arm64.img.xz"
+          #
+          # Channel is hardcoded `dev` to match this job's filename glob
+          # (`deploy/airplanes-feeder-dev-*.img.xz` above) — the `build`
+          # job's `CHANNEL` env var doesn't propagate into this job.
+          rolling_name="airplanes-feeder-dev-arm64.img.xz"
           rolling_url="$(
               gh release view dev-latest -R "$GITHUB_REPOSITORY" --json assets \
                   | jq -r --arg name "$rolling_name" \
