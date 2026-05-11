@@ -236,8 +236,12 @@ jobs:
           sudo systemctl start airplanes-grant-sudo.service
           sudo systemctl status airplanes-grant-sudo.service --no-pager
 
+          # All file checks below go through `sudo` because /etc/sudoers.d/
+          # is mode 0750 root:root on hosted runners — `[[ -f $GRANT ]]`
+          # as the workflow's unprivileged shell user reports "missing"
+          # even when the file is in fact present.
           GRANT=/etc/sudoers.d/099_airplanes-sudo-ciop
-          [[ -f "$GRANT" ]] \
+          sudo test -f "$GRANT" \
             || { echo "expected grant file $GRANT missing"; sudo ls -la /etc/sudoers.d/; exit 1; }
           sudo grep -qE '^ciop ALL=\(ALL:ALL\) NOPASSWD: ALL$' "$GRANT" \
             || { echo "grant content unexpected"; sudo cat "$GRANT"; exit 1; }
@@ -255,7 +259,7 @@ jobs:
           sudo -n -u ciop sudo -n true \
             || { echo "ciop cannot sudo -n after grant"; exit 1; }
 
-          [[ -f /var/lib/airplanes/grant-sudo-done ]] \
+          sudo test -f /var/lib/airplanes/grant-sudo-done \
             || { echo "marker not written"; exit 1; }
 
       - name: Re-running the unit is a no-op (gated by marker)
