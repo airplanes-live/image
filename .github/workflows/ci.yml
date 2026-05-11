@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  shell-lint:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -62,7 +62,7 @@ jobs:
             exit 1
           fi
 
-  bats:
+  shell-tests:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -73,7 +73,7 @@ jobs:
       - name: bats test/
         run: bats test/
 
-  overlay-smoke:
+  feed-overlay-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -88,7 +88,7 @@ jobs:
       - name: Run overlay smoke
         run: bash test/overlay-smoke.sh feed
 
-  go-test:
+  webconfig-test:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -110,7 +110,8 @@ jobs:
         working-directory: webconfig
         run: go test ./...
 
-  go-cross-build:
+  webconfig-cross-build:
+    name: webconfig-cross-build-${{ matrix.arch }}
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -144,7 +145,7 @@ jobs:
               ./cmd/webconfig
           file /tmp/airplanes-webconfig.${{ matrix.arch }}
 
-  unit-files:
+  systemd-verify:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -251,7 +252,7 @@ jobs:
               airplanes-webconfig.service \
               airplanes-webconfig-reset.service
 
-  update-regression:
+  feed-update-regression:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
