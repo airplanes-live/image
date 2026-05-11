@@ -135,6 +135,11 @@ jobs:
       group: dev-latest-release-${{ github.repository }}
       cancel-in-progress: false
     steps:
+      # Need scripts/make-imager-manifest.sh available locally — it generates
+      # the rpi-imager Custom Repository sidecar that gets uploaded alongside
+      # the .img.xz. No submodules / no LFS, so a shallow checkout is enough.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: image-dev-arm64
@@ -155,6 +160,17 @@ jobs:
               exit 1
           fi
           asset="${assets[0]}"
+          asset_basename="$(basename -- "$asset")"
+          # Release-asset URL is stable: tag is `dev-latest` and the asset
+          # filename never changes (channel + arch only). rpi-imager fetches
+          # this URL when the user picks our entry from the OS list.
+          asset_url="https://github.com/$GITHUB_REPOSITORY/releases/download/dev-latest/$asset_basename"
+          scripts/make-imager-manifest.sh --image-url "$asset_url" "$asset"
+          manifest="${asset%.img.xz}.rpi-imager-manifest.json"
+          if [[ ! -f "$manifest" ]]; then
+              echo "manifest not produced at expected path: $manifest" >&2
+              exit 1
+          fi
           notes="Updated automatically on every push to dev. Overwritten in place; not a per-build release. For stable builds, see release tags.
 
           Built from $GITHUB_REPOSITORY @ ${SHA}."
@@ -162,11 +178,16 @@ jobs:
           # release-not-found error when the release doesn't yet exist),
           # then fall back to create. Avoids the gh-release-view-then-
           # create race that two concurrent first-time publishes could hit.
-          if ! gh release upload dev-latest "$asset" --clobber -R "$GITHUB_REPOSITORY" 2>/dev/null; then
+          # Upload .img.xz and the manifest together so the release never
+          # serves a half-updated state (old .xz + new manifest, or vice
+          # versa). The manifest's extract_sha256 was just computed from
+          # the .xz we're uploading, so rpi-imager's verification will
+          # match.
+          if ! gh release upload dev-latest "$asset" "$manifest" --clobber -R "$GITHUB_REPOSITORY" 2>/dev/null; then
               gh release create dev-latest --prerelease \
                   --title "Bleeding-edge dev build (rolling)" \
                   --notes "$notes" \
-                  "$asset" -R "$GITHUB_REPOSITORY"
+                  "$asset" "$manifest" -R "$GITHUB_REPOSITORY"
           else
               # Refresh body to reflect the SHA whose asset we just uploaded.
               gh release edit dev-latest --notes "$notes" -R "$GITHUB_REPOSITORY"
