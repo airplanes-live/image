@@ -3,13 +3,54 @@
 # feeder image artifact (.img.xz). The manifest URL pasted into rpi-imager v2.0.8+
 # enables the OS Customization (Edit Settings) flow via init_format=cloudinit-rpi.
 #
-# Usage: make-imager-manifest.sh PATH_TO_IMAGE.img.xz
+# Usage: make-imager-manifest.sh [--image-url URL] PATH_TO_IMAGE.img.xz
+#
+# With --image-url, the manifest's `url` field is set to URL instead of a
+# file:// URI of the local artifact. Use this in CI when the manifest will be
+# served from a GitHub release and rpi-imager has to fetch over HTTPS.
+# extract_size / extract_sha256 / image_download_size are still computed from
+# the local .img.xz — those have to match the asset rpi-imager downloads from
+# URL, so callers are responsible for keeping the two in sync.
 #
 # Output sibling file: ${input%.img.xz}.rpi-imager-manifest.json
 set -euo pipefail
 
+IMAGE_URL_OVERRIDE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --image-url)
+            if [[ $# -lt 2 ]]; then
+                echo "--image-url requires a URL argument" >&2
+                exit 2
+            fi
+            IMAGE_URL_OVERRIDE="$2"
+            shift 2
+            ;;
+        --image-url=*)
+            IMAGE_URL_OVERRIDE="${1#--image-url=}"
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            echo "unknown flag: $1" >&2
+            exit 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
 if [[ $# -ne 1 ]]; then
-    echo "usage: $(basename -- "$0") PATH_TO_IMAGE.img.xz" >&2
+    echo "usage: $(basename -- "$0") [--image-url URL] PATH_TO_IMAGE.img.xz" >&2
+    exit 2
+fi
+
+if [[ -n "$IMAGE_URL_OVERRIDE" && "$IMAGE_URL_OVERRIDE" != *://* ]]; then
+    echo "--image-url must be an absolute URL (scheme://...): $IMAGE_URL_OVERRIDE" >&2
     exit 2
 fi
 
@@ -78,9 +119,13 @@ if [[ ! "$EXTRACT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     exit 1
 fi
 
-# file:// URI from absolute path. pathlib.as_uri() handles spaces and non-ASCII
-# chars correctly (RFC 3986 percent-encoding) — bash printf does not.
-IMAGE_URI="$(python3 -c 'import sys, pathlib; print(pathlib.Path(sys.argv[1]).as_uri())' "$INPUT_ABS")"
+if [[ -n "$IMAGE_URL_OVERRIDE" ]]; then
+    IMAGE_URI="$IMAGE_URL_OVERRIDE"
+else
+    # file:// URI from absolute path. pathlib.as_uri() handles spaces and non-ASCII
+    # chars correctly (RFC 3986 percent-encoding) — bash printf does not.
+    IMAGE_URI="$(python3 -c 'import sys, pathlib; print(pathlib.Path(sys.argv[1]).as_uri())' "$INPUT_ABS")"
+fi
 
 # Use the .img.xz mtime, not now(): the manifest follows the artifact, and
 # multiple regenerations of the manifest for the same image should produce the
