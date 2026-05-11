@@ -132,13 +132,11 @@ jobs:
           # hostnamectl, which D-Buses systemd-hostnamed via AF_UNIX. This
           # also confirms /etc/hostname + /etc/hosts writes work — those are
           # the writes ProtectSystem=full would have silently locked.
+          # FEED_HOST exercises expand_feed_host's MLATSERVER/TARGET synthesis
+          # under the same sandbox.
           sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
-          LATITUDE=51.5
-          LONGITUDE=-0.1
-          ALTITUDE=42m
-          MLAT_USER=ci-systemd-smoke
-          MLAT_ENABLED=true
           HOSTNAME=airplanes-ci-smoke
+          FEED_HOST=ci-backend.local
           CFG
           sudo systemctl start airplanes-first-run.service
           sudo systemctl status airplanes-first-run.service --no-pager
@@ -149,23 +147,28 @@ jobs:
             || { echo "applied.txt missing"; exit 1; }
           [[ ! -f /boot/firmware/airplanes-config.error.txt ]] \
             || { echo "unexpected error.txt"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
-          sudo grep -q '^LATITUDE="51.5"$' /etc/airplanes/feed.env \
-            || { echo "LATITUDE not merged into feed.env"; sudo cat /etc/airplanes/feed.env; exit 1; }
-          sudo grep -q '^MLAT_USER="ci-systemd-smoke"$' /etc/airplanes/feed.env \
-            || { echo "MLAT_USER not merged into feed.env"; exit 1; }
+          sudo grep -q '^MLATSERVER="ci-backend.local:31090"$' /etc/airplanes/feed.env \
+            || { echo "MLATSERVER not derived from FEED_HOST"; sudo cat /etc/airplanes/feed.env; exit 1; }
+          sudo grep -q '^TARGET="--net-connector ci-backend.local,30004,beast_reduce_plus_out"$' /etc/airplanes/feed.env \
+            || { echo "TARGET not derived from FEED_HOST"; sudo cat /etc/airplanes/feed.env; exit 1; }
           [[ "$(sudo cat /etc/hostname | tr -d '\n\r')" = "airplanes-ci-smoke" ]] \
             || { echo "/etc/hostname not updated: got '$(sudo cat /etc/hostname)'"; exit 1; }
           sudo grep -qE '^127\.0\.1\.1[[:space:]]+airplanes-ci-smoke' /etc/hosts \
             || { echo "/etc/hosts 127.0.1.1 line not updated"; sudo cat /etc/hosts; exit 1; }
-          # HOSTNAME is a synthetic key — must never reach feed.env.
+          # HOSTNAME and FEED_HOST are synthetic keys — must never reach feed.env.
           ! sudo grep -qE '^HOSTNAME=' /etc/airplanes/feed.env \
             || { echo "HOSTNAME leaked into feed.env"; exit 1; }
+          ! sudo grep -qE '^FEED_HOST=' /etc/airplanes/feed.env \
+            || { echo "FEED_HOST leaked into feed.env"; exit 1; }
 
-      - name: Failure path — invalid HOSTNAME leaves source + writes .error.txt
+      - name: Failure path — invalid HOSTNAME leaves source + writes .error.txt; valid key still applies
         run: |
+          # Invalid HOSTNAME blocks the rename; a valid FEED_HOST alongside it
+          # still gets its derived endpoints merged into feed.env (errors don't
+          # prevent the merge — they only prevent the source-rename step).
           sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
           HOSTNAME=foo.bar
-          LATITUDE=42.0
+          FEED_HOST=ci-failure-backend.local
           CFG
           sudo systemctl restart airplanes-first-run.service
           sudo systemctl status airplanes-first-run.service --no-pager
@@ -176,9 +179,37 @@ jobs:
             || { echo "error.txt missing"; exit 1; }
           sudo grep -qi 'HOSTNAME' /boot/firmware/airplanes-config.error.txt \
             || { echo "error.txt does not mention HOSTNAME"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
-          # The valid key in the same file should still have been merged.
-          sudo grep -q '^LATITUDE="42.0"$' /etc/airplanes/feed.env \
-            || { echo "LATITUDE not merged from partial-error file"; sudo cat /etc/airplanes/feed.env; exit 1; }
+          # The valid FEED_HOST in the same file should still have been merged
+          # via expand_feed_host -> MLATSERVER + TARGET.
+          sudo grep -q '^MLATSERVER="ci-failure-backend.local:31090"$' /etc/airplanes/feed.env \
+            || { echo "MLATSERVER not merged from partial-error file"; sudo cat /etc/airplanes/feed.env; exit 1; }
+
+      - name: Allowlist path — non-bootstrap key is rejected with category-specific message
+        run: |
+          # LATITUDE is webconfig-writable; the parser must reject it at parse
+          # time with a 'webconfig UI' pointer rather than silently dropping it
+          # or letting it reach feed.env.
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          HOSTNAME=airplanes-ci-allowlist
+          LATITUDE=51.5
+          CFG
+          sudo systemctl restart airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source missing after allowlist rejection"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "error.txt missing"; exit 1; }
+          sudo grep -q 'LATITUDE' /boot/firmware/airplanes-config.error.txt \
+            || { echo "error.txt does not mention LATITUDE"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          sudo grep -q 'webconfig UI' /boot/firmware/airplanes-config.error.txt \
+            || { echo "error.txt does not point at the webconfig UI for LATITUDE"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          # LATITUDE must NOT have reached feed.env via this path.
+          ! sudo grep -qE '^LATITUDE="51.5"$' /etc/airplanes/feed.env \
+            || { echo "LATITUDE leaked into feed.env despite allowlist rejection"; exit 1; }
+          # The valid HOSTNAME in the same file should still have been applied.
+          [[ "$(sudo cat /etc/hostname | tr -d '\n\r')" = "airplanes-ci-allowlist" ]] \
+            || { echo "valid HOSTNAME not applied alongside allowlist rejection"; exit 1; }
 
       - name: Dump unit logs on failure
         if: failure()
