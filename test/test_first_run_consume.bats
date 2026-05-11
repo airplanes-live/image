@@ -396,3 +396,20 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
     ! grep -q 'HUNTLEAK' "$ERROR_FILE"
     [[ "$output_combined" != *"HUNTLEAK"* ]]
 }
+
+@test "24: WIFI_PASSWORD typo + valid WIFI_SSID -> NO open-network keyfile written" {
+    # Without this guard, a WIFI_PASSWORD typo would silently downgrade the
+    # user's intended WPA SSID to an open-network keyfile (NM keyfile written
+    # with ssid=... and NO [wifi-security] block). The user would then join an
+    # attacker-spoofable open network instead of getting "WiFi doesn't work
+    # until you fix the typo." consume_wifi_config drops _WIFI_* state on any
+    # WIFI_* allowlist rejection — write_nm_keyfile becomes a no-op.
+    write_cfg \
+        'WIFI_SSID="MyNet"' \
+        'WIFI_PASSWORD="hunter22-secret"'
+    run main
+    [ "$status" -eq 0 ]
+    [ -f "$ERROR_FILE" ]
+    # No keyfile at all — neither WPA nor open.
+    [ ! -f "$WIFI_KEYFILE" ]
+}

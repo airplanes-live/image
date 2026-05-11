@@ -121,7 +121,7 @@ EOF
     [[ "${BOOT_CFG_ERRORS[0]}" =~ malformed ]]
 }
 
-@test "21: line starting with = (no key) is silently skipped" {
+@test "21: line starting with = (no key) is recorded as malformed" {
     echo "=value" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
     [ "${#BOOT_CFG[@]}" -eq 0 ]
@@ -131,7 +131,7 @@ EOF
     [[ "${BOOT_CFG_ERRORS[0]}" =~ malformed ]]
 }
 
-@test "22: key starting with digit is silently skipped" {
+@test "22: key starting with digit is recorded as malformed" {
     echo "123KEY=value" > "$FIXTURE"
     parse_boot_config "$FIXTURE"
     [ "${#BOOT_CFG[@]}" -eq 0 ]
