@@ -250,17 +250,20 @@ jobs:
               gh api --method DELETE "$rolling_url"
           fi
 
-          # Prune older immutable .img.xz copies. Keep the 3 most recent so
-          # an rpi-imager session that fetched a previous manifest still has
-          # its (immutable) target asset live for the duration of its
-          # download. Without this, the release would accumulate ~800MB per
-          # push indefinitely. The just-uploaded asset sorts first by
-          # createdAt and is therefore preserved.
+          # Prune older immutable .img.xz copies. Keep only the
+          # just-uploaded one; everything else goes. This is a bleeding-edge
+          # channel — the README is explicit that flashing tracks the
+          # latest cut and to expect occasional reflashes. An rpi-imager
+          # session that straddles a publish may hit a 404 on the old
+          # immutable URL it cached, and the user reties; that matches the
+          # contract and saves ~800 MB of release storage per kept copy.
+          # The just-uploaded asset sorts first by createdAt and is
+          # therefore preserved.
           mapfile -t old_asset_urls < <(
               gh release view dev-latest -R "$GITHUB_REPOSITORY" --json assets \
                   --jq '.assets
                         | map(select(.name | test("^airplanes-feeder-dev-[a-z0-9]+-[a-f0-9]{7,}-r[0-9]+-a[0-9]+\\.img\\.xz$")))
-                        | sort_by(.createdAt) | reverse | .[3:] | .[].apiUrl'
+                        | sort_by(.createdAt) | reverse | .[1:] | .[].apiUrl'
           )
           for asset_url in "${old_asset_urls[@]}"; do
               # Guard against jq returning something unexpected. Only delete
