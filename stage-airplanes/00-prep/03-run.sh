@@ -22,3 +22,12 @@
 mkdir -p "${ROOTFS_DIR}/etc/systemd/system"
 ln -sf /dev/null "${ROOTFS_DIR}/etc/systemd/system/userconfig.service"
 ln -sf /dev/null "${ROOTFS_DIR}/etc/systemd/system/systemd-firstboot.service"
+
+# raspberrypi-sys-mods ships /etc/ssh/sshd_banner + sshd_config.d/rename_user.conf
+# which print "SSH may not work until a valid user has been set up" on every
+# login. userconf-pi removes them after it creates the user, but we route
+# around userconf-pi entirely (see masks above). cloud-init's cc_users_groups
+# creates a valid uid-1000 user without touching these files, so the banner
+# stays on disk and lies to every SSH session. Delete at build time.
+rm -f "${ROOTFS_DIR}/etc/ssh/sshd_banner"
+rm -f "${ROOTFS_DIR}/etc/ssh/sshd_config.d/rename_user.conf"

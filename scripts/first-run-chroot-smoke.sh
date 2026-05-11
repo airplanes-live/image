@@ -249,6 +249,12 @@ sshd_dump | grep -qx 'kbdinteractiveauthentication no' \
 sshd_dump | grep -qx 'pubkeyauthentication yes' \
 	|| { echo "effective PubkeyAuthentication != yes"; exit 1; }
 
+echo "==> asserting stale 'valid user' SSH banner is absent"
+for stale_banner in /etc/ssh/sshd_banner /etc/ssh/sshd_config.d/rename_user.conf; do
+	[[ ! -e "$ROOT_MNT$stale_banner" ]] \
+		|| { echo "stale banner file present: $stale_banner"; exit 1; }
+done
+
 echo "==> asserting userconfig + systemd-firstboot are masked"
 for masked_unit in userconfig.service systemd-firstboot.service; do
 	link="$ROOT_MNT/etc/systemd/system/$masked_unit"
