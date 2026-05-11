@@ -44,6 +44,13 @@ export ENABLE_SSH="${ENABLE_SSH:-1}"
 
 export AIRPLANES_FEED_REPO="${AIRPLANES_FEED_REPO:-https://github.com/airplanes-live/feed.git}"
 export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-9318d02efd70488f831cbcb84ca3ec4cb9cc9ece}"
+# Runtime update channel baked into /etc/airplanes/release-channel by stage
+# 06. The feed-side resolver reads this at update time and (for stable)
+# resolves the latest v[MAJOR].[MINOR].[PATCH] release tag via git
+# ls-remote. AIRPLANES_FEED_BRANCH above pins the BUILD-time source clone;
+# AIRPLANES_FEED_UPDATE_CHANNEL below names the RUNTIME release stream.
+# Allowlist enforced by stage 06: stable, dev.
+export AIRPLANES_FEED_UPDATE_CHANNEL="${AIRPLANES_FEED_UPDATE_CHANNEL:-stable}"
 
 export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
 export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-4d6c614d7940ce0117db61b1fa91c81fd9e67988}"

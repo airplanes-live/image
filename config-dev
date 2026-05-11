@@ -40,6 +40,10 @@ export ENABLE_SSH="${ENABLE_SSH:-1}"
 # Branch-tracking on dev — moving target by design, catches upstream drift early.
 export AIRPLANES_FEED_REPO="${AIRPLANES_FEED_REPO:-https://github.com/airplanes-live/feed.git}"
 export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-dev}"
+# Runtime update channel baked into /etc/airplanes/release-channel by stage
+# 06. Dev images continue tracking feed/dev branch HEAD at runtime, so the
+# feed-side resolver skips tag resolution entirely for this channel.
+export AIRPLANES_FEED_UPDATE_CHANNEL="${AIRPLANES_FEED_UPDATE_CHANNEL:-dev}"
 
 export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
 export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-dev}"
