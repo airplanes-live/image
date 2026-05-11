@@ -6,8 +6,11 @@
 # airplanes-config.txt to point a feeder at a non-production backend (homelab
 # / cloned airplanes.live setup) without having to know the readsb
 # --net-connector syntax. expand_feed_host derives MLATSERVER and TARGET from
-# it, respects explicit user overrides, and unsets FEED_HOST so the synthetic
-# key never reaches feed.env.
+# it and unsets FEED_HOST so the synthetic key never reaches feed.env.
+#
+# MLATSERVER and TARGET aren't allowlisted in airplanes-config.txt, so they
+# can never enter BOOT_CFG via the parser — expand_feed_host always overwrites
+# them unconditionally.
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06-firstboot/files/usr/local/sbin/airplanes-first-run"
@@ -15,6 +18,7 @@ setup() {
     # shellcheck source=/dev/null
     source "$SCRIPT"
     BOOT_CFG=()
+    BOOT_CFG_ERRORS=()
 }
 
 @test "01: empty BOOT_CFG -> no-op" {
@@ -23,11 +27,11 @@ setup() {
 }
 
 @test "02: FEED_HOST unset -> no MLATSERVER/TARGET synthesized" {
-    BOOT_CFG=([LATITUDE]=51.5)
+    BOOT_CFG=([HOSTNAME]=feeder1)
     expand_feed_host
     [ ! -v "BOOT_CFG[MLATSERVER]" ]
     [ ! -v "BOOT_CFG[TARGET]" ]
-    [ "${BOOT_CFG[LATITUDE]}" = "51.5" ]
+    [ "${BOOT_CFG[HOSTNAME]}" = "feeder1" ]
 }
 
 @test "03: bare hostname derives both endpoints with default ports" {
@@ -59,38 +63,7 @@ setup() {
     [ "${BOOT_CFG[TARGET]}" = "--net-connector 10.0.0.5,30004,beast_reduce_plus_out" ]
 }
 
-@test "07: explicit MLATSERVER override is respected; TARGET still derived" {
-    BOOT_CFG=([FEED_HOST]="mybackend.local" [MLATSERVER]="other.example:1234")
-    expand_feed_host
-    [ "${BOOT_CFG[MLATSERVER]}" = "other.example:1234" ]
-    [ "${BOOT_CFG[TARGET]}" = "--net-connector mybackend.local,30004,beast_reduce_plus_out" ]
-    [ ! -v "BOOT_CFG[FEED_HOST]" ]
-}
-
-@test "08: explicit TARGET override is respected; MLATSERVER still derived" {
-    BOOT_CFG=(
-        [FEED_HOST]="mybackend.local"
-        [TARGET]="--net-connector first.example,30004,beast_reduce_plus_out,second.example,64004"
-    )
-    expand_feed_host
-    [ "${BOOT_CFG[MLATSERVER]}" = "mybackend.local:31090" ]
-    [ "${BOOT_CFG[TARGET]}" = "--net-connector first.example,30004,beast_reduce_plus_out,second.example,64004" ]
-    [ ! -v "BOOT_CFG[FEED_HOST]" ]
-}
-
-@test "09: both overrides set; FEED_HOST still stripped" {
-    BOOT_CFG=(
-        [FEED_HOST]="mybackend.local"
-        [MLATSERVER]="other.example:1234"
-        [TARGET]="--net-connector custom"
-    )
-    expand_feed_host
-    [ "${BOOT_CFG[MLATSERVER]}" = "other.example:1234" ]
-    [ "${BOOT_CFG[TARGET]}" = "--net-connector custom" ]
-    [ ! -v "BOOT_CFG[FEED_HOST]" ]
-}
-
-@test "10: bracketed IPv6 is rejected (use MLATSERVER/TARGET directly)" {
+@test "10: bracketed IPv6 is rejected (SSH in and edit feed.env directly)" {
     BOOT_CFG=([FEED_HOST]="[2001:db8::1]")
     expand_feed_host 2>/dev/null
     [ ! -v "BOOT_CFG[MLATSERVER]" ]
@@ -196,13 +169,13 @@ setup() {
 @test "18: integration with parse_boot_config: FEED_HOST line in file -> derived endpoints in BOOT_CFG" {
     local fixture
     fixture="$(mktemp)"
-    printf 'FEED_HOST=test.local\nLATITUDE=51.5\n' > "$fixture"
+    printf 'FEED_HOST=test.local\nHOSTNAME=feeder1\n' > "$fixture"
     parse_boot_config "$fixture"
     expand_feed_host
     [ "${BOOT_CFG[MLATSERVER]}" = "test.local:31090" ]
     [ "${BOOT_CFG[TARGET]}" = "--net-connector test.local,30004,beast_reduce_plus_out" ]
     [ ! -v "BOOT_CFG[FEED_HOST]" ]
-    [ "${BOOT_CFG[LATITUDE]}" = "51.5" ]
+    [ "${BOOT_CFG[HOSTNAME]}" = "feeder1" ]
     rm -f "$fixture"
 }
 
@@ -214,48 +187,6 @@ setup() {
     [ ! -v "BOOT_CFG[MLATSERVER]" ]
     [ ! -v "BOOT_CFG[TARGET]" ]
     [ ! -v "BOOT_CFG[FEED_HOST]" ]
-}
-
-@test "21: invalid FEED_HOST + lone MLATSERVER -> MLATSERVER dropped (no asymmetric leak)" {
-    # The asymmetric-leak guard codex flagged: an invalid FEED_HOST plus only
-    # MLATSERVER set explicitly would leave TARGET pointing at production.
-    # We drop the lone MLATSERVER instead so both endpoints fall back to
-    # defaults, keeping routing symmetric.
-    BOOT_CFG=([FEED_HOST]="bad..invalid$" [MLATSERVER]="lab:31090")
-    expand_feed_host 2>/dev/null
-    [ ! -v "BOOT_CFG[FEED_HOST]" ]
-    [ ! -v "BOOT_CFG[MLATSERVER]" ]
-    [ ! -v "BOOT_CFG[TARGET]" ]
-}
-
-@test "22: invalid FEED_HOST + lone TARGET -> TARGET dropped" {
-    BOOT_CFG=([FEED_HOST]="bad invalid" [TARGET]="--net-connector lab,30004,beast_reduce_plus_out")
-    expand_feed_host 2>/dev/null
-    [ ! -v "BOOT_CFG[FEED_HOST]" ]
-    [ ! -v "BOOT_CFG[MLATSERVER]" ]
-    [ ! -v "BOOT_CFG[TARGET]" ]
-}
-
-@test "23: invalid FEED_HOST + matched MLATSERVER+TARGET pair -> pair preserved" {
-    # User explicitly set both endpoints; the FEED_HOST typo doesn't justify
-    # dropping a self-contained advanced override.
-    BOOT_CFG=(
-        [FEED_HOST]="[2001:db8::1]"
-        [MLATSERVER]="lab:31090"
-        [TARGET]="--net-connector lab,30004,beast_reduce_plus_out"
-    )
-    expand_feed_host 2>/dev/null
-    [ ! -v "BOOT_CFG[FEED_HOST]" ]
-    [ "${BOOT_CFG[MLATSERVER]}" = "lab:31090" ]
-    [ "${BOOT_CFG[TARGET]}" = "--net-connector lab,30004,beast_reduce_plus_out" ]
-}
-
-@test "24: invalid FEED_HOST + neither override -> all endpoints fall back to defaults (no-op)" {
-    BOOT_CFG=([FEED_HOST]="bad invalid")
-    expand_feed_host 2>/dev/null
-    [ ! -v "BOOT_CFG[FEED_HOST]" ]
-    [ ! -v "BOOT_CFG[MLATSERVER]" ]
-    [ ! -v "BOOT_CFG[TARGET]" ]
 }
 
 @test "20: round-trip through merge_feed_env produces sourceable feed.env" {

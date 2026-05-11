@@ -76,7 +76,7 @@ Pi boots → cloud-init runs (handles user-data / WiFi / hostname injected by rp
 
 The state machine on FAT visible to a user pulling the SD card: `airplanes-config.txt` only = pending or failed; `airplanes-config.txt` + `airplanes-config.error.txt` = failed (read .error.txt to see what to fix); `airplanes-config.applied.txt` only = consumed successfully. The unit is sandboxed with `ProtectSystem=true` + `ReadWritePaths=/boot/firmware /usr/local/share/airplanes` + `RuntimeDirectory=airplanes` — chroot tests bypass that sandbox, so a static lint at `test/test_first_run_unit.bats` asserts the directives stay aligned with what the script actually writes.
 
-`airplanes-config.txt` keys: `LATITUDE`, `LONGITUDE`, `ALTITUDE`, `MLAT_USER`, `MLAT_ENABLED`, `UAT_INPUT`, `HOSTNAME`, `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY`, `FEED_HOST`, `MLATSERVER`, `TARGET`. Once boot finishes, the web UI at `http://<hostname>.local/` becomes the canonical config interface (writes to `feed.env`, restarts services). See `stage-airplanes/06-firstboot/README.md` for the parser detail.
+`airplanes-config.txt` keys (5-key allowlist enforced by `parse_boot_config`): `HOSTNAME`, `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY`, `FEED_HOST`. Bootstrap-only — hostname for mDNS discovery, WiFi creds for network join, FEED_HOST to point at a non-prod backend. `FEED_HOST` expands to `MLATSERVER` + `TARGET` in feed.env (synthetic; `FEED_HOST` itself doesn't leak). Operational config (location, MLAT name, MLAT on/off, gain, UAT toggling) lives in the webconfig UI at `http://<hostname>.local/`; the parse-time allowlist rejects those keys with a category-specific "where this setting actually lives" error (see `reject_unknown_boot_key`).
 
 ### Console dashboard
 
@@ -99,7 +99,7 @@ Both export via `export-image/`. Stable images are reproducible from the pinned 
 
 ## Cross-repo coupling with `airplanes-live/feed`
 
-The boot config schema in `/boot/firmware/airplanes-config.txt` (notably `MLAT_USER` + `MLAT_ENABLED` + `UAT_INPUT`), the `airplanes-first-run.service` ordering, and the daemon runtime state-file pattern at `/run/<service>/state` are coordinated with `airplanes-live/feed`. The image-shipped 978 wrappers (`airplanes-978.sh`, `dump978-fa.sh`) read `UAT_INPUT` from feed.env and publish their decision via `state-writer.sh` from `/usr/local/share/airplanes/lib/` (a feed-installed library), so the contract is symmetric with airplanes-feed and airplanes-mlat. Concretely:
+The feed.env schema (which webconfig writes via `configspec.WriteKeys` — `LATITUDE`, `LONGITUDE`, `ALTITUDE`, `MLAT_USER`, `MLAT_ENABLED`, `GAIN`, `UAT_INPUT`), the `airplanes-first-run.service` ordering, and the daemon runtime state-file pattern at `/run/<service>/state` are coordinated with `airplanes-live/feed`. The image-shipped 978 wrappers (`airplanes-978.sh`, `dump978-fa.sh`) read `UAT_INPUT` from feed.env and publish their decision via `state-writer.sh` from `/usr/local/share/airplanes/lib/` (a feed-installed library), so the contract is symmetric with airplanes-feed and airplanes-mlat. The boot config (`airplanes-config.txt`) is now bootstrap-only and no longer touches operational keys — it only writes `MLATSERVER` + `TARGET` via the `FEED_HOST` synthesis. Concretely:
 
 - `stage-airplanes/01-install-feed/` clones `airplanes-live/feed` at the ref pinned in `config-{dev,stable}` and installs `apl-feed` plus systemd units.
 - `stage-airplanes/06-firstboot/00-run.sh` writes `/etc/airplanes/release-channel` (read by `feed/update.sh`'s allowlist for `AIRPLANES_FEED_BRANCH`).
@@ -109,4 +109,4 @@ Changes to the boot config schema, the `airplanes-first-run` parser, or the unit
 
 ## Migration & legacy
 
-`README.md` covers the user-facing migration path from the legacy airplanes.live image (per-feeder UUID handover, claim flow). `README-advanced.md` covers pointing the feeder at non-production backends via `FEED_HOST` / `MLATSERVER` / `TARGET` env overrides — useful for staging environments.
+`README.md` covers the user-facing migration path from the legacy airplanes.live image (per-feeder UUID handover, claim flow). `README-advanced.md` covers pointing the feeder at non-production backends via the `FEED_HOST` boot-config key — useful for staging. Advanced topologies (bracketed IPv6, non-default beast port, multi-host fan-out) require post-boot SSH and `/etc/airplanes/feed.env` edits, not boot-config keys.
