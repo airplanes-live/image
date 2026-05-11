@@ -149,6 +149,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -163,17 +165,18 @@ jobs:
           asset_basename="$(basename -- "$asset")"
           short_sha="${SHA:0:12}"
 
-          # Stage an immutable per-commit copy of the .img.xz. The rpi-imager
-          # manifest's `url` field references this SHA-tagged asset so its
-          # extract_sha256 can never go stale relative to the bytes rpi-imager
-          # downloads. The rolling-name .img.xz is replaced each push and is
-          # therefore racy by construction (gh release upload --clobber
-          # deletes then re-POSTs, leaving a brief window where readers see
-          # 404 / partial bytes / mismatched bytes) — pointing the manifest
-          # at an immutable URL keeps the rpi-imager flow coherent even
-          # while the rolling .img.xz is being clobbered. Older immutable
-          # copies are pruned at the end of this step.
-          immutable_basename="${asset_basename%.img.xz}-${short_sha}.img.xz"
+          # Stage an immutable per-run copy of the .img.xz keyed on commit
+          # SHA + workflow run id + attempt number. The rpi-imager manifest's
+          # `url` field references this asset, so its extract_sha256 can
+          # never go stale relative to the bytes rpi-imager downloads. The
+          # rolling-name .img.xz is still --clobbered each push (kept for
+          # direct-download consumers bookmarking the stable URL), but that
+          # race is orthogonal — the rolling .xz is not what rpi-imager
+          # verifies against. RUN_ID + RUN_ATTEMPT means same-SHA re-runs
+          # never collide on an asset name, so we never have to --clobber
+          # an immutable URL that a previously-published manifest may still
+          # reference. Older immutable copies are pruned below.
+          immutable_basename="${asset_basename%.img.xz}-${short_sha}-r${RUN_ID}-a${RUN_ATTEMPT}.img.xz"
           immutable_path="$(dirname -- "$asset")/$immutable_basename"
           cp -f -- "$asset" "$immutable_path"
 
@@ -193,34 +196,39 @@ jobs:
 
           Built from $GITHUB_REPOSITORY @ ${SHA}."
 
-          # Upload order matters for atomicity (gh release upload processes
-          # files in argument order):
-          #   1. Immutable .img.xz first — this is the asset the new manifest
-          #      references, so it has to be live before the manifest swap.
-          #   2. Rolling-name .img.xz — kept for direct-download consumers
-          #      that bookmark the stable URL. Hash verification of the
-          #      rolling-name .xz against the rolling-name manifest is no
-          #      longer the contract; rpi-imager always reads the manifest's
-          #      url field, which points at the immutable copy.
-          #   3. Manifest — the "commit". Clients see the swap from old→new
-          #      the moment this small file is replaced. The previous
-          #      manifest still references the previous immutable .xz, which
-          #      is kept around (see pruning step) so in-flight rpi-imager
-          #      downloads against the old manifest still complete.
-          # Race-safe upsert: try upload first (which fails fast with a
-          # release-not-found error when the release doesn't yet exist),
-          # then fall back to create. Avoids the gh-release-view-then-
-          # create race that two concurrent first-time publishes could hit.
-          upload_args=("$immutable_path" "$asset" "$manifest")
-          if ! gh release upload dev-latest "${upload_args[@]}" --clobber -R "$GITHUB_REPOSITORY" 2>/dev/null; then
+          # Ensure the release exists before any asset upload. gh release
+          # upload fails with "release not found" for the first ever push;
+          # create an empty release first so the rest of the flow is the
+          # same regardless of first-vs-existing. The workflow's concurrency
+          # group serializes publish-dev-latest invocations for this repo,
+          # so the view-then-create sequence is race-free here.
+          if ! gh release view dev-latest -R "$GITHUB_REPOSITORY" --json id >/dev/null 2>&1; then
               gh release create dev-latest --prerelease \
                   --title "Bleeding-edge dev build (rolling)" \
                   --notes "$notes" \
-                  "${upload_args[@]}" -R "$GITHUB_REPOSITORY"
-          else
-              # Refresh body to reflect the SHA whose asset we just uploaded.
-              gh release edit dev-latest --notes "$notes" -R "$GITHUB_REPOSITORY"
+                  -R "$GITHUB_REPOSITORY"
           fi
+
+          # Sequential single-asset uploads. gh release upload defaults to
+          # 5 concurrent goroutines when handed multiple files in one call,
+          # so passing them together does not guarantee the immutable .xz
+          # lands before the manifest. Splitting into separate invocations
+          # and relying on `set -e` for ordering ensures rpi-imager never
+          # sees a manifest whose `url` points at a not-yet-uploaded asset.
+          #   1. Immutable .img.xz under a per-run unique name (no
+          #      --clobber: name cannot collide with an existing asset).
+          #   2. Rolling-name .img.xz with --clobber.
+          #   3. Manifest with --clobber. This is the "commit": clients see
+          #      the swap from old→new the moment this small file is
+          #      replaced. The previous manifest still references the
+          #      previous immutable .xz, which the pruner keeps around so
+          #      in-flight rpi-imager downloads against the old manifest
+          #      still complete.
+          gh release upload dev-latest "$immutable_path" -R "$GITHUB_REPOSITORY"
+          gh release upload dev-latest "$asset" --clobber -R "$GITHUB_REPOSITORY"
+          gh release upload dev-latest "$manifest" --clobber -R "$GITHUB_REPOSITORY"
+          # Refresh body to reflect the SHA whose assets we just uploaded.
+          gh release edit dev-latest --notes "$notes" -R "$GITHUB_REPOSITORY"
 
           # Prune older immutable .img.xz copies. Keep the 3 most recent so
           # an rpi-imager session that fetched a previous manifest still has
@@ -231,7 +239,7 @@ jobs:
           mapfile -t old_asset_urls < <(
               gh release view dev-latest -R "$GITHUB_REPOSITORY" --json assets \
                   --jq '.assets
-                        | map(select(.name | test("^airplanes-feeder-dev-[a-z0-9]+-[a-f0-9]{7,}\\.img\\.xz$")))
+                        | map(select(.name | test("^airplanes-feeder-dev-[a-z0-9]+-[a-f0-9]{7,}-r[0-9]+-a[0-9]+\\.img\\.xz$")))
                         | sort_by(.createdAt) | reverse | .[3:] | .[].apiUrl'
           )
           for asset_url in "${old_asset_urls[@]}"; do
