@@ -377,3 +377,22 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
     grep -q '^MLATSERVER="mybackend.local:31090"$' "$FEED_ENV"
     grep -q '^TARGET="--net-connector mybackend.local,30004,beast_reduce_plus_out"$' "$FEED_ENV"
 }
+
+@test "23: typoed WIFI_PASSWORD value never appears in .error.txt or stderr" {
+    # The allowlist rejection path also handles WIFI_PASSWORD typos. The
+    # rejection message must name the key and point at the three valid WIFI_*
+    # keys without echoing the value — same secret-safe guarantee the
+    # validate_wifi_inputs path gave for WIFI_PASS length violations.
+    write_cfg \
+        'WIFI_SSID="MyNet"' \
+        'WIFI_PASSWORD="HUNTLEAK22"'
+    output_combined="$(main 2>&1 || true)"
+    [ -f "$ERROR_FILE" ]
+    grep -q 'WIFI_PASSWORD' "$ERROR_FILE"
+    grep -q 'WIFI_SSID' "$ERROR_FILE"
+    grep -q 'WIFI_PASS' "$ERROR_FILE"
+    # The literal value (or any non-trivial prefix) must not appear in either
+    # the error file or the combined stdout/stderr.
+    ! grep -q 'HUNTLEAK' "$ERROR_FILE"
+    [[ "$output_combined" != *"HUNTLEAK"* ]]
+}

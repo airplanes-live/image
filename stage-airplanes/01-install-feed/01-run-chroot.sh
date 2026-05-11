@@ -4,8 +4,10 @@ export PATH="/usr/local/sbin:${PATH}"
 
 # Build mode skips service starts, claim registration, runtime checks, and the
 # interactive configure flow (feed/configure.sh:157). configure_noninteractive
-# still requires sentinel placeholders; first-run merges real values from
-# /boot/firmware/airplanes-config.txt.
+# still requires placeholders for location / MLAT user; these are the default
+# values baked into feed.env at image freeze. Operational values are set by
+# the user via the webconfig UI after first boot; first-run on the device only
+# handles the 5-key bootstrap allowlist (HOSTNAME, WIFI_*, FEED_HOST).
 export AIRPLANES_BUILD_MODE=1
 export AIRPLANES_FEED_REPO="file:///usr/local/src/airplanes-feed-build"
 export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH}"
