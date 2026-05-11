@@ -106,6 +106,12 @@ jobs:
           printf '00000000-0000-0000-0000-000000000000\n' \
             | sudo tee /etc/airplanes/feeder-id >/dev/null
           sudo install -d -m 0755 /boot/firmware
+          # Every path in the unit's ReadWritePaths= must exist on disk before
+          # the unit starts — otherwise systemd fails the mount-namespace setup
+          # with status=226/NAMESPACE. On the real image, /usr/local/share/airplanes
+          # is created by stage-airplanes/01-install-feed; here we have to
+          # materialise it ourselves.
+          sudo install -d -m 0755 /usr/local/share/airplanes
           sudo systemctl daemon-reload
 
       - name: Happy path — apply succeeds, source renamed to .applied.txt
