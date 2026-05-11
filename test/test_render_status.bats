@@ -85,10 +85,12 @@ write_eth_speed() {
 
 teardown() { rm -rf "$TMP"; }
 
-# Strip ANSI SGR escapes so width / substring assertions can match what the
-# user actually sees (color escapes don't take display columns).
+# Strip ANSI escapes so width / substring assertions can match what the
+# user actually sees. Covers SGR (color, e.g. \e[31m), CSI cursor/erase
+# (\e[H, \e[J, \e[K), and private-mode CSI (\e[?25l, \e[?25h) — the live
+# loop emits all of these. None take display columns.
 strip_ansi() {
-    sed -E 's/'$'\x1b''\[[0-9;]*m//g'
+    sed -E 's/'$'\x1b''\[[?0-9;]*[a-zA-Z]//g'
 }
 
 # Display-cell width of the longest line in a stream. UTF-8 aware via
@@ -595,6 +597,241 @@ SYSTEMCTL_EOF
     [ "$(sed -n '2p' "$log")" = "is-active" ]
 }
 
+# ---- _prime_unit_props / _unit_prop (per-frame batched systemd cache) ----
+
+# Build a `systemctl` stub whose `show -p ... -- u1 u2 …` output is fully
+# controlled by a fixture written to $TMP/sysctl-show.out. Tests overwrite
+# the fixture before invoking _prime_unit_props.
+_systemctl_show_shim() {
+    local shim="$TMP/shim-systemctl-show"
+    mkdir -p "$shim"
+    cat > "$shim/systemctl" <<EOF
+#!/bin/bash
+# We only care about \`show\` here; pass everything else through to a noop.
+if [[ "\$1" == "show" ]]; then
+    if [[ -n "\${PROBE_LOG:-}" ]]; then
+        printf 'show\n' >> "\$PROBE_LOG"
+    fi
+    [[ -f "$TMP/sysctl-show.out" ]] && cat "$TMP/sysctl-show.out"
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$shim/systemctl"
+    cat > "$shim/timeout" <<'EOF'
+#!/bin/bash
+shift  # drop the duration arg
+if [[ "$MOCK_TIMEOUT_RC" =~ ^[0-9]+$ ]]; then
+    exit "$MOCK_TIMEOUT_RC"
+fi
+exec "$@"
+EOF
+    chmod +x "$shim/timeout"
+    printf '%s' "$shim"
+}
+
+@test "_prime_unit_props: success populates SD_UNIT_PROPS keyed by Id" {
+    shim="$(_systemctl_show_shim)"
+    PATH="$shim:$PATH"
+    cat > "$TMP/sysctl-show.out" <<'EOF'
+Id=airplanes-feed.service
+ActiveState=active
+UnitFileState=enabled
+ExecMainStatus=0
+
+Id=airplanes-mlat.service
+ActiveState=active
+UnitFileState=enabled
+ExecMainStatus=0
+
+Id=readsb.service
+ActiveState=active
+UnitFileState=enabled
+ExecMainStatus=0
+
+Id=dump978-fa.service
+ActiveState=inactive
+UnitFileState=disabled
+ExecMainStatus=0
+
+Id=airplanes-978.service
+ActiveState=inactive
+UnitFileState=disabled
+ExecMainStatus=0
+EOF
+    _prime_unit_props
+    [ "$SD_UNIT_PROPS_PRIMED" = "1" ]
+    [ "${SD_UNIT_PROPS[airplanes-feed.service.ActiveState]}" = "active" ]
+    [ "${SD_UNIT_PROPS[airplanes-mlat.service.UnitFileState]}" = "enabled" ]
+    [ "${SD_UNIT_PROPS[readsb.service.ActiveState]}" = "active" ]
+    [ "${SD_UNIT_PROPS[dump978-fa.service.ActiveState]}" = "inactive" ]
+    [ "${SD_UNIT_PROPS[airplanes-978.service.UnitFileState]}" = "disabled" ]
+}
+
+@test "_prime_unit_props: parses Id-keyed blocks regardless of order" {
+    # systemctl normally emits blocks in argument order, but defending
+    # against alias collapse / reorder means we must key by Id, not by
+    # position in UNITS[@]. Stub returns blocks in reverse order; the
+    # cache must still resolve correctly.
+    shim="$(_systemctl_show_shim)"
+    PATH="$shim:$PATH"
+    cat > "$TMP/sysctl-show.out" <<'EOF'
+Id=airplanes-978.service
+ActiveState=failed
+UnitFileState=enabled
+ExecMainStatus=64
+
+Id=dump978-fa.service
+ActiveState=active
+UnitFileState=enabled
+ExecMainStatus=0
+
+Id=readsb.service
+ActiveState=reloading
+UnitFileState=enabled
+ExecMainStatus=0
+
+Id=airplanes-mlat.service
+ActiveState=inactive
+UnitFileState=disabled
+ExecMainStatus=0
+
+Id=airplanes-feed.service
+ActiveState=active
+UnitFileState=enabled
+ExecMainStatus=0
+EOF
+    _prime_unit_props
+    [ "$SD_UNIT_PROPS_PRIMED" = "1" ]
+    [ "${SD_UNIT_PROPS[airplanes-feed.service.ActiveState]}" = "active" ]
+    [ "${SD_UNIT_PROPS[airplanes-978.service.ExecMainStatus]}" = "64" ]
+    [ "${SD_UNIT_PROPS[readsb.service.ActiveState]}" = "reloading" ]
+}
+
+@test "_prime_unit_props: timeout (rc 124) sets PRIMED=2 and leaves cache empty" {
+    shim="$(_systemctl_show_shim)"
+    PATH="$shim:$PATH"
+    MOCK_TIMEOUT_RC=124 _prime_unit_props
+    [ "$SD_UNIT_PROPS_PRIMED" = "2" ]
+    [ "${#SD_UNIT_PROPS[@]}" = "0" ]
+}
+
+@test "_prime_unit_props: non-zero rc (not 124) sets PRIMED=3" {
+    shim="$(_systemctl_show_shim)"
+    PATH="$shim:$PATH"
+    MOCK_TIMEOUT_RC=1 _prime_unit_props
+    [ "$SD_UNIT_PROPS_PRIMED" = "3" ]
+    [ "${#SD_UNIT_PROPS[@]}" = "0" ]
+}
+
+@test "_prime_unit_props: no systemctl on PATH sets PRIMED=3" {
+    # Empty PATH stub: systemctl absent. command -v must fail.
+    old_path="$PATH"
+    shim="$TMP/shim-empty"
+    mkdir -p "$shim"
+    PATH="$shim"
+    _prime_unit_props
+    primed="$SD_UNIT_PROPS_PRIMED"
+    # Restore PATH BEFORE the assertion so bats's teardown (which calls
+    # `rm`) can find its tools.
+    PATH="$old_path"
+    [ "$primed" = "3" ]
+}
+
+@test "_unit_prop: PRIMED=1 returns cached value, no fork" {
+    shim="$(_systemctl_show_shim)"
+    PATH="$shim:$PATH"
+    PROBE_LOG="$TMP/probes-cache-hit"
+    : > "$PROBE_LOG"
+    SD_UNIT_PROPS=([airplanes-feed.service.ActiveState]="active")
+    SD_UNIT_PROPS_PRIMED=1
+    out="$(_unit_prop airplanes-feed.service ActiveState)"
+    [ "$out" = "active" ]
+    # Stub must not have been invoked.
+    [ ! -s "$PROBE_LOG" ]
+}
+
+@test "_unit_prop: PRIMED=2 returns empty (no fork)" {
+    shim="$(_systemctl_show_shim)"
+    PATH="$shim:$PATH"
+    PROBE_LOG="$TMP/probes-prime-timeout"
+    : > "$PROBE_LOG"
+    SD_UNIT_PROPS_PRIMED=2
+    out="$(_unit_prop airplanes-feed.service ActiveState)"
+    [ -z "$out" ]
+    [ ! -s "$PROBE_LOG" ]
+}
+
+@test "_unit_prop: PRIMED=0 falls back to a live single-unit systemctl show" {
+    # Test path: bats sourced the script and called _unit_prop directly,
+    # without first running collect_status_data. We must still resolve
+    # the property — by forking systemctl once for that unit.
+    shim="$(_systemctl_show_shim)"
+    PATH="$shim:$PATH"
+    log="$TMP/probes-cache-miss"
+    : > "$log"
+    SD_UNIT_PROPS=()
+    SD_UNIT_PROPS_PRIMED=0
+    # Stub emits a value when invoked via `show --property=ActiveState --value <unit>`.
+    cat > "$TMP/sysctl-show.out" <<'EOF'
+active
+EOF
+    # Prefix-export PROBE_LOG so it propagates into the systemctl stub
+    # (an external command in a `$( … )` subshell, which inherits only
+    # exported env vars).
+    out="$(PROBE_LOG="$log" _unit_prop airplanes-feed.service ActiveState)"
+    [ "$out" = "active" ]
+    # Stub must have been invoked exactly once for the fallback.
+    [ "$(wc -l < "$log")" = "1" ]
+}
+
+@test "unit_state_with_reason: PRIMED=2 short-circuits to 'timeout -'" {
+    shim="$(_unit_state_shim)"
+    PATH="$shim:$PATH"
+    PROBE_LOG="$TMP/probes-timeout-shortcircuit"
+    : > "$PROBE_LOG"
+    SD_UNIT_PROPS_PRIMED=2
+    out="$(unit_state_with_reason airplanes-feed.service)"
+    [ "$out" = "timeout -" ]
+    # Critical: no per-unit fork happened (is-enabled / is-active not invoked).
+    [ ! -s "$PROBE_LOG" ]
+    SD_UNIT_PROPS_PRIMED=0
+}
+
+@test "unit_state: PRIMED=1 + ActiveState=active returns 'ok' without forking" {
+    shim="$(_unit_state_shim)"
+    PATH="$shim:$PATH"
+    PROBE_LOG="$TMP/probes-cache-active"
+    : > "$PROBE_LOG"
+    SD_UNIT_PROPS=(
+        [airplanes-feed.service.UnitFileState]="enabled"
+        [airplanes-feed.service.ActiveState]="active"
+    )
+    SD_UNIT_PROPS_PRIMED=1
+    out="$(unit_state airplanes-feed.service)"
+    [ "$out" = "ok" ]
+    [ ! -s "$PROBE_LOG" ]
+    SD_UNIT_PROPS=()
+    SD_UNIT_PROPS_PRIMED=0
+}
+
+@test "unit_state: PRIMED=1 + UnitFileState=masked returns 'masked' without forking" {
+    shim="$(_unit_state_shim)"
+    PATH="$shim:$PATH"
+    PROBE_LOG="$TMP/probes-cache-masked"
+    : > "$PROBE_LOG"
+    SD_UNIT_PROPS=(
+        [readsb.service.UnitFileState]="masked"
+        [readsb.service.ActiveState]="inactive"
+    )
+    SD_UNIT_PROPS_PRIMED=1
+    out="$(unit_state readsb.service)"
+    [ "$out" = "masked" ]
+    [ ! -s "$PROBE_LOG" ]
+    SD_UNIT_PROPS=()
+    SD_UNIT_PROPS_PRIMED=0
+}
+
 # ---- snapshot end-to-end (full render with all sources missing) ------------
 
 @test "snapshot: exits 0 with all sources missing" {
@@ -723,19 +960,39 @@ EOF
 
 # ---- live mode framing -----------------------------------------------------
 #
-# Regression guard for the "duplicate lines" bug: --live must emit a full
-# clear (\e[H\e[J) before every frame. Without it, lines that get shorter
-# between frames leave stale trailing characters from the previous render.
+# Framing contract for --live:
+#   * Hide the cursor on entry (\e[?25l) and restore it on exit (\e[?25h),
+#     so in-flight per-line repaints don't show a stepping caret.
+#   * The first painted byte after \e[?25l is \e[H (cursor home) — NOT
+#     \e[H\e[J. A full pre-clear would blank the screen during data
+#     gathering and cause the 1-2s flash the previous implementation had.
+#   * Each rendered line is followed by \e[K (erase to end of line) so a
+#     shorter new line clears trailing chars from the previous frame in
+#     place — no full-screen clear needed.
 
-@test "live: first frame begins with full clear (\\e[H\\e[J)" {
+@test "live: first frame opens with cursor hide + home, never full pre-clear" {
     OUT="$TMP/live-out"
-    # SIGTERM the infinite loop after 1s — easily enough for the first frame
-    # (single render_once + entering sleep). `|| true` because timeout exits
-    # 124/143 on signal.
-    timeout 1 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
-    expected=$'\033[H\033[J'
-    actual="$(head -c 6 "$OUT" 2>/dev/null)"
-    [ "$actual" = "$expected" ]
+    # SIGTERM the infinite loop after 2s — long enough to absorb the
+    # worst-case `_prime_unit_props` budget (one `timeout 2 systemctl
+    # show` per frame) on a slow CI runner, before the first paint
+    # lands. `|| true` because timeout returns 124/143 on signal.
+    timeout 2 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
+    # Cursor hide is the very first byte stream the dispatcher emits,
+    # before any rendered content.
+    expected_hide=$'\033[?25l'
+    head_bytes="$(head -c "${#expected_hide}" "$OUT" 2>/dev/null)"
+    [ "$head_bytes" = "$expected_hide" ]
+    # The output must NOT contain the old full-screen pre-clear sequence.
+    ! grep -q $'\033\[H\033\[J' "$OUT"
+    # Each rendered line is followed by \e[K (erase to end of line).
+    grep -q $'\033\[K' "$OUT"
+}
+
+@test "live: cursor is restored after the loop exits" {
+    OUT="$TMP/live-out"
+    timeout 2 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
+    # Cursor show (\e[?25h) is emitted by the EXIT/INT/TERM/HUP trap.
+    grep -q $'\033\[?25h' "$OUT"
 }
 
 # ---- MOTD wrapper env-scrub guard ------------------------------------------
@@ -845,7 +1102,7 @@ EOF
     # vertical_full_with_logo branch: small logo (40 cols) followed by the
     # full status block. No 135-col banner row should appear.
     OUT="$TMP/live-out"
-    timeout 1 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
+    timeout 2 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
     width="$(strip_ansi < "$OUT" | max_display_width)"
     # Logo lines are 40 cells; status lines at most ~80. Any line wider
     # than 80 means the 135-col banner leaked into a narrow terminal.
@@ -895,7 +1152,7 @@ EOF
     # frame (no crash, no stderr leak).
     PATHS_BANNER="$TMP/nx-missing-banner"
     OUT="$TMP/live-out"
-    timeout 1 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
+    timeout 2 bash "$SCRIPT" --live > "$OUT" 2>&1 || true
     grep -q 'Access' "$OUT"
 }
 

@@ -225,7 +225,7 @@ mlat_config_state() {
             printf 'unknown -'
             ;;
         failed)
-            exit_code="$(timeout 2 systemctl show --property=ExecMainStatus --value airplanes-mlat.service 2>/dev/null || true)"
+            exit_code="$(_unit_prop airplanes-mlat.service ExecMainStatus)"
             if [[ "$exit_code" == "64" ]]; then
                 if reason="$(airplanes_read_state "$PATHS_STATE_FILE_MLAT" reason)" && [[ -n "$reason" ]]; then
                     printf 'misconfigured %s' "$reason"
@@ -262,7 +262,7 @@ _978_config_state() {
             printf 'unknown -'
             ;;
         failed)
-            exit_code="$(timeout 2 systemctl show --property=ExecMainStatus --value "$unit" 2>/dev/null || true)"
+            exit_code="$(_unit_prop "$unit" ExecMainStatus)"
             if [[ "$exit_code" == "64" ]]; then
                 if decision="$(airplanes_read_state "$PATHS_STATE_FILE_978" state)" \
                     && reason="$(airplanes_read_state "$PATHS_STATE_FILE_978" reason)"; then
@@ -290,9 +290,17 @@ unit_state_with_reason() {
         printf 'unknown -'
         return
     fi
+    # The per-frame prime timed out — every property lookup would be
+    # empty. Surface 'timeout' (rendered as the dim '?' marker) so the
+    # dashboard reflects the dbus stall instead of falsely reporting
+    # 'fail' on healthy units.
+    if (( SD_UNIT_PROPS_PRIMED == 2 )); then
+        printf 'timeout -'
+        return
+    fi
     # MLAT: classify via daemon's published state file.
     if [[ "$unit" == 'airplanes-mlat.service' ]]; then
-        active_state="$(timeout 2 systemctl show --property=ActiveState --value "$unit" 2>/dev/null || true)"
+        active_state="$(_unit_prop "$unit" ActiveState)"
         case "$active_state" in
             active|activating|reloading|failed)
                 local config_state config_reason
@@ -309,7 +317,7 @@ unit_state_with_reason() {
     fi
     # 978: classify via daemon's published state file (shared by both 978 units).
     if [[ "$unit" == 'dump978-fa.service' || "$unit" == 'airplanes-978.service' ]]; then
-        active_state="$(timeout 2 systemctl show --property=ActiveState --value "$unit" 2>/dev/null || true)"
+        active_state="$(_unit_prop "$unit" ActiveState)"
         case "$active_state" in
             active|activating|reloading|failed)
                 local config_state_978 config_reason_978
@@ -324,10 +332,28 @@ unit_state_with_reason() {
                 ;;
         esac
     fi
-    # Capture rcs explicitly. `if cmd; then …; fi; rc=$?` does NOT preserve
-    # the condition's exit status when the body is skipped — bash sets $? to
-    # 0 in that case. Short-circuit on `timeout` rc 124 from either probe so
-    # a stalled dbus does not double the wall-clock budget per unit.
+    # Cached path: derive enabled/active from the frame-primed cache. No
+    # forks. UnitFileState's vocabulary covers everything is-enabled
+    # produced for our generic cases (masked / disabled / enabled / static).
+    if (( SD_UNIT_PROPS_PRIMED == 1 )); then
+        enabled="$(_unit_prop "$unit" UnitFileState)"
+        case "$enabled" in
+            masked) printf 'masked -'; return ;;
+        esac
+        active_state="$(_unit_prop "$unit" ActiveState)"
+        case "$active_state" in
+            active|reloading) printf 'ok -'; return ;;
+        esac
+        case "$enabled" in
+            disabled) printf 'disabled -' ;;
+            *)        printf 'fail -' ;;
+        esac
+        return
+    fi
+    # Fallback path (PRIMED=0: test path, no _prime_unit_props called;
+    # PRIMED=3: prime failed for a reason other than timeout). Per-unit
+    # live forks with the existing rc-capture and 124-short-circuit so a
+    # stalled dbus does not double the wall-clock budget per unit.
     enabled="$(timeout 2 systemctl is-enabled "$unit" 2>/dev/null)"
     enabled_rc=$?
     if (( enabled_rc == 124 )); then
@@ -638,11 +664,106 @@ SD_UPTIME=""
 SD_LOAD=""
 declare -a SD_NETWORK_LINES=()
 
+# ---- Per-frame cache of systemd unit properties. --------------------------
+# collect_status_data primes this with ONE `systemctl show` covering every
+# UNITS member, then unit_state* / mlat_config_state / _978_config_state
+# read from it instead of forking systemctl per unit. Cuts ~12 forks (and
+# the matching `timeout 2` budget per call) down to 1 prime per frame.
+#
+# SD_UNIT_PROPS_PRIMED values:
+#   0  not primed (snapshot/test paths that call helpers directly)
+#   1  primed successfully — cache populated
+#   2  prime timed out (rc 124) — helpers should surface 'timeout'
+#   3  prime failed for another reason (no systemctl, non-zero rc)
+#
+# -gA so the assoc-array nature survives being sourced inside a function
+# (bats's `setup()` sources us; without -g the declaration is local to
+# setup and lost in the @test body, which then assigns to a fresh
+# indexed array and the dotted subscripts trigger arithmetic eval).
+declare -gA SD_UNIT_PROPS=()
+SD_UNIT_PROPS_PRIMED=0
+
+# Run ONE `systemctl show` for every UNITS member with every property the
+# renderer needs, then parse blocks (separated by blank lines) keyed by
+# Id= so we survive systemd alias collapse / reorder. -p is repeated
+# rather than comma-joined for portability across systemd versions.
+_prime_unit_props() {
+    SD_UNIT_PROPS=()
+    SD_UNIT_PROPS_PRIMED=0
+    if ! command -v systemctl >/dev/null 2>&1; then
+        SD_UNIT_PROPS_PRIMED=3
+        return
+    fi
+    # `|| rc=$?` so callers running under `set -e` (notably bats's @test
+    # bodies — set -e is on per @test) don't abort here when timeout
+    # exits 124 or systemctl returns non-zero. In production the dispatcher
+    # shell has set -e off and the construct is equivalent.
+    local out rc=0
+    out="$(timeout 2 systemctl show \
+        -p Id -p ActiveState -p UnitFileState -p ExecMainStatus \
+        -- "${UNITS[@]}" 2>/dev/null)" || rc=$?
+    case "$rc" in
+        0)   SD_UNIT_PROPS_PRIMED=1 ;;
+        124) SD_UNIT_PROPS_PRIMED=2; return 0 ;;
+        *)   SD_UNIT_PROPS_PRIMED=3; return 0 ;;
+    esac
+    local line key value idx=0 flush_id
+    local -A block=()
+    while IFS= read -r line; do
+        if [[ -z "$line" ]]; then
+            if (( ${#block[@]} > 0 )); then
+                flush_id="${block[Id]:-${UNITS[idx]:-}}"
+                for key in "${!block[@]}"; do
+                    SD_UNIT_PROPS["${flush_id}.${key}"]="${block[$key]}"
+                done
+                block=()
+                (( idx++ )) || true
+            fi
+            continue
+        fi
+        key="${line%%=*}"
+        value="${line#*=}"
+        block["$key"]="$value"
+    done <<<"$out"
+    # Trailing block (no terminating blank line — `systemctl show` doesn't
+    # always emit one after the last unit).
+    if (( ${#block[@]} > 0 )); then
+        flush_id="${block[Id]:-${UNITS[idx]:-}}"
+        for key in "${!block[@]}"; do
+            SD_UNIT_PROPS["${flush_id}.${key}"]="${block[$key]}"
+        done
+    fi
+}
+
+# Returns the cached property when priming this frame succeeded;
+# returns empty (no fork) when priming TIMED OUT (PRIMED=2) so we
+# don't multiply the dbus stall budget with per-unit retries; falls
+# back to a per-unit live `systemctl show` when priming has not been
+# attempted (PRIMED=0: bats-test path) OR priming failed for a reason
+# other than timeout (PRIMED=3: no systemctl, or non-zero rc that wasn't
+# 124). Without the PRIMED=3 fallback, the MLAT / 978 special-case
+# branches in unit_state_with_reason would see empty ActiveState and
+# silently render `ok` for a daemon whose published state is
+# `disabled-by-config` or `misconfigured`.
+_unit_prop() {
+    local unit="$1" prop="$2"
+    case "$SD_UNIT_PROPS_PRIMED" in
+        1) printf '%s' "${SD_UNIT_PROPS[${unit}.${prop}]-}" ;;
+        2) ;;
+        *) timeout 2 systemctl show --property="$prop" --value "$unit" 2>/dev/null || true ;;
+    esac
+}
+
 # Populate the SD_* globals from disk / systemctl. msgs/s rate is computed
 # only in live mode so snapshot/once stay deterministic and side-effect
 # free.
 collect_status_data() {
     local mode="$1"
+
+    # Prime the per-frame unit-property cache before any code that reads
+    # systemd state. Subsequent reads (this function, unit_state*,
+    # mlat_config_state, _978_config_state) prefer the cache.
+    _prime_unit_props
 
     SD_ID="$(read_feeder_id)"
     SD_CHANNEL="$(read_channel)"
@@ -684,7 +805,7 @@ collect_status_data() {
     # (e.g. image built off a feed snapshot older than PR 1).
     SD_MLAT_NOTE=""
     local mlat_active_state
-    mlat_active_state="$(timeout 2 systemctl show --property=ActiveState --value airplanes-mlat.service 2>/dev/null || true)"
+    mlat_active_state="$(_unit_prop airplanes-mlat.service ActiveState)"
     local mlat_state mlat_reason
     read -r mlat_state mlat_reason <<<"$(mlat_config_state "$mlat_active_state")"
     case "$mlat_state" in
@@ -726,7 +847,7 @@ collect_status_data() {
     # images don't have this state file and SD_978_NOTE stays empty.
     SD_978_NOTE=""
     local _978_active_state
-    _978_active_state="$(timeout 2 systemctl show --property=ActiveState --value airplanes-978.service 2>/dev/null || true)"
+    _978_active_state="$(_unit_prop airplanes-978.service ActiveState)"
     local _978_state _978_reason
     read -r _978_state _978_reason <<<"$(_978_config_state "$_978_active_state" airplanes-978.service)"
     case "$_978_state" in
@@ -1063,11 +1184,16 @@ render_vertical_full_with_logo() {
 # ---- Single-frame entry point. --------------------------------------------
 # Existing bats tests call `render_once live` directly; keep the name and
 # preserve the side effect on PREV_MSGS / PREV_TS.
+#
+# Optional second argument: a pre-computed terminal width. The --live
+# dispatcher passes one because its stdout is redirected to a frame
+# buffer file (so an internal `term_cols()` would see a non-tty and
+# wrongly fall back to 80, losing the 135-col banner layout).
 render_once() {
     local mode="${1:-live}"
     collect_status_data "$mode"
-    local cols
-    cols="$(term_cols)"
+    local cols="${2:-}"
+    [[ -z "$cols" ]] && cols="$(term_cols)"
 
     case "$mode" in
         live)
@@ -1095,6 +1221,61 @@ render_once() {
     esac
 }
 
+# ---- Live-mode loop (HDMI console). ---------------------------------------
+# Double-buffered repaint that avoids the 1-2 s "screen flashes to black"
+# the naive clear-then-redraw produced. Each frame:
+#   1. Render to a tmpfile in the CURRENT shell (not via $(…)) so
+#      PREV_MSGS / PREV_TS updates inside render_once persist across
+#      iterations and msgs/s keeps computing.
+#   2. Paint in place: cursor home, then each line + \e[K (erase to EOL,
+#      so a shorter new line clears the previous frame's trailing chars),
+#      then \e[J (erase any leftover rows below if the new frame is
+#      shorter). The screen is never blanked between frames.
+# Cols are queried once per frame from /dev/tty so the wide-banner layout
+# fires on a 135-col tty1; gated on `[[ -t 1 ]]` so the bats test path
+# (stdout redirected to a file) still falls back to 80 → vertical layout.
+_dispatch_live() {
+    local frame_file
+    # Bail before hiding the cursor or installing traps if the tmpfile
+    # can't be created — otherwise an empty `frame_file` would survive
+    # the loop, `>"$frame_file"` would fail with "ambiguous redirect"
+    # every 5s, and we'd be left painting cursor-home + \e[J onto a
+    # blank screen every iteration.
+    if ! frame_file="$(mktemp "${TMPDIR:-/tmp}/airplanes-dashboard.XXXXXX")"; then
+        printf 'render-status: mktemp failed; aborting --live\n' >&2
+        exit 1
+    fi
+    # Hide the caret for the lifetime of the loop so in-flight repaints
+    # don't show a cursor stepping line-by-line. The EXIT trap does
+    # cleanup; the signal traps explicitly `exit` so an in-flight
+    # `sleep 5` actually terminates (a trap that runs and returns
+    # without exiting just resumes the interrupted command, and
+    # systemd's SIGTERM would hang the unit on stop).
+    printf '%s[?25l' "$ESC"
+    # shellcheck disable=SC2064  # expand $ESC + $frame_file at trap-register time
+    trap "rm -f '$frame_file'; printf '%s[?25h' '$ESC'" EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    local cols
+    while :; do
+        cols=""
+        if [[ -t 1 ]]; then
+            cols="$(stty size </dev/tty 2>/dev/null \
+                | awk 'NF==2 && $2 ~ /^[0-9]+$/ {print $2}')"
+        fi
+        [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+        # Run as a statement (not in $(…)) so PREV_MSGS / PREV_TS persist.
+        render_once live "$cols" > "$frame_file"
+        printf '%s[H' "$ESC"
+        while IFS= read -r line; do
+            printf '%s%s[K\n' "$line" "$ESC"
+        done < "$frame_file"
+        printf '%s[J' "$ESC"
+        sleep 5
+    done
+}
+
 # ---- Mode dispatcher. ------------------------------------------------------
 # Skip when sourced (bats tests source us to call helpers directly).
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
@@ -1108,15 +1289,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             render_once once
             ;;
         --live|*)
-            # Full clear before every frame (\e[H = home, \e[J = erase from
-            # cursor → end of screen). Without this, lines that get shorter
-            # between frames (e.g. `aircraft: 1234` → `aircraft: 1`) leave
-            # stale trailing characters from the previous render.
-            while :; do
-                printf '%s[H%s[J' "$ESC" "$ESC"
-                render_once live
-                sleep 5
-            done
+            _dispatch_live
             ;;
     esac
 fi

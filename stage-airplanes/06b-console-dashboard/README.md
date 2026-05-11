@@ -11,9 +11,20 @@ a clean screen. A best-effort `setterm --msg off` then silences kernel
 printk-on-VT for `/dev/tty1` only (serial console on `serial0,115200` is
 unaffected) so late USB/rfkill kmsg can't bleed into the live display.
 
-The live-render loop emits a full clear (`\e[H\e[J`) before every frame
-so dashboard fields that get shorter between frames don't leave stale
-trailing characters on screen.
+The live-render loop is double-buffered: each frame is rendered to a
+tmpfile first, then the dispatcher repaints in place — cursor home,
+each line followed by `\e[K` (erase to end of line so a shorter new
+line clears trailing chars from the previous frame), then `\e[J` at the
+end (erase any leftover rows below if the new frame is shorter). The
+screen is never blanked between frames, so the gather window
+(`timeout 2 systemctl show …` for the five tracked units, plus the
+nmcli and aircraft.json reads) elapses with the previous frame still
+visible. The caret is hidden for the lifetime of the loop
+(`\e[?25l` … `\e[?25h`) so the in-flight per-line writes don't show a
+stepping cursor. A single batched `systemctl show -p Id -p ActiveState
+-p UnitFileState -p ExecMainStatus` primes a per-frame cache that all
+the unit-state helpers read from, so the frame's dbus budget is one
+`timeout 2` call instead of ~12.
 
 The chroot stage also strips Debian / Raspberry Pi OS defaults that
 `pam_motd` would otherwise print at TTY2/SSH login: `/etc/motd` is reset
@@ -26,8 +37,8 @@ else (besides sshd's own `Last login:` line, which is out of scope).
 
 - `/usr/local/lib/airplanes/render-status` — bash renderer with three
   modes: `--snapshot` (one-shot, no clear; used by the MOTD hook),
-  `--live` (loop with home-cursor + erase-to-end every 5s; used by the
-  systemd unit), `--once` (one-shot with screen clear).
+  `--live` (loop, double-buffered repaint every 5s; used by the systemd
+  unit), `--once` (one-shot with screen clear).
 - `/usr/local/share/airplanes/logo.txt` — 40×22 plane-badge artwork
   used in the SSH/TTY2 side-by-side layout (and as the narrow-terminal
   fallback for `--live`).
