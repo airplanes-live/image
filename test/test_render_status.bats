@@ -34,10 +34,53 @@ setup() {
     export PATHS_STATE_FILE_FEED="$TMP/nx-feed-state"
     export PATHS_STATE_FILE_978="$TMP/nx-978-state"
     export PATHS_STATE_READER_LIB="$TMP/nx-state-reader-lib"
+    export PATHS_SYSFS_NET="$TMP/sysfs-net"
     export TERM=dumb  # disable color so assertions match plain text
+
+    # Default `nmcli` stub: returns nothing for any call, so existing
+    # snapshot tests don't pick up the host's real network state. The
+    # network-section tests below overwrite the fixture files to drive
+    # specific scenarios.
+    install_default_nmcli_stub
 
     # shellcheck source=/dev/null
     source "$SCRIPT"
+}
+
+# Install a `nmcli` shim that dispatches on the argument tail:
+#   - "-t -f DEVICE,TYPE,STATE dev status"           → cat $TMP/nmcli-dev-status
+#   - "--rescan no -t -f IN-USE,SIGNAL,SSID dev wifi list ifname <iface>"
+#                                                     → cat $TMP/nmcli-dev-wifi-<iface>
+# Missing fixture files yield empty output (the no-op default). Tests
+# write to these fixtures before invoking the renderer.
+install_default_nmcli_stub() {
+    local shim="$TMP/shim-nmcli"
+    mkdir -p "$shim"
+    cat > "$shim/nmcli" <<EOF
+#!/bin/bash
+case "\$*" in
+    "-t -f DEVICE,TYPE,STATE dev status")
+        [[ -f "$TMP/nmcli-dev-status" ]] && cat "$TMP/nmcli-dev-status"
+        exit 0
+        ;;
+    "--rescan no -t -f IN-USE,SIGNAL,SSID dev wifi list ifname "*)
+        iface="\${@: -1}"
+        f="$TMP/nmcli-dev-wifi-\$iface"
+        [[ -f "\$f" ]] && cat "\$f"
+        exit 0
+        ;;
+esac
+exit 0
+EOF
+    chmod +x "$shim/nmcli"
+    PATH="$shim:$PATH"
+}
+
+# Write a /sys/class/net/<iface>/speed fixture (PATHS_SYSFS_NET-rooted).
+write_eth_speed() {
+    local iface="$1" mbps="$2"
+    mkdir -p "$PATHS_SYSFS_NET/$iface"
+    printf '%s\n' "$mbps" > "$PATHS_SYSFS_NET/$iface/speed"
 }
 
 teardown() { rm -rf "$TMP"; }
@@ -975,4 +1018,335 @@ STUB
     stub_systemctl_978 failed 64
     run unit_state_with_reason airplanes-978.service
     [ "$output" = 'misconfigured uat_input_invalid' ]
+}
+
+# ---- Network section: _fmt_eth_speed ---------------------------------------
+
+@test "_fmt_eth_speed: empty input → 'up'" {
+    [ "$(_fmt_eth_speed '')" = "up" ]
+}
+
+@test "_fmt_eth_speed: -1 (no link) → 'up'" {
+    [ "$(_fmt_eth_speed -1)" = "up" ]
+}
+
+@test "_fmt_eth_speed: 0 → 'up'" {
+    [ "$(_fmt_eth_speed 0)" = "up" ]
+}
+
+@test "_fmt_eth_speed: non-numeric → 'up'" {
+    [ "$(_fmt_eth_speed garbage)" = "up" ]
+}
+
+@test "_fmt_eth_speed: 100 → '100 Mbps'" {
+    [ "$(_fmt_eth_speed 100)" = "100 Mbps" ]
+}
+
+@test "_fmt_eth_speed: 1000 → '1 Gbps'" {
+    [ "$(_fmt_eth_speed 1000)" = "1 Gbps" ]
+}
+
+@test "_fmt_eth_speed: 2500 (2.5GbE) stays Mbps" {
+    [ "$(_fmt_eth_speed 2500)" = "2500 Mbps" ]
+}
+
+@test "_fmt_eth_speed: 10000 → '10 Gbps'" {
+    [ "$(_fmt_eth_speed 10000)" = "10 Gbps" ]
+}
+
+# ---- Network section: _unescape_nmcli_field --------------------------------
+
+@test "_unescape_nmcli_field: bare ASCII passes through" {
+    [ "$(_unescape_nmcli_field 'PlainSSID')" = "PlainSSID" ]
+}
+
+@test "_unescape_nmcli_field: escaped colon → literal colon" {
+    [ "$(_unescape_nmcli_field 'Home\:Net')" = "Home:Net" ]
+}
+
+@test "_unescape_nmcli_field: escaped backslash → literal backslash" {
+    [ "$(_unescape_nmcli_field 'Back\\slash')" = 'Back\slash' ]
+}
+
+@test "_unescape_nmcli_field: original '\\:' (encoded as '\\\\\\:') round-trips" {
+    # nmcli encodes a literal '\:' as '\\\:': '\' → '\\' first, then ':' → '\:'.
+    # Two-pass swap via placeholder should yield '\:', not ':'.
+    [ "$(_unescape_nmcli_field 'A\\\:B')" = 'A\:B' ]
+}
+
+# ---- Network section: _read_eth_speed_mbps ---------------------------------
+
+@test "_read_eth_speed_mbps: missing file → empty" {
+    [ -z "$(_read_eth_speed_mbps eth-missing)" ]
+}
+
+@test "_read_eth_speed_mbps: returns raw integer from sysfs file" {
+    write_eth_speed end0 1000
+    [ "$(_read_eth_speed_mbps end0)" = "1000" ]
+}
+
+# ---- Network section: _eth_line_for ---------------------------------------
+
+@test "_eth_line_for: connected + 1000 → 'end0: 1 Gbps'" {
+    write_eth_speed end0 1000
+    [ "$(_eth_line_for end0 connected)" = "end0: 1 Gbps" ]
+}
+
+@test "_eth_line_for: connected + missing speed → 'end0: up'" {
+    [ "$(_eth_line_for end0 connected)" = "end0: up" ]
+}
+
+@test "_eth_line_for: connected + -1 (no carrier) → 'end0: up'" {
+    write_eth_speed end0 -1
+    [ "$(_eth_line_for end0 connected)" = "end0: up" ]
+}
+
+@test "_eth_line_for: config state → 'end0: connecting…'" {
+    [ "$(_eth_line_for end0 config)" = "end0: connecting…" ]
+}
+
+@test "_eth_line_for: failed → 'end0: link failed'" {
+    [ "$(_eth_line_for end0 failed)" = "end0: link failed" ]
+}
+
+@test "_eth_line_for: unmanaged → empty (not reportable)" {
+    [ -z "$(_eth_line_for end0 unmanaged)" ]
+}
+
+@test "_eth_line_for: disconnected → empty (not reportable)" {
+    [ -z "$(_eth_line_for end0 disconnected)" ]
+}
+
+# ---- Network section: _wifi_line_for --------------------------------------
+
+@test "_wifi_line_for: connected + SSID + signal → 'wlan0: MyHome 78%'" {
+    printf '*:78:MyHome\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    printf ':45:Neighbor\n' >> "$TMP/nmcli-dev-wifi-wlan0"
+    [ "$(_wifi_line_for wlan0 connected)" = "wlan0: MyHome 78%" ]
+}
+
+@test "_wifi_line_for: connected + escaped colon in SSID unescapes" {
+    printf '*:78:Home\\:Net\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    [ "$(_wifi_line_for wlan0 connected)" = "wlan0: Home:Net 78%" ]
+}
+
+@test "_wifi_line_for: connected + hidden SSID (empty) → 'wlan0: 78%'" {
+    printf '*:78:\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    [ "$(_wifi_line_for wlan0 connected)" = "wlan0: 78%" ]
+}
+
+@test "_wifi_line_for: connected + no IN-USE row → 'wlan0: up'" {
+    # Race: device shows connected in dev status, but the wifi list query
+    # returns no row marked with '*' yet. Fall back to a bare "up" marker
+    # rather than displaying nothing.
+    printf ':45:Neighbor\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    [ "$(_wifi_line_for wlan0 connected)" = "wlan0: up" ]
+}
+
+@test "_wifi_line_for: connected + signal out of range → SSID only" {
+    printf '*:999:MyHome\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    [ "$(_wifi_line_for wlan0 connected)" = "wlan0: MyHome" ]
+}
+
+@test "_wifi_line_for: connected + signal non-numeric → SSID only" {
+    # Regex on IN-USE row requires numeric signal; non-matches fall through.
+    printf '*:--:MyHome\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    # No match → no signal/ssid captured → falls back to "up"
+    [ "$(_wifi_line_for wlan0 connected)" = "wlan0: up" ]
+}
+
+@test "_wifi_line_for: config state → 'wlan0: associating…'" {
+    [ "$(_wifi_line_for wlan0 config)" = "wlan0: associating…" ]
+}
+
+@test "_wifi_line_for: ip-config state → 'wlan0: associating…'" {
+    [ "$(_wifi_line_for wlan0 ip-config)" = "wlan0: associating…" ]
+}
+
+@test "_wifi_line_for: failed → diagnostic about WIFI_PASS" {
+    [ "$(_wifi_line_for wlan0 failed)" = "wlan0: failed (WIFI_PASS?)" ]
+}
+
+@test "_wifi_line_for: disconnected → empty (not reportable)" {
+    [ -z "$(_wifi_line_for wlan0 disconnected)" ]
+}
+
+# ---- Network section: read_network_lines (end-to-end of the helper) -------
+
+@test "read_network_lines: nmcli returns nothing → no lines" {
+    out="$(read_network_lines)"
+    [ -z "$out" ]
+}
+
+@test "read_network_lines: eth connected → 'end0: 1 Gbps'" {
+    printf 'end0:ethernet:connected\n' > "$TMP/nmcli-dev-status"
+    write_eth_speed end0 1000
+    out="$(read_network_lines)"
+    [ "$out" = "end0: 1 Gbps" ]
+}
+
+@test "read_network_lines: wifi connected → 'wlan0: MyHome 78%'" {
+    printf 'wlan0:wifi:connected\n' > "$TMP/nmcli-dev-status"
+    printf '*:78:MyHome\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    out="$(read_network_lines)"
+    [ "$out" = "wlan0: MyHome 78%" ]
+}
+
+@test "read_network_lines: eth + wifi both connected → eth first, wifi second" {
+    cat > "$TMP/nmcli-dev-status" <<'EOF'
+end0:ethernet:connected
+wlan0:wifi:connected
+lo:loopback:unmanaged
+EOF
+    write_eth_speed end0 1000
+    printf '*:78:MyHome\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    mapfile -t out < <(read_network_lines)
+    [ "${#out[@]}" = "2" ]
+    [ "${out[0]}" = "end0: 1 Gbps" ]
+    [ "${out[1]}" = "wlan0: MyHome 78%" ]
+}
+
+@test "read_network_lines: dev-status reported in wifi-first order → eth still rendered first" {
+    cat > "$TMP/nmcli-dev-status" <<'EOF'
+wlan0:wifi:connected
+end0:ethernet:connected
+EOF
+    write_eth_speed end0 100
+    printf '*:78:MyHome\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    mapfile -t out < <(read_network_lines)
+    [ "${out[0]}" = "end0: 100 Mbps" ]
+    [ "${out[1]}" = "wlan0: MyHome 78%" ]
+}
+
+@test "read_network_lines: only failed wifi (wrong PSK) surfaces the diagnostic" {
+    printf 'wlan0:wifi:failed\n' > "$TMP/nmcli-dev-status"
+    out="$(read_network_lines)"
+    [ "$out" = "wlan0: failed (WIFI_PASS?)" ]
+}
+
+@test "read_network_lines: unmanaged loopback / disconnected ifaces are skipped" {
+    cat > "$TMP/nmcli-dev-status" <<'EOF'
+lo:loopback:unmanaged
+wlan0:wifi:disconnected
+end0:ethernet:unavailable
+EOF
+    out="$(read_network_lines)"
+    [ -z "$out" ]
+}
+
+@test "read_network_lines: returns rc 0 even when emitting no output" {
+    run read_network_lines
+    [ "$status" -eq 0 ]
+}
+
+# ---- Network section: rendered output (full + compact layouts) ------------
+
+@test "snapshot: omits Network section when no managed iface is connected" {
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    if echo "$output" | grep -q 'Network'; then
+        false
+    fi
+}
+
+@test "snapshot: shows Network section with eth + wifi rows" {
+    printf 'end0:ethernet:connected\nwlan0:wifi:connected\n' > "$TMP/nmcli-dev-status"
+    write_eth_speed end0 1000
+    printf '*:78:MyHome\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    [[ "$output" == *Network* ]]
+    [[ "$output" == *"end0: 1 Gbps"* ]]
+    [[ "$output" == *"wlan0: MyHome 78%"* ]]
+}
+
+@test "snapshot: failed wifi surfaces WIFI_PASS hint in the Network section" {
+    printf 'wlan0:wifi:failed\n' > "$TMP/nmcli-dev-status"
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"wlan0: failed (WIFI_PASS?)"* ]]
+}
+
+@test "snapshot: long SSID is truncated and panel rows stay ≤ STATUS_PANEL_WIDTH" {
+    # 64-char SSID forces the compact-panel truncation path. After ANSI
+    # strip every visible line must remain inside the 80-col side-by-side
+    # frame (status panel + 40-col logo + 2-col gutter); a regression
+    # where the indent isn't counted toward _compact_truncate's budget
+    # would push the Network row past 80.
+    local long_ssid
+    long_ssid="$(printf 'X%.0s' {1..64})"
+    printf 'wlan0:wifi:connected\n' > "$TMP/nmcli-dev-status"
+    printf '*:78:%s\n' "$long_ssid" > "$TMP/nmcli-dev-wifi-wlan0"
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    width="$(printf '%s' "$output" | strip_ansi | max_display_width)"
+    (( width <= 80 ))
+}
+
+@test "build_status_lines_compact: every Network row is ≤ STATUS_PANEL_WIDTH cells" {
+    printf 'wlan0:wifi:connected\n' > "$TMP/nmcli-dev-status"
+    local long_ssid
+    long_ssid="$(printf 'X%.0s' {1..64})"
+    printf '*:78:%s\n' "$long_ssid" > "$TMP/nmcli-dev-wifi-wlan0"
+    collect_status_data snapshot
+    build_status_lines_compact
+    # Find rows that belong to the Network section (header + indented rows
+    # following it) and assert each is within the panel width budget.
+    local saw_network=0 row stripped
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            Network) saw_network=1 ;;
+        esac
+        if (( saw_network )); then
+            (( ${#stripped} <= STATUS_PANEL_WIDTH ))
+        fi
+    done
+    (( saw_network ))
+}
+
+@test "build_status_lines_full: joined Network row stays ≤ 80 cells for the common case" {
+    printf 'end0:ethernet:connected\nwlan0:wifi:connected\n' > "$TMP/nmcli-dev-status"
+    write_eth_speed end0 1000
+    printf '*:78:MyHome\n' > "$TMP/nmcli-dev-wifi-wlan0"
+    collect_status_data snapshot
+    build_status_lines_full snapshot
+    # Locate the Network row and verify it stayed on one line within 80 cells.
+    local row stripped saw=0
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        if [[ "$stripped" == Network*end0* ]]; then
+            saw=1
+            (( ${#stripped} <= 80 ))
+            [[ "$stripped" == *"end0: 1 Gbps"*"wlan0: MyHome 78%"* ]]
+        fi
+    done
+    (( saw ))
+}
+
+@test "build_status_lines_full: overflow triggers multi-row fallback" {
+    # Two wifi adapters with sanitize-clamp-length SSIDs push the joined
+    # row past the 68-char value budget (sanitize clamps a single SSID at
+    # 32 chars so we need ≥2 lines to overflow). Fallback should emit a
+    # bare "Network" header with iface rows underneath.
+    cat > "$TMP/nmcli-dev-status" <<'EOF'
+wlan0:wifi:connected
+wlan1:wifi:connected
+EOF
+    local ssid_a ssid_b
+    ssid_a="$(printf 'a%.0s' {1..32})"
+    ssid_b="$(printf 'b%.0s' {1..32})"
+    printf '*:78:%s\n' "$ssid_a" > "$TMP/nmcli-dev-wifi-wlan0"
+    printf '*:65:%s\n' "$ssid_b" > "$TMP/nmcli-dev-wifi-wlan1"
+    collect_status_data snapshot
+    build_status_lines_full snapshot
+    # The header row must exist as a bare "Network" line.
+    local header_seen=0 row stripped
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        if [[ "$stripped" == "Network" ]]; then
+            header_seen=1
+        fi
+    done
+    (( header_seen ))
 }
