@@ -30,6 +30,7 @@ CI (`.github/workflows/ci.yml`) runs on push to `main`/`dev` and on PRs:
 |---|---|
 | `shell-lint` | shellcheck + `bash -n` over stage and test scripts |
 | `shell-tests` | `bats test/` — first-run parsing, WiFi config, hostname handling, FEED_HOST override, webconfig manifest, render-status, sudoers, systemctl stubs |
+| `first-run-systemd` | Installs `airplanes-first-run.service` on the runner and starts it via `systemctl`. Dynamic counterpart to `test_first_run_unit.bats` — catches sandbox enforcement bugs (e.g. a `ProtectSystem=` re-mount that silently locks `/etc`) that chroot tests can't see |
 | `feed-overlay-smoke` | Checks out `airplanes-live/feed` `dev`, mounts the built image, runs `test/overlay-smoke.sh` integration |
 | `webconfig-test` | `go vet` + `go mod verify` + unit tests for `webconfig/` |
 | `webconfig-cross-build` | `webconfig` cross-compile (matrix `webconfig-cross-build-arm64`, `webconfig-cross-build-armhf`) |
