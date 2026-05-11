@@ -19,11 +19,11 @@
 #   --snapshot/--once need >= 80 cols; otherwise stack compact status
 #            with no logo (it would wrap at the terminal edge).
 #
-# Reads only local files / systemctl. Never the network. Tolerates every
-# input being absent (degrades to "-" or "(...)" strings instead of
-# failing). Wraps systemctl calls in `timeout 2` so a stalled dbus
-# cannot freeze SSH login when this script runs as the update-motd.d
-# snapshot.
+# Reads only local files, systemctl, and nmcli (queried with --rescan no
+# so it never initiates a WiFi scan). Tolerates every input being absent
+# (degrades to "-" or "(...)" strings instead of failing). Wraps
+# systemctl / nmcli calls in `timeout 2` so a stalled dbus cannot freeze
+# SSH login when this script runs as the update-motd.d snapshot.
 
 set -u
 LC_ALL=C
@@ -44,6 +44,7 @@ LC_ALL=C
 : "${PATHS_STATE_FILE_FEED:=/run/airplanes-feed/state}"
 : "${PATHS_STATE_FILE_978:=/run/airplanes-978/state}"
 : "${PATHS_STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
+: "${PATHS_SYSFS_NET:=/sys/class/net}"
 
 # State reader. Defensive — if the lib is missing (mid-update transient or
 # pi-gen build older than feed PR 1+2), fall back to a stub so consumers
@@ -438,6 +439,138 @@ read_local_urls() {
     printf '%s' "${joined//@/  or  }"
 }
 
+# ---- Network status (nmcli + /sys/class/net). -----------------------------
+# Reports each managed ethernet/WiFi interface and its state so a fresh
+# feeder bring-up can see whether the WiFi keyfile actually associated.
+# All nmcli calls are wrapped in `timeout 2` and pass `--rescan no` to
+# avoid initiating a scan; a stalled NM dbus can't freeze SSH login.
+
+# Thin testable wrappers — bats overrides via PATH-stub of nmcli, or by
+# redefining these functions after sourcing.
+_nm_dev_status() {
+    timeout 2 nmcli -t -f DEVICE,TYPE,STATE dev status 2>/dev/null
+}
+
+_nm_dev_wifi_list() {
+    local iface="$1"
+    timeout 2 nmcli --rescan no -t -f IN-USE,SIGNAL,SSID dev wifi list ifname "$iface" 2>/dev/null
+}
+
+_read_eth_speed_mbps() {
+    local iface="$1"
+    local f="$PATHS_SYSFS_NET/$iface/speed"
+    [[ -r "$f" ]] || return 0
+    head -n1 "$f" 2>/dev/null | tr -d '[:space:]'
+}
+
+# Format an integer Mbps reading. Invalid / <=0 / -1 → "up"; clean Gbps
+# multiples render as N Gbps; everything else as N Mbps. Keeps 2.5 GbE
+# (2500) readable as "2500 Mbps" rather than "2 Gbps".
+_fmt_eth_speed() {
+    local mbps="${1:-}"
+    if [[ ! "$mbps" =~ ^[0-9]+$ ]] || (( mbps <= 0 )); then
+        printf 'up'
+        return
+    fi
+    if (( mbps >= 1000 && mbps % 1000 == 0 )); then
+        printf '%d Gbps' $(( mbps / 1000 ))
+    else
+        printf '%d Mbps' "$mbps"
+    fi
+}
+
+# Reverse `nmcli -t`'s escaping. nmcli escapes literal '\' as '\\' and
+# literal ':' as '\:'. Two-pass swap via a placeholder so a SSID like
+# `\:` (escaped to `\\\:`) survives the round-trip.
+_unescape_nmcli_field() {
+    local s="${1-}"
+    s="${s//\\\\/$'\x01'}"
+    s="${s//\\:/:}"
+    s="${s//$'\x01'/\\}"
+    printf '%s' "$s"
+}
+
+# Single-iface ethernet line. Empty when state isn't reportable.
+_eth_line_for() {
+    local iface="$1" state="$2" speed_raw speed_fmt
+    case "$state" in
+        connected)
+            speed_raw="$(_read_eth_speed_mbps "$iface")"
+            speed_fmt="$(_fmt_eth_speed "$speed_raw")"
+            printf '%s: %s\n' "$iface" "$speed_fmt"
+            ;;
+        prepare|config|ip-config|ip-check|secondaries)
+            printf '%s: connecting…\n' "$iface"
+            ;;
+        failed)
+            printf '%s: link failed\n' "$iface"
+            ;;
+    esac
+}
+
+# Single-iface wifi line. Composes "iface: ssid NN%" (SSID and signal
+# both optional — hidden SSID drops the SSID, missing signal drops the
+# %, totally bare connected falls back to "iface: up").
+_wifi_line_for() {
+    local iface="$1" state="$2"
+    local wl signal="" ssid="" parts
+    case "$state" in
+        connected)
+            while IFS= read -r wl; do
+                if [[ "$wl" =~ ^\*:([0-9]+):(.*)$ ]]; then
+                    signal="${BASH_REMATCH[1]}"
+                    ssid="$(_unescape_nmcli_field "${BASH_REMATCH[2]}")"
+                    ssid="$(sanitize "$ssid" 32)"
+                    break
+                fi
+            done < <(_nm_dev_wifi_list "$iface")
+            parts="$iface:"
+            [[ -n "$ssid" ]] && parts+=" $ssid"
+            if [[ "$signal" =~ ^[0-9]+$ ]] && (( signal >= 0 && signal <= 100 )); then
+                parts+=" ${signal}%"
+            fi
+            [[ "$parts" == "$iface:" ]] && parts+=" up"
+            printf '%s\n' "$parts"
+            ;;
+        prepare|config|ip-config|ip-check|secondaries)
+            printf '%s: associating…\n' "$iface"
+            ;;
+        failed)
+            printf '%s: failed (WIFI_PASS?)\n' "$iface"
+            ;;
+    esac
+}
+
+# Top-level: emit 0..N display lines, eth first then wifi. Returns 0
+# unconditionally so callers gating on rc don't trip on the no-output
+# case.
+read_network_lines() {
+    local nm_status iface type state line
+    local -a eth_lines=() wifi_lines=()
+
+    nm_status="$(_nm_dev_status)"
+    [[ -z "$nm_status" ]] && return 0
+
+    while IFS=: read -r iface type state; do
+        iface="$(sanitize "$iface" 16)"
+        [[ -z "$iface" ]] && continue
+        case "$type" in
+            ethernet)
+                line="$(_eth_line_for "$iface" "$state")"
+                [[ -n "$line" ]] && eth_lines+=("$line")
+                ;;
+            wifi)
+                line="$(_wifi_line_for "$iface" "$state")"
+                [[ -n "$line" ]] && wifi_lines+=("$line")
+                ;;
+        esac
+    done <<< "$nm_status"
+
+    for line in "${eth_lines[@]}"; do printf '%s\n' "$line"; done
+    for line in "${wifi_lines[@]}"; do printf '%s\n' "$line"; done
+    return 0
+}
+
 # ---- Terminal-width helper. ------------------------------------------------
 # Returns the visible terminal width in columns. Defaults to 80 when stdout
 # is not a TTY (update-motd.d capture, bats `run`, or a piped invocation)
@@ -503,6 +636,7 @@ SD_978_NOTE=""
 SD_CPU_TEMP=""
 SD_UPTIME=""
 SD_LOAD=""
+declare -a SD_NETWORK_LINES=()
 
 # Populate the SD_* globals from disk / systemctl. msgs/s rate is computed
 # only in live mode so snapshot/once stay deterministic and side-effect
@@ -607,6 +741,8 @@ collect_status_data() {
     SD_CPU_TEMP="$(read_cpu_temp_c)"
     SD_UPTIME="$(read_uptime_human)"
     SD_LOAD="$(read_load_1m)"
+
+    mapfile -t SD_NETWORK_LINES < <(read_network_lines)
 }
 
 # ---- Color helpers shared by both formatters. -----------------------------
@@ -680,6 +816,23 @@ build_status_lines_full() {
     STATUS_LINES=()
 
     STATUS_LINES+=("$(printf '%bAccess%b      %s' "$C_BOLD" "$C_RESET" "$SD_URLS_JOINED")")
+    if (( ${#SD_NETWORK_LINES[@]} > 0 )); then
+        local joined="" net_line
+        for net_line in "${SD_NETWORK_LINES[@]}"; do
+            joined+="${joined:+, }$net_line"
+        done
+        # 12-cell label column ("Network     ") leaves 68 cells for the
+        # joined value before we hit the 80-col budget. Spill to
+        # multi-row (matching the compact layout) when too wide.
+        if (( ${#joined} <= 68 )); then
+            STATUS_LINES+=("$(printf '%bNetwork%b     %s' "$C_BOLD" "$C_RESET" "$joined")")
+        else
+            STATUS_LINES+=("$(printf '%bNetwork%b' "$C_BOLD" "$C_RESET")")
+            for net_line in "${SD_NETWORK_LINES[@]}"; do
+                STATUS_LINES+=("            $net_line")
+            done
+        fi
+    fi
     STATUS_LINES+=("$(printf '%bFeeder ID%b   %s' "$C_BOLD" "$C_RESET" "${SD_ID:-(not yet generated)}")")
     STATUS_LINES+=("$(printf '%bClaim%b       %s' "$C_BOLD" "$C_RESET" "$(claim_color "$SD_CLAIM")")")
     STATUS_LINES+=("")
@@ -753,6 +906,17 @@ build_status_lines_compact() {
         [[ -n "$SD_URL_LOCAL" ]] && STATUS_LINES+=("  $(_compact_truncate "$SD_URL_LOCAL")")
     else
         STATUS_LINES+=("  (not connected)")
+    fi
+
+    # Network — one row per managed iface, omitted entirely when nothing
+    # is reportable. `_compact_truncate` runs on the indented row so a
+    # long SSID can't push past STATUS_PANEL_WIDTH.
+    if (( ${#SD_NETWORK_LINES[@]} > 0 )); then
+        STATUS_LINES+=("$(printf '%bNetwork%b' "$C_BOLD" "$C_RESET")")
+        local net_line
+        for net_line in "${SD_NETWORK_LINES[@]}"; do
+            STATUS_LINES+=("$(_compact_truncate "  $net_line")")
+        done
     fi
 
     # Feeder ID — first 8 chars of the UUID (full UUID stays in
