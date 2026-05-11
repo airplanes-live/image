@@ -73,6 +73,118 @@ jobs:
       - name: bats test/
         run: bats test/
 
+  # Real-systemd smoke for airplanes-first-run.service. Installs the unit
+  # and the script onto the runner, runs the unit via systemctl, and asserts
+  # the consume-and-rename + error-file outcomes. This is the dynamic
+  # counterpart to test/test_first_run_unit.bats (static lint) — catches
+  # any future regression where the unit-file directives drift away from
+  # what the script actually writes (e.g. a ProtectSystem= re-mount that
+  # silently locks /etc, which chroot tests cannot see).
+  #
+  # feeder-id is pre-seeded so generate_feeder_id no-ops — that lets us
+  # skip the feed/ checkout (create-uuid.sh is exercised separately by the
+  # feed repo's CI). The runner is ephemeral, so /etc / /boot/firmware /
+  # /run/airplanes state created here is discarded with the VM.
+  first-run-systemd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install unit + script onto runner
+        run: |
+          sudo install -m 0755 \
+            stage-airplanes/06-firstboot/files/usr/local/sbin/airplanes-first-run \
+            /usr/local/sbin/
+          sudo install -m 0644 \
+            stage-airplanes/06-firstboot/files/etc/systemd/system/airplanes-first-run.service \
+            /etc/systemd/system/
+          sudo install -d -m 0755 /etc/airplanes
+          # Pre-seed feeder-id so generate_feeder_id no-ops (covered separately
+          # by feed's CI; here we only care about the consume-rename behaviour
+          # under real systemd sandboxing).
+          printf '00000000-0000-0000-0000-000000000000\n' \
+            | sudo tee /etc/airplanes/feeder-id >/dev/null
+          sudo install -d -m 0755 /boot/firmware
+          # Every path in the unit's ReadWritePaths= must exist on disk before
+          # the unit starts — otherwise systemd fails the mount-namespace setup
+          # with status=226/NAMESPACE. On the real image, /usr/local/share/airplanes
+          # is created by stage-airplanes/01-install-feed; here we have to
+          # materialise it ourselves.
+          sudo install -d -m 0755 /usr/local/share/airplanes
+          # apply_hostname rewrites the /etc/hosts 127.0.1.1 line whose
+          # hostname matches /etc/hostname's current value. GitHub-hosted
+          # runners don't always have a 127.0.1.1 entry that matches, so
+          # set a known baseline (clean hostname + matching /etc/hosts line)
+          # before starting the unit.
+          echo 'ci-runner-baseline' | sudo tee /etc/hostname >/dev/null
+          sudo sh -c "grep -v '^127\\.0\\.1\\.1' /etc/hosts > /etc/hosts.new || true; mv /etc/hosts.new /etc/hosts"
+          echo '127.0.1.1 ci-runner-baseline' | sudo tee -a /etc/hosts >/dev/null
+          sudo systemctl daemon-reload
+
+      - name: Happy path — apply succeeds, source renamed to .applied.txt
+        run: |
+          # HOSTNAME exercises the hostnamectl path under the unit's sandbox
+          # (CapabilityBoundingSet= empty + RestrictAddressFamilies=AF_UNIX +
+          # PrivateNetwork=yes): the script's primary apply path calls
+          # hostnamectl, which D-Buses systemd-hostnamed via AF_UNIX. This
+          # also confirms /etc/hostname + /etc/hosts writes work — those are
+          # the writes ProtectSystem=full would have silently locked.
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          LATITUDE=51.5
+          LONGITUDE=-0.1
+          ALTITUDE=42m
+          MLAT_USER=ci-systemd-smoke
+          MLAT_ENABLED=true
+          HOSTNAME=airplanes-ci-smoke
+          CFG
+          sudo systemctl start airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ ! -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source not consumed"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.applied.txt ]] \
+            || { echo "applied.txt missing"; exit 1; }
+          [[ ! -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "unexpected error.txt"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          sudo grep -q '^LATITUDE="51.5"$' /etc/airplanes/feed.env \
+            || { echo "LATITUDE not merged into feed.env"; sudo cat /etc/airplanes/feed.env; exit 1; }
+          sudo grep -q '^MLAT_USER="ci-systemd-smoke"$' /etc/airplanes/feed.env \
+            || { echo "MLAT_USER not merged into feed.env"; exit 1; }
+          [[ "$(sudo cat /etc/hostname | tr -d '\n\r')" = "airplanes-ci-smoke" ]] \
+            || { echo "/etc/hostname not updated: got '$(sudo cat /etc/hostname)'"; exit 1; }
+          sudo grep -qE '^127\.0\.1\.1[[:space:]]+airplanes-ci-smoke' /etc/hosts \
+            || { echo "/etc/hosts 127.0.1.1 line not updated"; sudo cat /etc/hosts; exit 1; }
+          # HOSTNAME is a synthetic key — must never reach feed.env.
+          ! sudo grep -qE '^HOSTNAME=' /etc/airplanes/feed.env \
+            || { echo "HOSTNAME leaked into feed.env"; exit 1; }
+
+      - name: Failure path — invalid HOSTNAME leaves source + writes .error.txt
+        run: |
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          HOSTNAME=foo.bar
+          LATITUDE=42.0
+          CFG
+          sudo systemctl restart airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source missing after failure"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "error.txt missing"; exit 1; }
+          sudo grep -qi 'HOSTNAME' /boot/firmware/airplanes-config.error.txt \
+            || { echo "error.txt does not mention HOSTNAME"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          # The valid key in the same file should still have been merged.
+          sudo grep -q '^LATITUDE="42.0"$' /etc/airplanes/feed.env \
+            || { echo "LATITUDE not merged from partial-error file"; sudo cat /etc/airplanes/feed.env; exit 1; }
+
+      - name: Dump unit logs on failure
+        if: failure()
+        run: |
+          sudo journalctl -u airplanes-first-run.service --no-pager || true
+          sudo ls -la /boot/firmware/ || true
+          sudo cat /boot/firmware/airplanes-config.error.txt 2>/dev/null || true
+
   feed-overlay-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
