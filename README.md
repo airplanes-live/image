@@ -16,11 +16,11 @@ Raspberry Pi image for feeding ADS-B (1090 MHz) and optionally UAT (978 MHz) dat
 
 You'll need a Raspberry Pi (Pi Zero 2 W or newer — 512 MB RAM minimum), an RTL-SDR dongle, a 1090 MHz antenna, and a microSD card (8 GB or larger).
 
-Images are published as a rolling [`dev-latest`](https://github.com/airplanes-live/image/releases/tag/dev-latest) pre-release. Each new dev build overwrites the assets in place, so flashing one tracks the bleeding-edge cut — expect occasional breakage and be ready to reflash.
+Pick the latest **stable** release from the [Releases](https://github.com/airplanes-live/image/releases) page. A rolling [`dev-latest`](https://github.com/airplanes-live/image/releases/tag/dev-latest) pre-release also exists for testers — it's overwritten on every new dev build, so expect occasional breakage and be ready to reflash.
 
 ### Basic: flash and edit the boot config
 
-Download the most recent `.img.xz` from the [`dev-latest`](https://github.com/airplanes-live/image/releases/tag/dev-latest) release. Flash it to the microSD card with any tool (`dd`, balenaEtcher, Win32 Disk Imager, etc.). **Before ejecting**, mount the FAT (boot) partition and edit `/boot/firmware/airplanes-config.txt`:
+Download the latest stable `.img.xz` from the [Releases](https://github.com/airplanes-live/image/releases) page. Flash it to the microSD card with any tool (`dd`, balenaEtcher, Win32 Disk Imager, etc.). **Before ejecting**, mount the FAT (boot) partition and edit `/boot/firmware/airplanes-config.txt`:
 
 - `LATITUDE`, `LONGITUDE`, `ALTITUDE` — your receiver's location (decimal degrees, WGS84). MLAT requires accurate values.
 - `MLAT_USER` — your MLAT display name (shows up on airplanes.live).
@@ -36,7 +36,7 @@ The boot config file is consumed on every boot: a successful apply renames it to
 
 [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (v2.0.9 or newer) can configure hostname, WiFi, and SSH access during flashing — but only via a Custom Repository URL. The "Use Custom" local-image flow deliberately hides those settings.
 
-1. On the [`dev-latest`](https://github.com/airplanes-live/image/releases/tag/dev-latest) release page, copy the URL of the `airplanes-feeder-dev-arm64.rpi-imager-manifest.json` asset.
+1. On the [Releases](https://github.com/airplanes-live/image/releases) page, open the latest stable release and copy the URL of the `.rpi-imager-manifest.json` asset. (For testing the bleeding-edge build, use the manifest on the [`dev-latest`](https://github.com/airplanes-live/image/releases/tag/dev-latest) pre-release instead.)
 2. In Imager, click the gear icon at the bottom of the OS list → **Custom Repository** → paste the URL.
 3. Pick airplanes.live from the OS list, select your microSD card, click **Next**, then **Edit Settings** to configure hostname, WiFi, and SSH. Save and write.
 
