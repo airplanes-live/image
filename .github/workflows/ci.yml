@@ -25,6 +25,7 @@ jobs:
               \( -name '*.sh' \
                  -o -name 'systemctl-stub' \
                  -o -name 'airplanes-first-run' \
+                 -o -name 'airplanes-grant-sudo' \
                  -o -name 'render-status' \
                  -o -name '10-airplanes-status' \) \
               -print0
@@ -41,6 +42,7 @@ jobs:
           for f in scripts/systemctl-stub scripts/*.sh \
                    stage-airplanes/**/*.sh \
                    stage-airplanes/**/files/**/airplanes-first-run \
+                   stage-airplanes/**/files/**/airplanes-grant-sudo \
                    stage-airplanes/**/files/**/render-status \
                    stage-airplanes/**/files/**/10-airplanes-status \
                    test/*.sh; do
@@ -185,6 +187,92 @@ jobs:
           sudo ls -la /boot/firmware/ || true
           sudo cat /boot/firmware/airplanes-config.error.txt 2>/dev/null || true
 
+  # Real-systemd smoke for airplanes-grant-sudo.service. Installs the unit
+  # and the script onto the runner, creates a synthetic UID-1001 human user,
+  # starts the unit, and asserts the per-user sudoers grant lands with the
+  # right content + mode + owner, that visudo accepts the merged sudoers,
+  # and that the synthetic user can actually `sudo -n true`. This is the
+  # dynamic counterpart to test/test_grant_sudo_unit.bats (static lint) —
+  # catches a future ProtectSystem= re-mount or sandbox tightening that
+  # would silently break the sudoers writes.
+  grant-sudo-systemd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install unit + script onto runner
+        run: |
+          sudo install -m 0755 \
+            stage-airplanes/06c-grant-sudo/files/usr/local/sbin/airplanes-grant-sudo \
+            /usr/local/sbin/
+          sudo install -m 0644 \
+            stage-airplanes/06c-grant-sudo/files/etc/systemd/system/airplanes-grant-sudo.service \
+            /etc/systemd/system/
+          # The unit Wants=cloud-final.service. On hosted runners cloud-init
+          # is preinstalled but its datasource detection generally fails, so
+          # cloud-final.service is inactive — Wants= will pull it in but
+          # not block on it (and failures don't propagate to our unit).
+          sudo systemctl daemon-reload
+
+      - name: Create synthetic operator user
+        run: |
+          # UID 1001 mimics cloud-init's typical assignment for the rpi-imager
+          # user. /bin/bash satisfies the script's login-shell gate.
+          sudo useradd -m -s /bin/bash -u 1001 ciop
+          # The runner's sudoers default already has `%sudo ALL=(ALL:ALL) ALL`,
+          # but ciop is not in the sudo group and has no prior NOPASSWD grant.
+          # `sudo -n -u ciop sudo -n true` MUST fail right now — the grant
+          # we're about to install is what flips it to success.
+          if sudo -n -u ciop sudo -n true 2>/dev/null; then
+            echo "precondition failed: ciop already has NOPASSWD sudo before the unit ran" >&2
+            exit 1
+          fi
+
+      - name: Start the unit and assert grant lands
+        run: |
+          sudo systemctl start airplanes-grant-sudo.service
+          sudo systemctl status airplanes-grant-sudo.service --no-pager
+
+          GRANT=/etc/sudoers.d/099_airplanes-sudo-ciop
+          [[ -f "$GRANT" ]] \
+            || { echo "expected grant file $GRANT missing"; sudo ls -la /etc/sudoers.d/; exit 1; }
+          sudo grep -qE '^ciop ALL=\(ALL:ALL\) NOPASSWD: ALL$' "$GRANT" \
+            || { echo "grant content unexpected"; sudo cat "$GRANT"; exit 1; }
+          [[ "$(sudo stat -c '%a' "$GRANT")" = "440" ]] \
+            || { echo "grant mode is not 0440: $(sudo stat -c '%a' "$GRANT")"; exit 1; }
+          [[ "$(sudo stat -c '%U:%G' "$GRANT")" = "root:root" ]] \
+            || { echo "grant owner is not root:root: $(sudo stat -c '%U:%G' "$GRANT")"; exit 1; }
+
+          # Validate the merged sudoers is still well-formed.
+          sudo visudo -cf /etc/sudoers
+
+          # Effective check: the synthetic user can now sudo without a password.
+          # ProtectSystem=full would have silently dropped the grant on the
+          # rootfs — this is the dynamic catch the static lint can't provide.
+          sudo -n -u ciop sudo -n true \
+            || { echo "ciop cannot sudo -n after grant"; exit 1; }
+
+          [[ -f /var/lib/airplanes/grant-sudo-done ]] \
+            || { echo "marker not written"; exit 1; }
+
+      - name: Re-running the unit is a no-op (gated by marker)
+        run: |
+          # Restart should ConditionPathExists-skip (marker exists).
+          sudo systemctl restart airplanes-grant-sudo.service
+          # The unit's ActiveState stays active (RemainAfterExit=yes); we
+          # verify the condition skipped via the result property.
+          state=$(sudo systemctl show airplanes-grant-sudo.service \
+                    --property=ConditionResult --value)
+          [[ "$state" = "no" ]] \
+            || { echo "expected ConditionResult=no on re-run, got '$state'"; exit 1; }
+
+      - name: Dump unit logs on failure
+        if: failure()
+        run: |
+          sudo journalctl -u airplanes-grant-sudo.service --no-pager || true
+          sudo ls -la /etc/sudoers.d/ || true
+
   feed-overlay-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -315,12 +403,15 @@ jobs:
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/05-install-webconfig/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/06c-grant-sudo/files/etc/systemd/system/*.service \
+              "$ROOT/etc/systemd/system/"
           install -m 0644 "$UPSTREAM_UNITS_DIR/tar1090.service" \
               "$ROOT/etc/systemd/system/tar1090.service"
           install -m 0644 "$UPSTREAM_UNITS_DIR/graphs1090.service" \
               "$ROOT/etc/systemd/system/graphs1090.service"
           # Stub binaries so ExecStart= path checks resolve.
           install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-first-run"
+          install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-grant-sudo"
           install -m 0755 /dev/null "$ROOT/usr/local/bin/apl-feed"
           install -m 0755 /dev/null "$ROOT/usr/local/bin/airplanes-webconfig"
           mkdir -p "$ROOT/usr/local/lib/airplanes-webconfig" "$ROOT/usr/local/lib/airplanes"
@@ -356,6 +447,7 @@ jobs:
               airplanes-claim.timer \
               airplanes-rfkill-unblock.service \
               airplanes-dashboard.service \
+              airplanes-grant-sudo.service \
               readsb.service \
               dump978-fa.service \
               airplanes-978.service \

@@ -31,6 +31,7 @@ CI (`.github/workflows/ci.yml`) runs on push to `main`/`dev` and on PRs:
 | `shell-lint` | shellcheck + `bash -n` over stage and test scripts |
 | `shell-tests` | `bats test/` — first-run parsing, WiFi config, hostname handling, FEED_HOST override, webconfig manifest, render-status, sudoers, systemctl stubs |
 | `first-run-systemd` | Installs `airplanes-first-run.service` on the runner and starts it via `systemctl`. Dynamic counterpart to `test_first_run_unit.bats` — catches sandbox enforcement bugs (e.g. a `ProtectSystem=` re-mount that silently locks `/etc`) that chroot tests can't see |
+| `grant-sudo-systemd` | Installs `airplanes-grant-sudo.service` on the runner with a synthetic UID-1001 user and asserts the per-user `/etc/sudoers.d/099_airplanes-sudo-<name>` grant lands and `sudo -n` actually works. Same dynamic-sandbox role as `first-run-systemd`. |
 | `feed-overlay-smoke` | Checks out `airplanes-live/feed` `dev`, mounts the built image, runs `test/overlay-smoke.sh` integration |
 | `webconfig-test` | `go vet` + `go mod verify` + unit tests for `webconfig/` |
 | `webconfig-cross-build` | `webconfig` cross-compile (matrix `webconfig-cross-build-arm64`, `webconfig-cross-build-armhf`) |
@@ -62,6 +63,7 @@ stage-airplanes/                 ← fork-specific
   05-install-webconfig           Go webconfig (cross-compiled for arm64 + armhf)
   06-firstboot                   airplanes-first-run script + claim service/timer + boot config template
   06b-console-dashboard          ASCII dashboard renderer + tty1 service
+  06c-grant-sudo                 post-cloud-init NOPASSWD sudo grants per human user
   07-finalize                    boot perms, build artifact cleanup
 export-image / export-noobs      pi-gen finalization (compresses rootfs into .img and optional NOOBS archive)
 ```
@@ -70,7 +72,7 @@ Each substage has `00-run.sh` (host-side: clone, copy files into rootfs) and/or 
 
 ### First-boot flow
 
-Pi boots → cloud-init runs (handles user-data / WiFi / hostname injected by rpi-imager) → `airplanes-first-run.service` runs every boot, gated by file presence rather than a rootfs marker. If `/boot/firmware/airplanes-config.txt` exists: parse + apply (HOSTNAME / WiFi keyfile / FEED_HOST translations + feed.env merge), then **rename source → `airplanes-config.applied.txt`** on full success, or write a sibling `airplanes-config.error.txt` and leave the source for retry on failure. → `airplanes-feed.service` connects to `feed.airplanes.live` → `airplanes-claim.timer` periodically polls the claim endpoint until claimed. cloud-init does not read `airplanes-config.txt`; that file is exclusively `airplanes-first-run`'s input.
+Pi boots → cloud-init runs (handles user-data / WiFi / hostname injected by rpi-imager) → `airplanes-first-run.service` runs every boot, gated by file presence rather than a rootfs marker. If `/boot/firmware/airplanes-config.txt` exists: parse + apply (HOSTNAME / WiFi keyfile / FEED_HOST translations + feed.env merge), then **rename source → `airplanes-config.applied.txt`** on full success, or write a sibling `airplanes-config.error.txt` and leave the source for retry on failure. → `airplanes-grant-sudo.service` runs after `cloud-final.service` and writes per-user `/etc/sudoers.d/099_airplanes-sudo-<name>` NOPASSWD grants for each rpi-imager-created human user (closes the gap where rpi-imager's user-data emitter omits the sudo grant on non-rpi-os images — see `stage-airplanes/06c-grant-sudo/`). → `airplanes-feed.service` connects to `feed.airplanes.live` → `airplanes-claim.timer` periodically polls the claim endpoint until claimed. cloud-init does not read `airplanes-config.txt`; that file is exclusively `airplanes-first-run`'s input.
 
 The state machine on FAT visible to a user pulling the SD card: `airplanes-config.txt` only = pending or failed; `airplanes-config.txt` + `airplanes-config.error.txt` = failed (read .error.txt to see what to fix); `airplanes-config.applied.txt` only = consumed successfully. The unit is sandboxed with `ProtectSystem=true` + `ReadWritePaths=/boot/firmware /usr/local/share/airplanes` + `RuntimeDirectory=airplanes` — chroot tests bypass that sandbox, so a static lint at `test/test_first_run_unit.bats` asserts the directives stay aligned with what the script actually writes.
 
