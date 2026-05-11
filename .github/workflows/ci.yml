@@ -217,9 +217,11 @@ jobs:
 
       - name: Create synthetic operator user
         run: |
-          # UID 1001 mimics cloud-init's typical assignment for the rpi-imager
-          # user. /bin/bash satisfies the script's login-shell gate.
-          sudo useradd -m -s /bin/bash -u 1001 ciop
+          # UID 2001 sits above the runner's pre-allocated `runner` user
+          # (UID 1001) to avoid the `useradd: UID is not unique` collision.
+          # Any UID in the [1000, 65534) range satisfies the script's gate
+          # — the exact value doesn't matter, only that it's free.
+          sudo useradd -m -s /bin/bash -u 2001 ciop
           # The runner's sudoers default already has `%sudo ALL=(ALL:ALL) ALL`,
           # but ciop is not in the sudo group and has no prior NOPASSWD grant.
           # `sudo -n -u ciop sudo -n true` MUST fail right now — the grant
