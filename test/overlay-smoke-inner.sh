@@ -183,10 +183,10 @@ fi
 [[ -s /etc/airplanes/.build-dump978-sha ]] || fail ".build-dump978-sha missing or empty"
 [[ ! -d /usr/local/src/airplanes-readsb-build ]] || fail "readsb build dir not cleaned up"
 [[ ! -d /usr/local/src/airplanes-dump978-build ]] || fail "dump978 build dir not cleaned up"
-# PR 4: readsb + 978 units are all enabled at install. The 978 wrappers
-# self-disable via exit 64 when UAT_INPUT is empty/invalid (parallel to
-# airplanes-mlat); first-run translates DUMP978=yes into UAT_INPUT and the
-# wrappers handle the rest.
+# readsb + 978 units are all enabled at install. The 978 wrappers self-disable
+# via exit 64 when UAT_INPUT is empty/invalid (parallel to airplanes-mlat).
+# UAT_INPUT lands in feed.env via webconfig — the boot config no longer
+# touches operational keys.
 have_enable_link readsb.service || fail "readsb.service enable symlink missing"
 have_enable_link dump978-fa.service \
     || fail "dump978-fa.service should be enabled at install (PR 4: self-disables via exit 64)"

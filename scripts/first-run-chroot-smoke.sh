@@ -97,23 +97,18 @@ mount -t proc proc "$ROOT_MNT/proc"
 mount --rbind /sys "$ROOT_MNT/sys"
 mount --rbind /dev "$ROOT_MNT/dev"
 
-echo "==> seeding airplanes-config.txt with real values"
-# Overwrite the shipped sentinel template with realistic values so we can
-# assert the merge into feed.env actually lands user-set keys (not just
-# "feed.env still parses"). DUMP978=no is the sentinel, must NOT propagate.
-# FEED_HOST seeded to verify expand_feed_host runs end-to-end: derived
-# MLATSERVER and TARGET must land in feed.env, and FEED_HOST itself must NOT.
-# Only valid, recognized keys are seeded here: strict consume-and-rename
-# blocks the rename on ANY recorded error (typo'd WIFI_PASSWORD,
-# unrecognized keys, etc.). The unrecognized-key / typo-leak coverage
-# lives in test/test_first_run_consume.bats and test/test_first_run_wifi.bats.
+echo "==> seeding airplanes-config.txt with the 5-key allowlist"
+# Overwrite the shipped (all-commented) template with concrete values so we
+# can assert each allowlist path end-to-end. The boot config's job is
+# bootstrap only — hostname for mDNS discovery, WiFi creds for network
+# join, FEED_HOST to point at a non-prod backend. Operational config
+# (LATITUDE/LONGITUDE/ALTITUDE/MLAT_USER/MLAT_ENABLED/GAIN/UAT_INPUT) lives
+# in the webconfig UI; the parse-time allowlist rejects those keys here.
+# Strict consume-and-rename blocks the rename on ANY recorded error
+# (typo'd WIFI_PASSWORD, allowlist rejection, etc.); the unrecognized-key /
+# typo-leak coverage lives in test/test_first_run_parser.bats and
+# test/test_first_run_consume.bats.
 cat > "$ROOT_MNT/boot/firmware/airplanes-config.txt" <<'CFG'
-LATITUDE=51.5
-LONGITUDE=-0.1
-ALTITUDE=42m
-MLAT_USER=ci-smoke
-MLAT_ENABLED=true
-DUMP978=no
 HOSTNAME=ci-smoke-feeder
 FEED_HOST=test.local
 WIFI_SSID="Test Net"
@@ -166,24 +161,34 @@ echo "==> asserting boot config was consumed (renamed to .applied.txt)"
 [[ ! -f "$ROOT_MNT/boot/firmware/airplanes-config.error.txt" ]] \
 	|| { echo "unexpected airplanes-config.error.txt present"; cat "$ROOT_MNT/boot/firmware/airplanes-config.error.txt" >&2; exit 1; }
 
-echo "==> asserting feed.env merged the seeded boot config"
-unset LATITUDE LONGITUDE ALTITUDE USER MLAT_USER MLAT_ENABLED MLATSERVER TARGET FEED_HOST
+echo "==> asserting feed.env carries the FEED_HOST-derived endpoints"
+# The only operational keys the boot config can affect now are MLATSERVER and
+# TARGET, both synthesized by expand_feed_host from FEED_HOST. Everything
+# else in feed.env (LATITUDE/LONGITUDE/ALTITUDE/MLAT_USER/MLAT_ENABLED/
+# UAT_INPUT/etc.) was written by feed/configure.sh during the chroot install
+# and must survive the first-run merge unchanged — don't pin their specific
+# values though, that's configure.sh's concern; assert presence only.
+unset LATITUDE LONGITUDE ALTITUDE USER MLAT_USER MLAT_ENABLED MLATSERVER TARGET FEED_HOST UAT_INPUT
 # shellcheck source=/dev/null
 ( set -a; source "$ROOT_MNT/etc/airplanes/feed.env"; set +a; \
-	[[ "$LATITUDE" == "51.5" ]] || { echo "LATITUDE not merged: $LATITUDE"; exit 1; }; \
-	[[ "$LONGITUDE" == "-0.1" ]] || { echo "LONGITUDE not merged: $LONGITUDE"; exit 1; }; \
-	[[ "$ALTITUDE" == "42m" ]] || { echo "ALTITUDE not merged: $ALTITUDE"; exit 1; }; \
-	[[ "$MLAT_USER" == "ci-smoke" ]] || { echo "MLAT_USER not merged: $MLAT_USER"; exit 1; }; \
-	[[ "$MLAT_ENABLED" == "true" ]] || { echo "MLAT_ENABLED not merged: $MLAT_ENABLED"; exit 1; }; \
-	[[ -z "${USER:-}" ]] || { echo "legacy USER leaked into feed.env: $USER"; exit 1; }; \
 	[[ "$MLATSERVER" == "test.local:31090" ]] || { echo "MLATSERVER not derived from FEED_HOST: $MLATSERVER"; exit 1; }; \
 	[[ "$TARGET" == "--net-connector test.local,30004,beast_reduce_plus_out" ]] || { echo "TARGET not derived from FEED_HOST: $TARGET"; exit 1; }; \
-	[[ -z "${FEED_HOST:-}" ]] || { echo "FEED_HOST leaked into feed.env: $FEED_HOST"; exit 1; } \
+	[[ -z "${FEED_HOST:-}" ]] || { echo "FEED_HOST leaked into feed.env: $FEED_HOST"; exit 1; }; \
+	[[ -z "${USER:-}" ]] || { echo "legacy USER leaked into feed.env: $USER"; exit 1; }; \
+	[[ -v MLAT_USER ]] || { echo "MLAT_USER missing from feed.env (configure.sh default lost)"; exit 1; }; \
+	[[ -v MLAT_ENABLED ]] || { echo "MLAT_ENABLED missing from feed.env"; exit 1; }; \
+	[[ -v LATITUDE ]] || { echo "LATITUDE missing from feed.env"; exit 1; }; \
+	[[ -v LONGITUDE ]] || { echo "LONGITUDE missing from feed.env"; exit 1; }; \
+	[[ -v ALTITUDE ]] || { echo "ALTITUDE missing from feed.env"; exit 1; } \
 ) || { echo "feed.env merge assertions failed"; exit 1; }
 
-echo "==> asserting FEED_HOST line did NOT leak into feed.env on disk"
+echo "==> asserting synthetic keys did NOT leak into feed.env on disk"
 if grep -E '^FEED_HOST=' "$ROOT_MNT/etc/airplanes/feed.env"; then
 	echo "FEED_HOST= line present in feed.env"; exit 1
+fi
+# HOSTNAME is allowlisted but synthetic — applied to /etc/hostname only.
+if grep -E '^HOSTNAME=' "$ROOT_MNT/etc/airplanes/feed.env"; then
+	echo "HOSTNAME= line present in feed.env"; exit 1
 fi
 
 echo "==> asserting HOSTNAME applied to /etc/hostname and /etc/hosts"
@@ -192,11 +197,6 @@ HN_ACTUAL="$(tr -d '\n\r' < "$ROOT_MNT/etc/hostname")"
 	|| { echo "/etc/hostname not updated: got '$HN_ACTUAL'"; exit 1; }
 grep -qP '^127\.0\.1\.1\s+ci-smoke-feeder(\s|$)' "$ROOT_MNT/etc/hosts" \
 	|| { echo "/etc/hosts 127.0.1.1 line not updated"; cat "$ROOT_MNT/etc/hosts" >&2; exit 1; }
-
-echo "==> asserting HOSTNAME line did NOT leak into feed.env on disk"
-if grep -E '^HOSTNAME=' "$ROOT_MNT/etc/airplanes/feed.env"; then
-	echo "HOSTNAME= line present in feed.env"; exit 1
-fi
 
 echo "==> asserting WiFi keyfile generated and locked down"
 WIFI_KEYFILE="$ROOT_MNT/etc/NetworkManager/system-connections/airplanes-config-wifi.nmconnection"

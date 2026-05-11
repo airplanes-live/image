@@ -7,11 +7,11 @@
 #      symlink on every boot, and could orphan a claim secret if the
 #      canonical file ever ended up corrupted).
 #   2. If /boot/firmware/airplanes-config.txt is present: parse + apply
-#      (NM keyfile, WiFi country, hostname, FEED_HOST expansion, legacy
-#      USER→MLAT split, DUMP978→UAT translation, feed.env merge) → rename
-#      the source to airplanes-config.applied.txt on full success. Any
-#      user-input rejection, sub-step write failure, or merge failure
-#      leaves the source in place and writes a sibling
+#      (NM keyfile, WiFi country, hostname, FEED_HOST expansion, feed.env
+#      merge) → rename the source to airplanes-config.applied.txt on full
+#      success. Any unknown key (rejected at parse time against the 5-key
+#      allowlist), user-input rejection, sub-step write failure, or merge
+#      failure leaves the source in place and writes a sibling
 #      airplanes-config.error.txt naming what to fix; the source is then
 #      re-applied on the next boot.
 #
@@ -58,6 +58,49 @@ log() {
 record_error() {
 	BOOT_CFG_ERRORS+=("$1")
 	log "$1"
+}
+
+# The five keys airplanes-config.txt accepts. Operational config (location,
+# MLAT name, MLAT on/off, gain, UAT toggling) lives in the webconfig UI;
+# feed.env-only knobs (MLATSERVER, TARGET, INPUT, SDR pinning, etc.) are
+# edited directly on the booted feeder. reject_unknown_boot_key emits a
+# category-specific error so airplanes-config.error.txt tells the user where
+# the setting actually lives.
+declare -gA BOOT_CFG_ALLOWLIST=(
+	[WIFI_SSID]=1 [WIFI_PASS]=1 [WIFI_COUNTRY]=1
+	[HOSTNAME]=1
+	[FEED_HOST]=1
+)
+
+# Keys webconfig writes via POST /api/config (mirror of configspec.go
+# WriteKeys). Any of these in airplanes-config.txt should redirect the user
+# to the UI rather than the feed.env-edit path.
+declare -gA _BOOT_CFG_WEBCONFIG_KEYS=(
+	[LATITUDE]=1 [LONGITUDE]=1 [ALTITUDE]=1
+	[MLAT_USER]=1 [MLAT_ENABLED]=1
+	[GAIN]=1 [UAT_INPUT]=1
+)
+
+# Emit a category-specific allowlist-rejection error. Caller must already
+# know the key is outside BOOT_CFG_ALLOWLIST. Three buckets:
+#   - WIFI_* typos → "use WIFI_SSID / WIFI_PASS / WIFI_COUNTRY" (preserves
+#     the secret-safe phrasing of the previous typo guard; never echoes the
+#     value).
+#   - configspec.go WriteKeys → "use the webconfig UI" (these are the keys
+#     the UI's form actually writes).
+#   - everything else (MLATSERVER, TARGET, INPUT, INPUT_TYPE, READSB_SDR_*,
+#     DUMP978*, legacy USER, etc.) → "edit /etc/airplanes/feed.env on the
+#     booted feeder" (webconfig doesn't write them, so pointing at the UI
+#     would be wrong).
+reject_unknown_boot_key() {
+	local key="$1" lineno="$2"
+	if [[ "$key" == WIFI_* ]]; then
+		record_error "line $lineno: unrecognized WiFi key $key (use WIFI_SSID, WIFI_PASS, or WIFI_COUNTRY)"
+	elif [[ -n "${_BOOT_CFG_WEBCONFIG_KEYS[$key]:-}" ]]; then
+		record_error "line $lineno: $key is configured via the webconfig UI at http://<hostname>.local/ after first boot, not airplanes-config.txt"
+	else
+		record_error "line $lineno: $key is not configurable via airplanes-config.txt — SSH in and edit /etc/airplanes/feed.env on the booted feeder if you need this setting"
+	fi
 }
 
 # Skip if a canonical feeder-id already exists. create-uuid.sh is technically
@@ -109,6 +152,17 @@ parse_boot_config() {
 		if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
 			key="${BASH_REMATCH[1]}"
 			value="${BASH_REMATCH[2]}"
+			# Allowlist gate fires FIRST — before the quote strip, before the
+			# empty-value skip, and before the shell-metachar reject — so any
+			# non-allowlisted key lands the category-specific "where this
+			# setting actually lives" error. Without this ordering, UAT_INPUT=
+			# would be silently dropped by the empty-value skip and
+			# USER=$(rm -rf /) would be misreported as "unsafe value" rather
+			# than "not configurable here."
+			if [[ -z "${BOOT_CFG_ALLOWLIST[$key]:-}" ]]; then
+				reject_unknown_boot_key "$key" "$lineno"
+				continue
+			fi
 			if [[ "$value" =~ ^\"(.*)\"$ ]]; then
 				value="${BASH_REMATCH[1]}"
 			else
@@ -175,21 +229,22 @@ validate_wifi_inputs() {
 	return 0
 }
 
-# Pop every WIFI_* key from BOOT_CFG so they can never be merged into
-# feed.env. Validates the recognized keys via validate_wifi_inputs and warns
-# about typos like WIFI_PASSWORD that might otherwise leak secrets.
+# Pop every WIFI_* key from BOOT_CFG so they can never reach feed.env (WiFi
+# credentials belong in the NM keyfile, not in a shell-sourced env file).
+# parse_boot_config's allowlist already rejects WIFI_PASSWORD and other
+# WIFI_* typos with the secret-safe "use WIFI_SSID / WIFI_PASS / WIFI_COUNTRY"
+# message before they enter BOOT_CFG; this sweep is defense in depth in case
+# future code seeds BOOT_CFG by some other path.
 consume_wifi_config() {
 	validate_wifi_inputs || true
 
 	local key
 	for key in "${!BOOT_CFG[@]}"; do
-		[[ "$key" == WIFI_* ]] || continue
-		case "$key" in
-			WIFI_SSID|WIFI_PASS|WIFI_COUNTRY) ;;
-			*) record_error "unrecognized WiFi key $key (typo? use WIFI_SSID / WIFI_PASS / WIFI_COUNTRY)" ;;
-		esac
-		unset "BOOT_CFG[$key]"
+		if [[ "$key" == WIFI_* ]]; then
+			unset "BOOT_CFG[$key]"
+		fi
 	done
+	return 0
 }
 
 # Write /etc/NetworkManager/system-connections/airplanes-config-wifi.nmconnection
@@ -409,43 +464,35 @@ apply_hostname() {
 
 # Synthesize MLATSERVER and TARGET from a user-friendly FEED_HOST shorthand.
 # FEED_HOST itself is a synthetic key — not consumed by airplanes-feed.sh /
-# airplanes-mlat.sh — so we strip it from BOOT_CFG after expansion. (A
-# pre-existing FEED_HOST= line in feed.env on disk is preserved by
-# merge_feed_env's generic preserve-unknown-keys behavior; that's harmless
-# since feed scripts don't read FEED_HOST.)
+# airplanes-mlat.sh — so we strip it from BOOT_CFG after expansion. MLATSERVER
+# and TARGET aren't in BOOT_CFG_ALLOWLIST, so the user can never set them
+# directly from the boot config; the synthesis is the only way they enter
+# BOOT_CFG, which means we always overwrite unconditionally and never need
+# to guard against a user override.
 #
 # Format: hostname or IPv4, optionally with :port (1..65535). The :port (if
 # given) applies to MLATSERVER; TARGET always uses the well-known beast port
-# 30004. Users needing IPv6 (bracket form) or non-default beast ports must
-# set MLATSERVER and TARGET directly — those overrides win over FEED_HOST-
-# derived defaults so advanced setups (multi-host fan-out, etc.) still work
-# alongside FEED_HOST.
+# 30004. Bracketed IPv6, non-default beast port, multi-host fan-out, and
+# other advanced topologies are not expressible from the SD card — SSH in
+# after first boot and edit /etc/airplanes/feed.env directly for those cases.
 #
-# Validation: this is a shell-safety gate, not a strict DNS validator. The
-# regex rejects shell metacharacters and shapes that would produce malformed
-# argv (e.g. spaces, embedded ';'); it does NOT reject every malformed
-# hostname (e.g. 'bad..example', '_x.example', or labels >63 bytes). Such
-# inputs pass shell gating, then fail cleanly at resolver time with a clear
-# journalctl error. Conversely, webconfig's universalReject (configspec.go:53)
-# will re-check the synthesized values when the user later edits LATITUDE /
-# USER / etc. via the UI; failing loudly at first boot beats silently
-# poisoning feed.env into a state webconfig refuses to write to.
-#
-# Asymmetric-leak guard: when FEED_HOST is present but invalid, the user has
-# opted into the safe single-knob path and that path failed. Falling back to
-# a half-set MLATSERVER (or half-set TARGET) is the exact asymmetric-routing
-# leak FEED_HOST exists to prevent — so we drop a lone explicit endpoint
-# override in that case. A matched pair (both MLATSERVER and TARGET set
-# explicitly) is preserved: that's a self-contained advanced override.
+# Validation is a shell-safety gate, not a strict DNS validator. The regex
+# rejects shell metacharacters and shapes that would produce malformed argv
+# (e.g. spaces, embedded ';'); it does NOT reject every malformed hostname
+# (e.g. 'bad..example', '_x.example', or labels >63 bytes). Such inputs pass
+# shell gating, then fail cleanly at resolver time with a clear journalctl
+# error. Conversely, webconfig's universalReject (configspec.go:53) re-checks
+# the synthesized values when the user later edits via the UI; failing loudly
+# at first boot beats silently poisoning feed.env into a state webconfig
+# refuses to write to.
 expand_feed_host() {
 	local raw host port
 	raw="${BOOT_CFG[FEED_HOST]:-}"
 	[[ -n "$raw" ]] || return 0
 
 	if ! _feed_host_is_valid "$raw"; then
-		record_error "FEED_HOST: invalid value '$raw' (need hostname or hostname:port with port 1-65535; bracketed IPv6 is not supported via FEED_HOST — set MLATSERVER and TARGET directly instead)"
+		record_error "FEED_HOST: invalid value '$raw' (need hostname or hostname:port with port 1-65535; bracketed IPv6 / non-default beast port / multi-host fan-out are not expressible via FEED_HOST — SSH in after first boot and edit /etc/airplanes/feed.env directly for advanced topologies)"
 		unset 'BOOT_CFG[FEED_HOST]'
-		_feed_host_drop_lone_override
 		return 0
 	fi
 
@@ -457,8 +504,8 @@ expand_feed_host() {
 		port="$FEED_HOST_DEFAULT_MLAT_PORT"
 	fi
 
-	[[ -v "BOOT_CFG[MLATSERVER]" ]] || BOOT_CFG[MLATSERVER]="${host}:${port}"
-	[[ -v "BOOT_CFG[TARGET]" ]] || BOOT_CFG[TARGET]="--net-connector ${host},${FEED_HOST_DEFAULT_BEAST_PORT},beast_reduce_plus_out"
+	BOOT_CFG[MLATSERVER]="${host}:${port}"
+	BOOT_CFG[TARGET]="--net-connector ${host},${FEED_HOST_DEFAULT_BEAST_PORT},beast_reduce_plus_out"
 
 	unset 'BOOT_CFG[FEED_HOST]'
 }
@@ -478,50 +525,6 @@ _feed_host_is_valid() {
 		(( port >= 1 && port <= 65535 )) || return 1
 	fi
 	return 0
-}
-
-# When FEED_HOST validation fails, drop a lone MLATSERVER or lone TARGET
-# override to prevent asymmetric routing. A matched pair stays — that's a
-# self-contained advanced override the user wrote intentionally.
-_feed_host_drop_lone_override() {
-	local has_mlat=0 has_target=0
-	[[ -v "BOOT_CFG[MLATSERVER]" ]] && has_mlat=1
-	[[ -v "BOOT_CFG[TARGET]" ]] && has_target=1
-	if (( has_mlat != has_target )); then
-		(( has_mlat )) && unset 'BOOT_CFG[MLATSERVER]'
-		(( has_target )) && unset 'BOOT_CFG[TARGET]'
-		log "dropped lone endpoint override after FEED_HOST rejection (avoiding asymmetric routing)"
-	fi
-}
-
-# Translate a legacy USER= entry in BOOT_CFG into the new MLAT_USER /
-# MLAT_ENABLED schema. Idempotent: if the boot config sets either of the new
-# keys, those win and any USER= is dropped (the boot template is the user's
-# edit surface and we never want both schemas living together in feed.env).
-#
-# Legacy mapping mirrors update.sh's migrate_user_to_mlat_split:
-#   USER=0 or USER=disable  → MLAT_USER="", MLAT_ENABLED=false
-#   USER=<other>            → MLAT_USER=<value>, MLAT_ENABLED=true
-apply_user_to_mlat_split() {
-	if [[ -v "BOOT_CFG[MLAT_USER]" || -v "BOOT_CFG[MLAT_ENABLED]" ]]; then
-		# Explicit new schema wins; drop any legacy USER alongside it.
-		unset 'BOOT_CFG[USER]' 2>/dev/null || true
-		return 0
-	fi
-	if [[ ! -v "BOOT_CFG[USER]" ]]; then
-		return 0
-	fi
-	case "${BOOT_CFG[USER]}" in
-		0|disable)
-			BOOT_CFG[MLAT_USER]=""
-			BOOT_CFG[MLAT_ENABLED]="false"
-			;;
-		*)
-			BOOT_CFG[MLAT_USER]="${BOOT_CFG[USER]}"
-			BOOT_CFG[MLAT_ENABLED]="true"
-			;;
-	esac
-	unset 'BOOT_CFG[USER]'
 }
 
 # Atomic merge under flock: write a tmp file in the target directory, fsync
@@ -573,42 +576,6 @@ merge_feed_env() {
 		sync "$feed_env_dir" 2>/dev/null || sync
 		return 0
 	) 9>"$LOCK_FILE"
-}
-
-# Translate the legacy boot-config DUMP978=yes knob into the canonical
-# UAT_INPUT key consumed by airplanes-978.sh / dump978-fa.sh wrappers. After
-# this pass, DUMP978 is never persisted into feed.env — UAT_INPUT is the
-# single source of truth.
-#
-# Precedence:
-#   - explicit BOOT_CFG[UAT_INPUT] wins if it validates ("" or
-#     "127.0.0.1:30978"); invalid values are recorded as an error so the
-#     user gets diagnostic feedback (the wrappers would refuse to start
-#     with the bad value too).
-#   - else BOOT_CFG[DUMP978]=yes maps to UAT_INPUT=127.0.0.1:30978.
-#   - DUMP978=no is sentinel-stripped earlier; if it reaches us anyway,
-#     unset_ing DUMP978 below ensures it never lands in feed.env.
-#
-# The 978 systemd units are systemctl-enabled at install time and self-disable
-# via exit 64 when UAT_INPUT is empty/invalid, so first-run no longer flips
-# them — replacing the old `enable + start --no-block` flow that lived here.
-apply_dump978_to_uat_input() {
-	if [[ -v "BOOT_CFG[UAT_INPUT]" ]]; then
-		case "${BOOT_CFG[UAT_INPUT]}" in
-			""|"127.0.0.1:30978")
-				;;
-			*)
-				record_error "UAT_INPUT: invalid value '${BOOT_CFG[UAT_INPUT]}' (must be empty or '127.0.0.1:30978')"
-				unset 'BOOT_CFG[UAT_INPUT]'
-				;;
-		esac
-	fi
-
-	if [[ ! -v "BOOT_CFG[UAT_INPUT]" && "${BOOT_CFG[DUMP978]:-}" == "yes" ]]; then
-		BOOT_CFG[UAT_INPUT]="127.0.0.1:30978"
-	fi
-
-	unset 'BOOT_CFG[DUMP978]' 2>/dev/null || true
 }
 
 # Rename BOOT_CONFIG → airplanes-config.applied.txt atomically. Clears any
@@ -689,8 +656,6 @@ main() {
 	apply_wifi_country || record_error "failed to apply WiFi country code"
 	apply_hostname || record_error "failed to apply hostname"
 	expand_feed_host
-	apply_user_to_mlat_split
-	apply_dump978_to_uat_input
 
 	local merge_ok=1
 	if (( ${#BOOT_CFG[@]} > 0 )); then

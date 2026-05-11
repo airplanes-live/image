@@ -11,6 +11,12 @@
 # WIFI_KEYFILE_DIR, HOSTNAME_FILE, HOSTS_FILE) redirected to a per-test
 # tmpdir. They DO NOT exercise systemd sandboxing (chroot tests can't —
 # see test_first_run_unit.bats for the static unit-file lint that does).
+#
+# Scaffold-fixture choice: tests below use FEED_HOST=mybackend.local as the
+# canonical "valid allowlisted key with an observable feed.env effect" so
+# happy-path assertions can grep feed.env for the derived MLATSERVER/TARGET.
+# HOSTNAME is the canonical "valid non-merge key" (it's applied to /etc/
+# hostname, never to feed.env).
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06-firstboot/files/usr/local/sbin/airplanes-first-run"
@@ -54,22 +60,26 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
 
 @test "01: successful apply renames .txt -> .applied.txt, no .error.txt" {
     write_cfg \
-        "LATITUDE=51.5" \
-        "LONGITUDE=-0.1" \
-        "MLAT_USER=test-feeder" \
-        "MLAT_ENABLED=true"
+        "HOSTNAME=test-feeder" \
+        "FEED_HOST=mybackend.local"
     run main
     [ "$status" -eq 0 ]
     [ ! -f "$BOOT_CONFIG" ]
     [ -f "$APPLIED_CONFIG" ]
     [ ! -f "$ERROR_FILE" ]
     [ -f "$FEED_ENV" ]
-    grep -q '^LATITUDE="51.5"$' "$FEED_ENV"
-    grep -q '^MLAT_USER="test-feeder"$' "$FEED_ENV"
+    # FEED_HOST is synthetic — it must NOT leak into feed.env. The derived
+    # MLATSERVER and TARGET land there instead.
+    ! grep -q '^FEED_HOST=' "$FEED_ENV"
+    grep -q '^MLATSERVER="mybackend.local:31090"$' "$FEED_ENV"
+    grep -q '^TARGET="--net-connector mybackend.local,30004,beast_reduce_plus_out"$' "$FEED_ENV"
+    # HOSTNAME is synthetic — applied to /etc/hostname, not feed.env.
+    ! grep -q '^HOSTNAME=' "$FEED_ENV"
+    grep -qF 'test-feeder' "$HOSTNAME_FILE"
 }
 
 @test "02: successful apply clears stale .error.txt from a prior run" {
-    write_cfg "LATITUDE=51.5"
+    write_cfg "FEED_HOST=mybackend.local"
     printf 'stale error from previous boot\n' > "$ERROR_FILE"
     run main
     [ "$status" -eq 0 ]
@@ -110,31 +120,33 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
 
 @test "06: fresh .txt over an existing .applied.txt re-applies and overwrites .applied" {
     printf 'old content\n' > "$APPLIED_CONFIG"
-    write_cfg "LATITUDE=42.0"
+    write_cfg "FEED_HOST=otherbackend.local"
     run main
     [ "$status" -eq 0 ]
     [ ! -f "$BOOT_CONFIG" ]
     [ -f "$APPLIED_CONFIG" ]
     # .applied.txt should now contain the new content, not the old
-    grep -q '^LATITUDE=42.0$' "$APPLIED_CONFIG"
+    grep -q '^FEED_HOST=otherbackend.local$' "$APPLIED_CONFIG"
     ! grep -q 'old content' "$APPLIED_CONFIG"
 }
 
 # ---- failure-path cases (single error) -------------------------------------
 
 @test "07: invalid HOSTNAME leaves .txt in place, writes .error.txt, applies other keys" {
-    write_cfg "LATITUDE=51.5" "HOSTNAME=foo.bar"
+    write_cfg "FEED_HOST=mybackend.local" "HOSTNAME=foo.bar"
     run main
     [ "$status" -eq 0 ]
     [ -f "$BOOT_CONFIG" ]
     [ ! -f "$APPLIED_CONFIG" ]
     [ -f "$ERROR_FILE" ]
     grep -q 'HOSTNAME' "$ERROR_FILE"
-    # Valid key still got merged
-    grep -q '^LATITUDE="51.5"$' "$FEED_ENV"
+    # Valid key still got merged into feed.env via expand_feed_host.
+    grep -q '^MLATSERVER="mybackend.local:31090"$' "$FEED_ENV"
 }
 
 @test "08: invalid FEED_HOST leaves .txt in place, writes .error.txt" {
+    # Space + semicolon: parse-time metachar reject doesn't catch these
+    # (they're not in the metachar set), but expand_feed_host's regex does.
     write_cfg 'FEED_HOST=evil host;rm'
     run main
     [ "$status" -eq 0 ]
@@ -143,39 +155,48 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
     grep -q 'FEED_HOST' "$ERROR_FILE"
 }
 
-@test "09: invalid UAT_INPUT leaves .txt in place, writes .error.txt" {
-    write_cfg 'UAT_INPUT=10.0.0.5:30978'
+@test "09: UAT_INPUT (non-allowlisted) is rejected with webconfig guidance" {
+    # UAT_INPUT moves to webconfig per configspec.go WriteKeys; the boot
+    # config rejects it with a "use webconfig UI" message.
+    write_cfg 'UAT_INPUT=127.0.0.1:30978'
     run main
     [ "$status" -eq 0 ]
     [ -f "$BOOT_CONFIG" ]
     [ -f "$ERROR_FILE" ]
     grep -q 'UAT_INPUT' "$ERROR_FILE"
+    grep -q 'webconfig UI' "$ERROR_FILE"
 }
 
-@test "10: malformed line (no '=') leaves .txt in place, writes .error.txt" {
-    write_cfg "LATITUDE=51.5" "this is not a key=value pair without ="
+@test "10: malformed line (no '=') leaves .txt in place, writes .error.txt; valid key still merges" {
+    write_cfg "FEED_HOST=mybackend.local" "this is not a key=value pair without ="
     run main
     [ "$status" -eq 0 ]
     [ -f "$BOOT_CONFIG" ]
     [ -f "$ERROR_FILE" ]
     grep -qE 'line 2:.*malformed' "$ERROR_FILE"
-    # Valid key still got merged
-    grep -q '^LATITUDE="51.5"$' "$FEED_ENV"
+    # Valid key still got merged — derived endpoints land in feed.env even
+    # when the source file stays pending due to other errors.
+    grep -q '^MLATSERVER="mybackend.local:31090"$' "$FEED_ENV"
 }
 
-@test "11: shell-injection value rejected; .error.txt names the key, no value leak" {
-    write_cfg 'EVIL=$(rm -rf /)'
+@test "11: shell-metachar in allowlisted HOSTNAME rejected; .error.txt names the key, no value leak" {
+    # HOSTNAME is allowlisted (passes the allowlist gate), so the parse-time
+    # shell-metachar reject fires for it. Asserts the defense-in-depth path:
+    # value is rejected, key is named, the metachar payload doesn't leak
+    # into airplanes-config.error.txt.
+    write_cfg 'HOSTNAME=$(rm -rf /)'
     run main
     [ "$status" -eq 0 ]
     [ -f "$BOOT_CONFIG" ]
     [ -f "$ERROR_FILE" ]
-    grep -q 'EVIL' "$ERROR_FILE"
-    # The shell-metachar value should NOT appear verbatim in the error file.
+    grep -q 'HOSTNAME' "$ERROR_FILE"
+    grep -q 'unsafe value' "$ERROR_FILE"
+    # The shell-metachar payload should NOT appear verbatim in the error file.
     ! grep -q 'rm -rf' "$ERROR_FILE"
 }
 
 @test "12: preflight failure (read-only BOOT_CONFIG dir) returns without mutating feed.env" {
-    write_cfg "LATITUDE=51.5"
+    write_cfg "FEED_HOST=mybackend.local"
     : > "$FEED_ENV"
     feed_env_before="$(stat -c %Y "$FEED_ENV")"
     sleep 1
@@ -192,7 +213,7 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
 }
 
 @test "13: rename failure leaves .txt in place AND writes .error.txt with rename note" {
-    write_cfg "LATITUDE=51.5"
+    write_cfg "FEED_HOST=mybackend.local"
     # Pre-create .applied.txt as a directory so mv -fT fails.
     # mv -fT refuses to replace a directory with a non-directory.
     mkdir -p "$APPLIED_CONFIG"
@@ -207,32 +228,43 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
 
 # ---- multi-error and content cases -----------------------------------------
 
-@test "14: multiple errors in one run -> all appear as bullets in .error.txt" {
+@test "14: multiple error categories in one run -> all appear as bullets in .error.txt" {
+    # One of each error category:
+    #   FEED_HOST  → valid, gets merged (MLATSERVER/TARGET in feed.env)
+    #   HOSTNAME=foo.bar → allowlisted, invalid value (apply_hostname error)
+    #   malformed line → parser error
+    #   LATITUDE=51.5 → allowlist-rejected with "webconfig UI" message
+    #   MLATSERVER=lab → allowlist-rejected with "feed.env" message
     write_cfg \
-        "LATITUDE=51.5" \
+        "FEED_HOST=mybackend.local" \
         "HOSTNAME=foo.bar" \
         "this is malformed" \
-        'EVIL=$(badness)' \
-        "UAT_INPUT=10.0.0.5:30978"
+        "LATITUDE=51.5" \
+        "MLATSERVER=lab:31090"
     run main
     [ "$status" -eq 0 ]
     [ -f "$BOOT_CONFIG" ]
     [ -f "$ERROR_FILE" ]
-    # Each error key should appear in the file.
+    # Each error key appears in the file.
     grep -q 'HOSTNAME' "$ERROR_FILE"
     grep -qE 'malformed' "$ERROR_FILE"
-    grep -q 'EVIL' "$ERROR_FILE"
-    grep -q 'UAT_INPUT' "$ERROR_FILE"
+    grep -q 'LATITUDE' "$ERROR_FILE"
+    grep -q 'MLATSERVER' "$ERROR_FILE"
+    # Category-specific guidance is present.
+    grep -q 'webconfig UI' "$ERROR_FILE"
+    grep -q 'feed.env' "$ERROR_FILE"
     # Header + format sanity.
     grep -q '^Status: error$' "$ERROR_FILE"
     grep -q '^Source: ' "$ERROR_FILE"
     grep -q '^Errors:$' "$ERROR_FILE"
+    # Valid key (FEED_HOST) still applied even alongside errors.
+    grep -q '^MLATSERVER="mybackend.local:31090"$' "$FEED_ENV"
 }
 
 @test "15: WIFI_PASS value never appears in .error.txt (key name only, no length)" {
     # WIFI_PASS too short -> validate_wifi_inputs rejects, drops WiFi config,
     # and records an error. The error message must name the key, not echo the
-    # value or anything that could narrow the secret. The sentinel "HUNTER22"
+    # value or anything that could narrow the secret. The sentinel "HUNT22"
     # is the value-substring we assert does NOT leak.
     # 7-char PSK is below the 8-char WPA minimum -> rejected.
     write_cfg 'WIFI_SSID="MyNet"' 'WIFI_PASS="HUNT22X"'
@@ -269,7 +301,7 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
 
 @test "18: retry sequence: bad -> .error -> reboot no fix -> same .error -> fix -> .applied" {
     # Bad input.
-    write_cfg "HOSTNAME=foo.bar" "LATITUDE=51.5"
+    write_cfg "HOSTNAME=foo.bar" "FEED_HOST=mybackend.local"
     run main
     [ -f "$ERROR_FILE" ]
     err_first="$(cat "$ERROR_FILE")"
@@ -282,7 +314,7 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
     [ -f "$BOOT_CONFIG" ]
 
     # User fixes the typo and reboots.
-    write_cfg "HOSTNAME=valid-name" "LATITUDE=51.5"
+    write_cfg "HOSTNAME=valid-name" "FEED_HOST=mybackend.local"
     run main
     [ "$status" -eq 0 ]
     [ ! -f "$BOOT_CONFIG" ]
@@ -293,11 +325,11 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
 @test "19: state — .txt + stale .applied.txt + stale .error.txt -> success clears .error" {
     printf 'old applied content\n' > "$APPLIED_CONFIG"
     printf 'old error content\n' > "$ERROR_FILE"
-    write_cfg "LATITUDE=51.5"
+    write_cfg "FEED_HOST=mybackend.local"
     run main
     [ "$status" -eq 0 ]
     [ -f "$APPLIED_CONFIG" ]
-    grep -q '^LATITUDE=51.5$' "$APPLIED_CONFIG"
+    grep -q '^FEED_HOST=mybackend.local$' "$APPLIED_CONFIG"
     ! grep -q 'old applied' "$APPLIED_CONFIG"
     [ ! -f "$ERROR_FILE" ]
 }
@@ -321,4 +353,27 @@ write_cfg() { printf '%s\n' "$@" > "$BOOT_CONFIG"; }
     write_cfg 'WIFI_SSID="MyNet"' 'WIFI_PASS="LEAKBA1"'
     output_combined="$(main 2>&1 || true)"
     [[ "$output_combined" != *"LEAKBA1"* ]]
+}
+
+# ---- mixed valid + allowlist-rejected (new contract) -----------------------
+
+@test "22: FEED_HOST=valid + LATITUDE=51.5 -> endpoints merged, error recorded, source pending" {
+    # Allowlist rejection of a stray key does NOT block the merge for other
+    # valid keys in the same file. FEED_HOST's derived MLATSERVER/TARGET land
+    # in feed.env on every retry, and the source file stays pending until
+    # the user removes the stray LATITUDE line.
+    write_cfg \
+        "FEED_HOST=mybackend.local" \
+        "LATITUDE=51.5"
+    run main
+    [ "$status" -eq 0 ]
+    [ -f "$BOOT_CONFIG" ]
+    [ ! -f "$APPLIED_CONFIG" ]
+    [ -f "$ERROR_FILE" ]
+    grep -q 'LATITUDE' "$ERROR_FILE"
+    grep -q 'webconfig UI' "$ERROR_FILE"
+    # FEED_HOST's derived endpoints DO land in feed.env even though the
+    # source file stays pending.
+    grep -q '^MLATSERVER="mybackend.local:31090"$' "$FEED_ENV"
+    grep -q '^TARGET="--net-connector mybackend.local,30004,beast_reduce_plus_out"$' "$FEED_ENV"
 }

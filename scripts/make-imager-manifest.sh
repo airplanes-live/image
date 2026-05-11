@@ -135,10 +135,11 @@ RELEASE_DATE="$(date -u -r "$INPUT_ABS" +%Y-%m-%d)"
 NAME="airplanes.live feeder (${CHANNEL})"
 # rpi-imager's Edit Settings (cloudinit-rpi) only exposes Pi OS customization
 # fields: hostname, WiFi, SSH, user/password, locale. Receiver location
-# (LATITUDE/LONGITUDE/ALTITUDE) and the MLAT display name live in
-# /boot/firmware/airplanes-config.txt and the web UI, not the Imager dialog.
-# The feeder claim secret is generated on-device by airplanes-claim.service —
-# it is not a user-supplied value, so don't promise it here.
+# (LATITUDE/LONGITUDE/ALTITUDE) and the MLAT display name live exclusively in
+# the web UI at http://<hostname>.local/ — they're not boot-config keys and
+# not Imager dialog fields. The feeder claim secret is generated on-device by
+# airplanes-claim.service — it is not a user-supplied value, so don't promise
+# it here.
 DESCRIPTION="airplanes.live ADS-B/MLAT/UAT feeder image (${CHANNEL} channel). Use Edit Settings to set hostname, WiFi, and SSH access before flashing. Receiver location and MLAT name are configured after first boot via the web UI."
 
 # Tag list the OS entry advertises. arm64-only — this image is not built for

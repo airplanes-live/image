@@ -52,8 +52,8 @@ adduser readsb dialout || true
 install -d -m 0755 -o readsb -g readsb /var/globe_history
 
 # 4. Enable services. 978 units always-enabled and self-disable via exit 64
-# when UAT_INPUT is empty/invalid (parallel to airplanes-mlat); first-run no
-# longer flips them based on DUMP978=yes — it translates the boot-config knob
-# into UAT_INPUT and the wrappers decide.
+# when UAT_INPUT is empty/invalid (parallel to airplanes-mlat). UAT_INPUT
+# lands in /etc/airplanes/feed.env via webconfig (the boot config no longer
+# touches operational keys); the wrappers read it and decide.
 systemctl enable readsb.service
 systemctl enable dump978-fa.service airplanes-978.service

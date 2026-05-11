@@ -20,17 +20,15 @@ Pick the latest **stable** release from the [Releases](https://github.com/airpla
 
 ### Basic: flash and edit the boot config
 
-Download the latest stable `.img.xz` from the [Releases](https://github.com/airplanes-live/image/releases) page. Flash it to the microSD card with any tool (`dd`, balenaEtcher, Win32 Disk Imager, etc.). **Before ejecting**, mount the FAT (boot) partition and edit `/boot/firmware/airplanes-config.txt`:
+Download the latest stable `.img.xz` from the [Releases](https://github.com/airplanes-live/image/releases) page. Flash it to the microSD card with any tool (`dd`, balenaEtcher, Win32 Disk Imager, etc.). **Before ejecting**, mount the FAT (boot) partition and edit `/boot/firmware/airplanes-config.txt`. The boot config is bootstrap-only — just enough to get the Pi on the network and reachable:
 
-- `LATITUDE`, `LONGITUDE`, `ALTITUDE` — your receiver's location (decimal degrees, WGS84). MLAT requires accurate values.
-- `MLAT_USER` — your MLAT display name (shows up on airplanes.live).
-- `MLAT_ENABLED` — `true` (default) or `false` to opt out of MLAT entirely. ADS-B feeding works either way.
 - `HOSTNAME` — set this if you run more than one Pi on your network (otherwise they'll all collide on `raspberrypi.local`). E.g. `HOSTNAME=airplanes-feeder` makes the Pi reachable at `airplanes-feeder.local`.
 - `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY` — only if you're not on Ethernet.
+- `FEED_HOST` — leave commented out for production. Only set this if you're pointing at a non-production backend.
 
-Eject, insert into the Pi, connect SDR + antenna, power on. After ~2 minutes the feeder is online — browse to `http://<hostname>.local/` (or `http://raspberrypi.local/` if you didn't set `HOSTNAME`) to verify and tweak via the web UI.
+Eject, insert into the Pi, connect SDR + antenna, power on. After ~2 minutes the feeder is online — browse to `http://<hostname>.local/` (or `http://raspberrypi.local/` if you didn't set `HOSTNAME`). **Set your receiver location (latitude / longitude / altitude) and MLAT display name in the web UI** — that's where they live now.
 
-The boot config file is consumed on every boot: a successful apply renames it to `airplanes-config.applied.txt`. If anything fails (typo, write error), the file stays in place and a sibling `airplanes-config.error.txt` explains what to fix. To re-prime later (e.g. fix a WiFi typo without booting), rename `airplanes-config.applied.txt` back to `airplanes-config.txt`, edit, and reboot. Once you've configured via the web UI, keep the file as `airplanes-config.applied.txt` so it stops overwriting the UI's edits on each boot.
+The boot config file is consumed on every boot: a successful apply renames it to `airplanes-config.applied.txt`. If anything fails (typo, unrecognized key, write error), the file stays in place and a sibling `airplanes-config.error.txt` explains what to fix. To re-prime later (e.g. fix a WiFi typo without booting), rename `airplanes-config.applied.txt` back to `airplanes-config.txt`, edit, and reboot.
 
 ### Alternative: Raspberry Pi Imager (if you want SSH set up at flash time)
 
