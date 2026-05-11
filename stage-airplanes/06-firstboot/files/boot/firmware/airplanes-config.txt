@@ -1,13 +1,26 @@
 # airplanes.live feeder configuration.
 #
-# This file is read ONCE on first boot. After the feeder has booted, edit
-# settings via the webconfig UI at http://airplanes-feeder.local/. Edits made
-# to this file after first boot are NOT re-merged.
+# This file is applied on every boot. After a successful apply it is RENAMED
+# to airplanes-config.applied.txt. If apply fails (typo, validation error,
+# write failure), the file stays in place AND a sibling
+# airplanes-config.error.txt is written explaining what went wrong — fix the
+# listed items, keep this file named airplanes-config.txt, then reboot.
+#
+# To change settings later, rename airplanes-config.applied.txt back to
+# airplanes-config.txt (or drop a fresh airplanes-config.txt next to it),
+# edit, and reboot.
+#
+# Once the feeder is reachable on the network, the webconfig UI at
+# http://<hostname>.local/ is the normal edit surface — it writes directly
+# to /etc/airplanes/feed.env. Note: leaving an airplanes-config.txt on the
+# SD card will overwrite the same keys in feed.env on every boot. Once
+# you're configured via webconfig, keep the file renamed to .applied.txt so
+# it stops being authoritative.
 #
 # Format: KEY=value or KEY="value" (one per line, # for comments).
 # Optional keys are commented out; uncomment and set the value to apply.
 # Active lines must NOT carry inline comments — '#' only starts a comment at
-# the start of a line. (Inline '#' would survive first-boot but break later
+# the start of a line. (Inline '#' would survive parsing but break later
 # webconfig writes that preserve these keys.)
 #
 # 978 services (dump978-fa, airplanes-978) are systemctl-enabled at install
@@ -37,8 +50,9 @@ MLAT_ENABLED=true
 #HOSTNAME=airplanes-feeder
 
 # Enable 978 MHz UAT (US-only; second SDR required). yes|no.
-# This is a one-time first-boot hint that translates to UAT_INPUT below;
-# after first boot, set UAT_INPUT directly via webconfig.
+# This is a shorthand that translates to UAT_INPUT below — set UAT_INPUT
+# directly if you need a non-default endpoint. Once you're configured,
+# webconfig is the normal place to toggle UAT.
 # Convention: flash the 978 dongle's serial via:
 #   sudo apt install rtl-sdr && rtl_eeprom -s 00000978
 # Override DUMP978_SDR_SERIAL below if you provisioned a different serial.
@@ -65,9 +79,12 @@ DUMP978=no
 # than one non-978 SDR. Single-SDR setups can leave this unset.
 #READSB_SDR_SERIAL=
 
-# UAT_INPUT directly enables/disables 978 (preferred over DUMP978 above).
-# Empty disables; "127.0.0.1:30978" enables. Anything else makes the wrappers
-# refuse to start (state=misconfigured). webconfig is the normal edit surface.
+# UAT_INPUT directly enables 978 (preferred over DUMP978 above). The only
+# accepted value here is "127.0.0.1:30978"; any other value is rejected with
+# an error. To disable 978, leave this line commented out (or set DUMP978=no
+# above). webconfig is the normal edit surface for toggling later — it can
+# write an empty UAT_INPUT directly to /etc/airplanes/feed.env, which the
+# 978 wrappers honor as "disabled".
 #UAT_INPUT="127.0.0.1:30978"
 
 # 978 UAT options (only consulted when 978 is enabled).

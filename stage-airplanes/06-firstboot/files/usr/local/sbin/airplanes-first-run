@@ -1,22 +1,29 @@
 #!/bin/bash
 # First-boot setup for the airplanes.live feeder image.
 #
-# Runs once (gated on /var/lib/airplanes/first-run-done) to:
-#   1. Generate /etc/airplanes/feeder-id via the feed-shipped create-uuid.sh
-#   2. Merge user-set values from /boot/firmware/airplanes-config.txt into
-#      /etc/airplanes/feed.env (atomic, flock-protected, sentinel-tolerant)
-#   3. Drop the done marker so subsequent boots are no-ops
+# Runs every boot. Two responsibilities:
+#   1. Generate /etc/airplanes/feeder-id (skipped when one already exists,
+#      since create-uuid.sh would otherwise churn the file and the legacy
+#      symlink on every boot, and could orphan a claim secret if the
+#      canonical file ever ended up corrupted).
+#   2. If /boot/firmware/airplanes-config.txt is present: parse + apply
+#      (NM keyfile, WiFi country, hostname, FEED_HOST expansion, legacy
+#      USER→MLAT split, DUMP978→UAT translation, feed.env merge) → rename
+#      the source to airplanes-config.applied.txt on full success. Any
+#      user-input rejection, sub-step write failure, or merge failure
+#      leaves the source in place and writes a sibling
+#      airplanes-config.error.txt naming what to fix; the source is then
+#      re-applied on the next boot.
 #
-# Failures in step 1 or 2 are logged and tolerated so a partially-edited
-# config doesn't trap the feeder in a boot loop. The marker is dropped
-# unconditionally because retries on subsequent boots cannot improve anything
-# the user hasn't fixed in the boot config.
+# Successful applies clear any stale airplanes-config.error.txt. Empty /
+# comment-only files are still "consumed" (rename, no merge), since the
+# user explicitly placed them.
 
-FEED_ENV="/etc/airplanes/feed.env"
-BOOT_CONFIG="/boot/firmware/airplanes-config.txt"
-LOCK_FILE="/var/lock/airplanes-feed-env.lock"
-DONE_MARKER="/var/lib/airplanes/first-run-done"
-CREATE_UUID="/usr/local/share/airplanes/git/create-uuid.sh"
+FEED_ENV="${FEED_ENV:-/etc/airplanes/feed.env}"
+BOOT_CONFIG="${BOOT_CONFIG:-/boot/firmware/airplanes-config.txt}"
+LOCK_FILE="${LOCK_FILE:-/run/airplanes/feed-env.lock}"
+FEEDER_ID_FILE="${FEEDER_ID_FILE:-/etc/airplanes/feeder-id}"
+CREATE_UUID="${CREATE_UUID:-/usr/local/share/airplanes/git/create-uuid.sh}"
 WIFI_KEYFILE_DIR="${WIFI_KEYFILE_DIR:-/etc/NetworkManager/system-connections}"
 WIFI_KEYFILE="${WIFI_KEYFILE:-${WIFI_KEYFILE_DIR}/airplanes-config-wifi.nmconnection}"
 HOSTNAME_FILE="${HOSTNAME_FILE:-/etc/hostname}"
@@ -28,6 +35,14 @@ HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 declare -g FEED_HOST_DEFAULT_MLAT_PORT="31090"
 declare -g FEED_HOST_DEFAULT_BEAST_PORT="30004"
 
+# Errors collected during the apply pass. write_error_file() serializes this
+# into /boot/firmware/airplanes-config.error.txt. main() gates the rename on
+# this being empty.
+#
+# Callers MUST NOT include secret values (WIFI_PASS) in the message — name
+# the key only. WIFI_SSID is not strictly secret but names networks; same rule.
+declare -ga BOOT_CFG_ERRORS=()
+
 log() {
 	if command -v logger >/dev/null 2>&1; then
 		logger -t airplanes-first-run -- "$*"
@@ -36,7 +51,24 @@ log() {
 	fi
 }
 
+# Logs to journal AND appends to BOOT_CFG_ERRORS. Use for user-input
+# rejection and sub-step failures that should surface in
+# airplanes-config.error.txt. Use plain log() for informational notes
+# (e.g. raspi-config → wpa_supplicant fallback transitions).
+record_error() {
+	BOOT_CFG_ERRORS+=("$1")
+	log "$1"
+}
+
+# Skip if a canonical feeder-id already exists. create-uuid.sh is technically
+# idempotent (it reuses an existing valid UUID) but unconditionally rewrites
+# FEEDER_ID_FILE and reinstalls the legacy symlink on every call — and if the
+# canonical file ever ended up corrupted while a claim secret still referenced
+# the old UUID, an every-boot invocation could silently rotate identity.
 generate_feeder_id() {
+	if [[ -f "$FEEDER_ID_FILE" ]]; then
+		return 0
+	fi
 	if [[ ! -f "$CREATE_UUID" ]]; then
 		log "create-uuid.sh missing at $CREATE_UUID; skipping feeder-id generation"
 		return 1
@@ -47,14 +79,27 @@ generate_feeder_id() {
 	fi
 }
 
+# Verify the BOOT_CONFIG directory accepts create/rename/unlink before any
+# state-mutating step. If FAT is unwritable (sandbox misconfig or mount
+# state), we bail without touching feed.env — otherwise a merged feed.env
+# without a successful rename would trigger re-application on every boot.
+preflight_boot_dir_writable() {
+	local dir probe
+	dir="$(dirname "$BOOT_CONFIG")"
+	probe="$(mktemp "$dir/.airplanes-fr-probe.XXXXXX" 2>/dev/null)" || return 1
+	rm -f -- "$probe" 2>/dev/null || return 1
+	return 0
+}
+
 # parse_boot_config FILE -> populates the BOOT_CFG associative array.
 # Tolerates UTF-8 BOM, CRLF line endings, KEY=value, KEY="value", blank lines,
 # and #-prefixed comments. Refuses to source the file (untrusted input).
 declare -gA BOOT_CFG=()
 parse_boot_config() {
 	BOOT_CFG=()
-	local file="$1" first=1 line key value
+	local file="$1" first=1 line key value lineno=0
 	while IFS= read -r line || [[ -n "$line" ]]; do
+		lineno=$((lineno + 1))
 		line="${line%$'\r'}"
 		if (( first )); then
 			line="${line#$'\xef\xbb\xbf'}"
@@ -75,19 +120,22 @@ parse_boot_config() {
 			# feed.env. WIFI_* values are written into an NM keyfile (line-based,
 			# not eval'd) so common password chars like $ and \ are safe there.
 			if [[ "$key" != WIFI_* && "$value" == *[\"\\\$\`]* ]]; then
-				log "rejecting unsafe value for $key in boot config"
+				record_error "line $lineno: rejecting unsafe value for $key (contains shell metacharacter)"
 				continue
 			fi
 			BOOT_CFG[$key]="$value"
+		else
+			# Non-blank, non-comment, but didn't match KEY=value.
+			record_error "line $lineno: malformed; expected KEY=value"
 		fi
 	done < "$file"
 }
 
 # Validate WiFi inputs against NM/WPA constraints. SSID 1-32 bytes; PSK is
 # either 8-63 ASCII chars or exactly 64 hex chars; COUNTRY is ISO 3166-1
-# alpha-2 (two uppercase letters). Returns 0 if values are usable (or
-# WIFI_SSID is empty), 1 if SSID was supplied but invalid. Bad PSK / COUNTRY
-# is non-fatal — the corresponding parameter is dropped and a warning logged.
+# alpha-2 (two uppercase letters). On rejection: logs an error to
+# BOOT_CFG_ERRORS (no values, only key names) and drops the offending input
+# so write_nm_keyfile becomes a no-op.
 declare -g _WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
 validate_wifi_inputs() {
 	_WIFI_SSID="${BOOT_CFG[WIFI_SSID]:-}"
@@ -98,7 +146,7 @@ validate_wifi_inputs() {
 		local ssid_bytes
 		ssid_bytes="$(LC_ALL=C printf '%s' "$_WIFI_SSID" | wc -c)"
 		if (( ssid_bytes < 1 || ssid_bytes > 32 )); then
-			log "WIFI_SSID length $ssid_bytes invalid (must be 1-32 bytes); ignoring WiFi config"
+			record_error "WIFI_SSID: invalid length (must be 1-32 bytes); WiFi config dropped"
 			_WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
 			return 1
 		fi
@@ -112,14 +160,16 @@ validate_wifi_inputs() {
 		elif (( pass_len >= 8 && pass_len <= 63 )); then
 			:
 		else
-			log "WIFI_PASS length $pass_len invalid (need 8-63 chars or 64 hex); ignoring WiFi config"
+			# Never include the value or its length-derived guess — keep this
+			# message free of anything that could narrow the secret.
+			record_error "WIFI_PASS: invalid length (expected 8-63 characters or 64 hex characters); WiFi config dropped"
 			_WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
 			return 1
 		fi
 	fi
 
 	if [[ -n "$_WIFI_COUNTRY" ]] && [[ ! "$_WIFI_COUNTRY" =~ ^[A-Z]{2}$ ]]; then
-		log "WIFI_COUNTRY=$_WIFI_COUNTRY invalid (need ISO 3166-1 alpha-2 like DE); dropping country"
+		record_error "WIFI_COUNTRY: invalid value (need ISO 3166-1 alpha-2 like DE); dropping country"
 		_WIFI_COUNTRY=""
 	fi
 	return 0
@@ -136,7 +186,7 @@ consume_wifi_config() {
 		[[ "$key" == WIFI_* ]] || continue
 		case "$key" in
 			WIFI_SSID|WIFI_PASS|WIFI_COUNTRY) ;;
-			*) log "ignoring unrecognized WiFi key $key (typo? use WIFI_SSID / WIFI_PASS / WIFI_COUNTRY)" ;;
+			*) record_error "unrecognized WiFi key $key (typo? use WIFI_SSID / WIFI_PASS / WIFI_COUNTRY)" ;;
 		esac
 		unset "BOOT_CFG[$key]"
 	done
@@ -267,7 +317,7 @@ apply_hostname() {
 	[[ -n "$raw" ]] || return 0
 
 	if ! _hostname_valid "$raw"; then
-		log "rejecting invalid HOSTNAME=$raw (need 1-63 char RFC 1123 single-label hostname; not 'localhost'; no .local suffix — mDNS adds it)"
+		record_error "HOSTNAME: invalid value '$raw' (need 1-63 char RFC 1123 single-label name; not 'localhost'; no .local suffix — mDNS adds it)"
 		unset 'BOOT_CFG[HOSTNAME]'
 		return 0
 	fi
@@ -331,14 +381,14 @@ apply_hostname() {
 				&& chmod 0644 -- "$tmp_hosts"; then
 				if ! mv -fT -- "$tmp_hosts" "$HOSTS_FILE"; then
 					rm -f -- "$tmp_hosts"
-					log "failed renaming $HOSTS_FILE"
+					record_error "failed renaming $HOSTS_FILE"
 				fi
 			else
 				rm -f -- "$tmp_hosts"
-				log "failed transforming $HOSTS_FILE; leaving original in place"
+				record_error "failed transforming $HOSTS_FILE; leaving original in place"
 			fi
 		else
-			log "failed mktemp for $HOSTS_FILE; runtime hostname apply continues"
+			record_error "failed mktemp for $HOSTS_FILE; runtime hostname apply continues"
 		fi
 	fi
 
@@ -393,7 +443,7 @@ expand_feed_host() {
 	[[ -n "$raw" ]] || return 0
 
 	if ! _feed_host_is_valid "$raw"; then
-		log "rejecting invalid FEED_HOST=$raw (need hostname or hostname:port with port 1-65535; bracketed IPv6 is not supported via FEED_HOST — set MLATSERVER and TARGET directly instead)"
+		record_error "FEED_HOST: invalid value '$raw' (need hostname or hostname:port with port 1-65535; bracketed IPv6 is not supported via FEED_HOST — set MLATSERVER and TARGET directly instead)"
 		unset 'BOOT_CFG[FEED_HOST]'
 		_feed_host_drop_lone_override
 		return 0
@@ -475,40 +525,53 @@ apply_user_to_mlat_split() {
 }
 
 # Atomic merge under flock: write a tmp file in the target directory, fsync
-# it, rename onto feed.env, then sync the parent directory. The flock makes
-# concurrent webconfig writes impossible during first-run.
+# it, rename onto feed.env, then sync the parent directory. The flock matches
+# webconfig's apply-config (/run/airplanes/feed-env.lock) so a concurrent
+# webconfig write can never interleave — though first-run is ordered
+# Before=lighttpd.service so contention is theoretical.
 merge_feed_env() {
 	(
-		flock -x 9
-		local feed_env_dir tmp_env emitted=""
+		flock -x 9 || return 1
+		local feed_env_dir tmp_env emitted="" line key
 		feed_env_dir="$(dirname "$FEED_ENV")"
-		tmp_env="$(mktemp "${feed_env_dir}/feed.env.tmp.XXXXXX")"
+		tmp_env="$(mktemp "${feed_env_dir}/feed.env.tmp.XXXXXX")" || return 1
 
 		if [[ -f "$FEED_ENV" ]]; then
-			local line key
 			while IFS= read -r line || [[ -n "$line" ]]; do
 				if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
 					key="${BASH_REMATCH[1]}"
 					if [[ -v "BOOT_CFG[$key]" ]]; then
-						printf '%s="%s"\n' "$key" "${BOOT_CFG[$key]}" >> "$tmp_env"
+						if ! printf '%s="%s"\n' "$key" "${BOOT_CFG[$key]}" >> "$tmp_env"; then
+							rm -f -- "$tmp_env"
+							return 1
+						fi
 						emitted+=" $key "
 						continue
 					fi
 				fi
-				printf '%s\n' "$line" >> "$tmp_env"
+				if ! printf '%s\n' "$line" >> "$tmp_env"; then
+					rm -f -- "$tmp_env"
+					return 1
+				fi
 			done < "$FEED_ENV"
 		fi
 
-		local key
 		for key in "${!BOOT_CFG[@]}"; do
 			if [[ "$emitted" != *" $key "* ]]; then
-				printf '%s="%s"\n' "$key" "${BOOT_CFG[$key]}" >> "$tmp_env"
+				if ! printf '%s="%s"\n' "$key" "${BOOT_CFG[$key]}" >> "$tmp_env"; then
+					rm -f -- "$tmp_env"
+					return 1
+				fi
 			fi
 		done
 
 		sync -d "$tmp_env" 2>/dev/null || sync
-		mv "$tmp_env" "$FEED_ENV"
+		if ! mv "$tmp_env" "$FEED_ENV"; then
+			rm -f -- "$tmp_env"
+			return 1
+		fi
 		sync "$feed_env_dir" 2>/dev/null || sync
+		return 0
 	) 9>"$LOCK_FILE"
 }
 
@@ -519,8 +582,9 @@ merge_feed_env() {
 #
 # Precedence:
 #   - explicit BOOT_CFG[UAT_INPUT] wins if it validates ("" or
-#     "127.0.0.1:30978"); invalid values are dropped with a log line so they
-#     can't poison feed.env (the wrappers would refuse to start anyway).
+#     "127.0.0.1:30978"); invalid values are recorded as an error so the
+#     user gets diagnostic feedback (the wrappers would refuse to start
+#     with the bad value too).
 #   - else BOOT_CFG[DUMP978]=yes maps to UAT_INPUT=127.0.0.1:30978.
 #   - DUMP978=no is sentinel-stripped earlier; if it reaches us anyway,
 #     unset_ing DUMP978 below ensures it never lands in feed.env.
@@ -534,7 +598,7 @@ apply_dump978_to_uat_input() {
 			""|"127.0.0.1:30978")
 				;;
 			*)
-				log "rejecting invalid UAT_INPUT=${BOOT_CFG[UAT_INPUT]} from boot config (must be empty or '127.0.0.1:30978')"
+				record_error "UAT_INPUT: invalid value '${BOOT_CFG[UAT_INPUT]}' (must be empty or '127.0.0.1:30978')"
 				unset 'BOOT_CFG[UAT_INPUT]'
 				;;
 		esac
@@ -547,39 +611,99 @@ apply_dump978_to_uat_input() {
 	unset 'BOOT_CFG[DUMP978]' 2>/dev/null || true
 }
 
+# Rename BOOT_CONFIG → airplanes-config.applied.txt atomically. Clears any
+# stale airplanes-config.error.txt as part of the success step. mv -fT is
+# atomic within the same directory on FAT32. Caller (main) must only invoke
+# this after every other apply step succeeded.
+consume_boot_config() {
+	local applied="${BOOT_CONFIG%.txt}.applied.txt"
+	local errfile="${BOOT_CONFIG%.txt}.error.txt"
+	if ! mv -fT "$BOOT_CONFIG" "$applied"; then
+		record_error "rename to ${applied##*/} failed; original file kept for retry"
+		return 1
+	fi
+	[[ -f "$errfile" ]] && rm -f -- "$errfile"
+	sync "$(dirname "$BOOT_CONFIG")" 2>/dev/null || sync
+	return 0
+}
+
+# Atomic write of airplanes-config.error.txt next to BOOT_CONFIG. Renders the
+# BOOT_CFG_ERRORS array as a human-readable diagnostic. Temp file in the same
+# FAT dir so mv -fT is atomic.
+#
+# This function is the only writer to airplanes-config.error.txt; callers
+# never echo BOOT_CFG_ERRORS contents elsewhere. record_error() callers must
+# not include secret values (WIFI_PASS) in messages.
+write_error_file() {
+	local errfile="${BOOT_CONFIG%.txt}.error.txt"
+	local dir tmp
+	dir="$(dirname "$errfile")"
+	tmp="$(mktemp "$dir/.airplanes-error.tmp.XXXXXX")" || return 1
+	{
+		printf '%s\n' "airplanes.live first-run config was not fully applied."
+		printf '\n'
+		printf 'Source: %s\n' "$BOOT_CONFIG"
+		printf 'Status: error\n'
+		printf '\n'
+		printf '%s\n' "Fix the items below, keep the file named airplanes-config.txt, then reboot."
+		printf '%s\n' "On success this file is removed and airplanes-config.txt is renamed to"
+		printf '%s\n' "airplanes-config.applied.txt."
+		printf '\n'
+		printf 'Errors:\n'
+		local err
+		for err in "${BOOT_CFG_ERRORS[@]}"; do
+			printf -- '- %s\n' "$err"
+		done
+	} > "$tmp" || { rm -f -- "$tmp"; return 1; }
+	chmod 0644 "$tmp" 2>/dev/null || true
+	if ! mv -fT "$tmp" "$errfile"; then
+		rm -f -- "$tmp"
+		return 1
+	fi
+	sync "$dir" 2>/dev/null || sync
+	return 0
+}
+
 main() {
 	set -u
+	BOOT_CFG_ERRORS=()
 	generate_feeder_id || true
 
-	if [[ -f "$BOOT_CONFIG" ]]; then
-		if ! parse_boot_config "$BOOT_CONFIG"; then
-			log "failed to parse $BOOT_CONFIG; leaving feed.env untouched"
-		else
-			# WiFi pass: pop WIFI_* keys and write the NM keyfile + country
-			# BEFORE merge_feed_env so secrets can never reach feed.env even on
-			# typoed keys.
-			consume_wifi_config
-			if ! write_nm_keyfile; then
-				log "failed to write WiFi keyfile; continuing"
-			fi
-			if ! apply_wifi_country; then
-				log "failed to apply WiFi country code; continuing"
-			fi
-			apply_hostname || true
-			expand_feed_host
-			apply_user_to_mlat_split
-			apply_dump978_to_uat_input
-			if (( ${#BOOT_CFG[@]} > 0 )); then
-				if ! merge_feed_env; then
-					log "failed to merge boot config into $FEED_ENV"
-				fi
-			fi
-		fi
+	[[ -f "$BOOT_CONFIG" ]] || return 0
+
+	if ! preflight_boot_dir_writable; then
+		log "$(dirname "$BOOT_CONFIG") not writable; skipping boot-config apply"
+		return 0
 	fi
 
-	mkdir -p "$(dirname "$DONE_MARKER")"
-	: > "$DONE_MARKER"
-	sync
+	if ! parse_boot_config "$BOOT_CONFIG"; then
+		record_error "failed to parse $BOOT_CONFIG"
+		write_error_file || log "failed to write error file"
+		return 0
+	fi
+
+	# WiFi pass: pop WIFI_* keys and write the NM keyfile + country BEFORE
+	# merge_feed_env so secrets can never reach feed.env even on typoed keys.
+	consume_wifi_config
+	write_nm_keyfile || record_error "failed to write WiFi keyfile"
+	apply_wifi_country || record_error "failed to apply WiFi country code"
+	apply_hostname || record_error "failed to apply hostname"
+	expand_feed_host
+	apply_user_to_mlat_split
+	apply_dump978_to_uat_input
+
+	local merge_ok=1
+	if (( ${#BOOT_CFG[@]} > 0 )); then
+		merge_feed_env || { record_error "failed to merge boot config into $FEED_ENV"; merge_ok=0; }
+	fi
+
+	if (( merge_ok )) && (( ${#BOOT_CFG_ERRORS[@]} == 0 )); then
+		if ! consume_boot_config; then
+			write_error_file || log "failed to write error file"
+		fi
+	else
+		write_error_file || log "failed to write error file"
+	fi
 	return 0
 }
 

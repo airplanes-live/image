@@ -1,7 +1,11 @@
 #!/bin/bash
 # Boot-free smoke for /usr/local/sbin/airplanes-first-run. Mounts the built
 # image, runs the script via chroot, and asserts the side effects (feeder-id,
-# done marker, feed.env integrity) without needing a full QEMU boot.
+# boot-config consumption / rename to .applied.txt, feed.env integrity)
+# without needing a full QEMU boot. Note: chroot bypasses systemd's
+# ProtectSystem / ReadWritePaths sandboxing, so this smoke cannot catch
+# sandbox-related write failures — see image/test/test_first_run_unit.bats
+# for the static unit-file lint that covers that gap.
 #
 # Usage: first-run-chroot-smoke.sh PATH_TO_IMAGE.img.xz
 #
@@ -97,9 +101,12 @@ echo "==> seeding airplanes-config.txt with real values"
 # Overwrite the shipped sentinel template with realistic values so we can
 # assert the merge into feed.env actually lands user-set keys (not just
 # "feed.env still parses"). DUMP978=no is the sentinel, must NOT propagate.
-# WIFI_PASSWORD (typo) seeded to verify it does NOT leak into feed.env.
 # FEED_HOST seeded to verify expand_feed_host runs end-to-end: derived
 # MLATSERVER and TARGET must land in feed.env, and FEED_HOST itself must NOT.
+# Only valid, recognized keys are seeded here: strict consume-and-rename
+# blocks the rename on ANY recorded error (typo'd WIFI_PASSWORD,
+# unrecognized keys, etc.). The unrecognized-key / typo-leak coverage
+# lives in test/test_first_run_consume.bats and test/test_first_run_wifi.bats.
 cat > "$ROOT_MNT/boot/firmware/airplanes-config.txt" <<'CFG'
 LATITUDE=51.5
 LONGITUDE=-0.1
@@ -112,8 +119,14 @@ FEED_HOST=test.local
 WIFI_SSID="Test Net"
 WIFI_PASS="hunter22-secret"
 WIFI_COUNTRY=DE
-WIFI_PASSWORD=should-not-leak
 CFG
+
+# RuntimeDirectory=airplanes (in the unit file) creates /run/airplanes/ when
+# the unit runs under systemd. The chroot smoke bypasses systemd, so create
+# the directory manually here — without it, merge_feed_env's flock target
+# (/run/airplanes/feed-env.lock) has no parent and bash's 9>... redirect
+# fails before flock even runs.
+mkdir -p "$ROOT_MNT/run/airplanes"
 
 # Mock raspi-config / iw inside the chroot so apply_wifi_country doesn't
 # touch the host kernel's regdomain via the bind-mounted /sys + /proc.
@@ -143,9 +156,15 @@ FEEDER_ID="$(tr -d '\n\r{}' < "$FEEDER_ID_FILE" | tr 'A-F' 'a-f')"
 [[ "$FEEDER_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
 	|| { echo "feeder-id is not a valid UUID: $FEEDER_ID"; exit 1; }
 
-echo "==> asserting first-run-done marker exists"
-[[ -f "$ROOT_MNT/var/lib/airplanes/first-run-done" ]] \
-	|| { echo "first-run-done marker missing"; exit 1; }
+echo "==> asserting boot config was consumed (renamed to .applied.txt)"
+[[ ! -f "$ROOT_MNT/boot/firmware/airplanes-config.txt" ]] \
+	|| { echo "airplanes-config.txt still present after successful first-run"; exit 1; }
+[[ -f "$ROOT_MNT/boot/firmware/airplanes-config.applied.txt" ]] \
+	|| { echo "airplanes-config.applied.txt missing"; exit 1; }
+[[ -s "$ROOT_MNT/boot/firmware/airplanes-config.applied.txt" ]] \
+	|| { echo "airplanes-config.applied.txt is empty"; exit 1; }
+[[ ! -f "$ROOT_MNT/boot/firmware/airplanes-config.error.txt" ]] \
+	|| { echo "unexpected airplanes-config.error.txt present"; cat "$ROOT_MNT/boot/firmware/airplanes-config.error.txt" >&2; exit 1; }
 
 echo "==> asserting feed.env merged the seeded boot config"
 unset LATITUDE LONGITUDE ALTITUDE USER MLAT_USER MLAT_ENABLED MLATSERVER TARGET FEED_HOST
