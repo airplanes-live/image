@@ -1,6 +1,12 @@
 [Unit]
 Description=airplanes.live first-run setup
-ConditionPathExists=!/var/lib/airplanes/first-run-done
+# Runs every boot — gated on file presence, not on a rootfs marker. The
+# script self-gates internally: if /etc/airplanes/feeder-id exists and no
+# /boot/firmware/airplanes-config.txt is present, it returns immediately.
+# Otherwise it consumes the boot config and renames the source to
+# airplanes-config.applied.txt on success (or writes
+# airplanes-config.error.txt on failure, leaving the source for retry).
+#
 # Run BEFORE NetworkManager so the WiFi keyfile generated from
 # /boot/firmware/airplanes-config.txt (WIFI_SSID/PASS/COUNTRY) is in place
 # when NM starts and autoconnects. After=systemd-rfkill.service keeps us
@@ -24,16 +30,30 @@ ExecStart=/usr/local/sbin/airplanes-first-run
 # rationale around feed.env). The directives below shrink the blast radius
 # of root for this oneshot.
 #
-# ProtectSystem=full: /usr, /boot, /efi mounted read-only; /etc, /var, /run
-# stay writable. The script and feed/create-uuid.sh write across many
-# /etc subdirs (airplanes/, hostname, hosts, NetworkManager/system-
-# connections/, wpa_supplicant/, default/) and need atomic temp+rename in
-# /etc itself; ProtectSystem=strict would require enumerating each path
-# (and raspi-config's WiFi-country path may touch more), which is brittle.
-# /usr stays read-only via full; the legacy /usr/local/share/airplanes/
-# airplanes-uuid symlink is unblocked by ReadWritePaths.
-ProtectSystem=full
-ReadWritePaths=/usr/local/share/airplanes
+# ProtectSystem=true keeps /usr and /boot read-only but leaves /etc
+# writable — required for the script's writes to /etc/airplanes/,
+# /etc/hostname, /etc/hosts, /etc/NetworkManager/system-connections/,
+# /etc/wpa_supplicant/, /etc/default/. ProtectSystem=full would re-mount
+# /etc read-only too (per systemd.exec(5)); ProtectSystem=strict would
+# require enumerating every /etc subdir (and raspi-config's WiFi-country
+# path may touch more), which is brittle.
+#
+# ReadWritePaths re-opens the two paths that ProtectSystem=true closed:
+#   /boot/firmware  — needed for consume_boot_config's rename of
+#                     airplanes-config.txt → airplanes-config.applied.txt
+#                     and for write_error_file's airplanes-config.error.txt.
+#   /usr/local/share/airplanes — the legacy
+#                     /usr/local/share/airplanes/airplanes-uuid symlink
+#                     reinstalled by feed/create-uuid.sh.
+#
+# RuntimeDirectory creates /run/airplanes/ for the feed.env flock; matches
+# webconfig's lock path so a concurrent webconfig write can never interleave.
+# RuntimeDirectoryPreserve=yes keeps the dir across the oneshot exit so
+# webconfig (which assumes the dir exists) doesn't race on startup.
+ProtectSystem=true
+ReadWritePaths=/boot/firmware /usr/local/share/airplanes
+RuntimeDirectory=airplanes
+RuntimeDirectoryPreserve=yes
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes

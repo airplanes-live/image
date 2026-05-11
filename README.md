@@ -28,7 +28,7 @@ Flash the image to the microSD card with any tool (`dd`, balenaEtcher, Win32 Dis
 
 Eject, insert into the Pi, connect SDR + antenna, power on. After ~2 minutes the feeder is online — browse to `http://<hostname>.local/` (or `http://raspberrypi.local/` if you didn't set `HOSTNAME`) to verify and tweak via the web UI.
 
-The boot config file is read **once** on first boot; later edits don't apply (use the web UI for ongoing changes).
+The boot config file is consumed on every boot: a successful apply renames it to `airplanes-config.applied.txt`. If anything fails (typo, write error), the file stays in place and a sibling `airplanes-config.error.txt` explains what to fix. To re-prime later (e.g. fix a WiFi typo without booting), rename `airplanes-config.applied.txt` back to `airplanes-config.txt`, edit, and reboot. Once you've configured via the web UI, keep the file as `airplanes-config.applied.txt` so it stops overwriting the UI's edits on each boot.
 
 ### Alternative: Raspberry Pi Imager (if you want SSH set up at flash time)
 

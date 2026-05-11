@@ -473,18 +473,30 @@ grep -q '^SupplementaryGroups=airplanes-feed$' "$claim" \
 grep -q '^RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX$' "$claim" \
     || fail "airplanes-claim.service missing RestrictAddressFamilies for HTTPS POST"
 
-# First-run is sandboxed via ProtectSystem=full instead of strict: the
-# script touches many /etc subdirs (hostname, hosts, NetworkManager/,
-# wpa_supplicant/, default/, airplanes/) and writes-via-rename in /etc
-# itself; enumerating an exhaustive ReadWritePaths is brittle, so we let
-# /etc + /var stay writable while keeping /usr + /boot + /efi read-only.
+# First-run is sandboxed via ProtectSystem=true (NOT full — full would
+# re-mount /etc read-only too, breaking the script's writes to /etc/hostname,
+# /etc/airplanes/, /etc/NetworkManager/system-connections/, etc.). The two
+# paths re-opened via ReadWritePaths cover /boot/firmware (for the
+# airplanes-config.txt → airplanes-config.applied.txt rename and the
+# airplanes-config.error.txt diagnostic) and /usr/local/share/airplanes
+# (for the legacy airplanes-uuid symlink reinstalled by create-uuid.sh).
+# RuntimeDirectory=airplanes creates /run/airplanes/ for the feed.env flock
+# (path shared with webconfig's apply-config).
 # Empty CapabilityBoundingSet (sethostname-fallback / raspi-config WiFi-
 # country path silently fail, primary hostnamectl + wpa_supplicant.conf
 # fallback paths don't need caps). PrivateNetwork=yes for defense in
 # depth (RestrictAddressFamilies=AF_UNIX already excludes inet sockets).
 firstrun=/etc/systemd/system/airplanes-first-run.service
-grep -q '^ProtectSystem=full$' "$firstrun" \
-    || fail "airplanes-first-run.service missing ProtectSystem=full"
+grep -q '^ProtectSystem=true$' "$firstrun" \
+    || fail "airplanes-first-run.service missing ProtectSystem=true"
+grep -qE '^ReadWritePaths=.*/boot/firmware' "$firstrun" \
+    || fail "airplanes-first-run.service missing /boot/firmware in ReadWritePaths"
+grep -qE '^ReadWritePaths=.*/usr/local/share/airplanes' "$firstrun" \
+    || fail "airplanes-first-run.service missing /usr/local/share/airplanes in ReadWritePaths"
+grep -q '^RuntimeDirectory=airplanes$' "$firstrun" \
+    || fail "airplanes-first-run.service missing RuntimeDirectory=airplanes"
+grep -q '^RuntimeDirectoryPreserve=yes$' "$firstrun" \
+    || fail "airplanes-first-run.service missing RuntimeDirectoryPreserve=yes"
 grep -q '^CapabilityBoundingSet=$' "$firstrun" \
     || fail "airplanes-first-run.service missing empty CapabilityBoundingSet"
 grep -q '^RestrictAddressFamilies=AF_UNIX$' "$firstrun" \
