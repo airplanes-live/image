@@ -25,9 +25,18 @@ ff02::2		ip6-allrouters
 127.0.1.1	raspberrypi
 EOF
     declare -gA BOOT_CFG=()
+    # MUST source the host-runtime stubs BEFORE sourcing the production
+    # script: apply_hostname calls `hostnamectl set-hostname "$raw"` and
+    # `hostname "$raw"` unconditionally to update the running session.
+    # Without the stubs those calls hit systemd-hostnamed and the BSD
+    # hostname binary on the test host, literally renaming the developer's
+    # machine to whatever the test fixture sets.
+    # shellcheck source=lib/host-runtime-stubs.sh
+    source "$BATS_TEST_DIRNAME/lib/host-runtime-stubs.sh"
     # shellcheck source=/dev/null
     source "$SCRIPT"
     BOOT_CFG=()
+    reset_host_runtime_stubs
 }
 
 teardown() { rm -rf "$TMP"; }
@@ -269,22 +278,13 @@ EOF
 }
 
 @test "24: hosts mktemp failure does not block runtime hostname apply" {
-    # Mock the legacy `hostname` binary (the runtime fallback path used when
-    # systemd-hostnamed isn't running). Lock the hosts directory after
-    # seeding so apply_hostname's mktemp inside the /etc/hosts pass fails;
-    # the runtime apply must still happen unconditionally afterward.
-    local mock_bin="$TMP/mockbin"
-    mkdir -p "$mock_bin"
-    cat > "$mock_bin/hostname" <<'STUB'
-#!/bin/sh
-echo "$@" >> "$HOSTNAME_LOG"
-STUB
-    chmod +x "$mock_bin/hostname"
-    export HOSTNAME_LOG="$TMP/hostname-invocations.log"
-    : > "$HOSTNAME_LOG"
-    local saved_path="$PATH"
-    export PATH="$mock_bin:$PATH"
-
+    # Lock the hosts directory after seeding so apply_hostname's mktemp
+    # inside the /etc/hosts pass fails; the runtime apply must still
+    # happen unconditionally afterward. The runtime apply is captured by
+    # the hostnamectl / hostname stubs in test/lib/host-runtime-stubs.sh
+    # (sourced in setup) — without those stubs, this assertion previously
+    # only covered the BSD `hostname` fallback and let `hostnamectl
+    # set-hostname` reach systemd-hostnamed on the real host.
     local locked_dir="$TMP/locked"
     mkdir -p "$locked_dir"
     cp "$HOSTS_FILE" "$locked_dir/hosts"
@@ -295,12 +295,23 @@ STUB
     apply_hostname 2>/dev/null
 
     chmod 0755 "$locked_dir"
-    export PATH="$saved_path"
 
     # /etc/hostname was written even though the /etc/hosts mktemp failed.
     [ "$(cat "$HOSTNAME_FILE")" = "feeder1" ]
     # /etc/hosts itself was NOT modified (mktemp failed before the rewrite).
     grep -qP '^127\.0\.1\.1\traspberrypi$' "$HOSTS_FILE"
-    # Runtime apply still happened — the codex-flagged behavior.
-    grep -qx 'feeder1' "$HOSTNAME_LOG"
+    # Runtime apply still happened — both the hostnamectl path AND the
+    # legacy `hostname` fallback fired with the new name.
+    [[ " ${HOSTNAMECTL_CALLS[*]} " == *" set-hostname feeder1 "* ]]
+    [[ " ${HOSTNAME_CALLS[*]} " == *" feeder1 "* ]]
+}
+
+@test "25: runtime hostname apply is captured by the in-process stubs (not leaked to host)" {
+    # Sentinel test that the host-runtime-stubs.sh shim is wired correctly.
+    # If this fails, the bats run is mutating the developer's machine
+    # hostname every time it executes — see test/lib/host-runtime-stubs.sh.
+    BOOT_CFG=([HOSTNAME]="airplanes-test-sentinel")
+    apply_hostname
+    [[ " ${HOSTNAMECTL_CALLS[*]} " == *" set-hostname airplanes-test-sentinel "* ]]
+    [[ " ${HOSTNAME_CALLS[*]} " == *" airplanes-test-sentinel "* ]]
 }
