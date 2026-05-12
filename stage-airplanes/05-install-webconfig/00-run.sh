@@ -69,6 +69,12 @@ install -D -m 0644 files/usr/local/lib/airplanes/wifi-keyfile.sh \
 install -D -m 0755 files/usr/local/bin/apl-wifi \
 	"${ROOTFS_DIR}/usr/local/bin/apl-wifi"
 
+# System-package upgrade entrypoint — invoked by webconfig via systemd-run
+# inside a transient airplanes-system-upgrade.service. Argv is pinned in
+# sudoers (010_airplanes-webconfig) and in server.go's DefaultPrivilegedArgv.
+install -D -m 0755 files/usr/local/lib/airplanes-webconfig/system-upgrade.sh \
+	"${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig/system-upgrade.sh"
+
 # Sudoers entries — installed at 0440 in the chroot step so visudo
 # accepts them at runtime.
 install -D -m 0644 files/etc/sudoers.d/010_airplanes-webconfig \
