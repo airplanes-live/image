@@ -313,11 +313,18 @@ setup_mlat_state_test_env() {
     [ "$output" = 'disabled latitude_zero' ]
 }
 
-@test "mlat_config_state: active + state=misconfigured,reason=mlat_user_empty" {
+@test "mlat_config_state: active + state=disabled,reason=geo_not_configured" {
     setup_mlat_state_test_env
-    write_mlat_state misconfigured mlat_user_empty
+    write_mlat_state disabled geo_not_configured
     run mlat_config_state active
-    [ "$output" = 'misconfigured mlat_user_empty' ]
+    [ "$output" = 'disabled geo_not_configured' ]
+}
+
+@test "mlat_config_state: active + state=misconfigured,reason=mlat_private_invalid" {
+    setup_mlat_state_test_env
+    write_mlat_state misconfigured mlat_private_invalid
+    run mlat_config_state active
+    [ "$output" = 'misconfigured mlat_private_invalid' ]
 }
 
 @test "mlat_config_state: activating + state=disabled (continuous across restart cycle)" {
@@ -336,10 +343,10 @@ setup_mlat_state_test_env() {
 
 @test "mlat_config_state: failed + ExecMainStatus=64 + state file present -> misconfigured reason" {
     setup_mlat_state_test_env
-    write_mlat_state misconfigured mlat_user_empty
+    write_mlat_state misconfigured mlat_private_invalid
     stub_systemctl failed 64
     run mlat_config_state failed
-    [ "$output" = 'misconfigured mlat_user_empty' ]
+    [ "$output" = 'misconfigured mlat_private_invalid' ]
 }
 
 @test "mlat_config_state: failed + ExecMainStatus=64 + no state file -> 'misconfigured unknown'" {

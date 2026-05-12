@@ -201,7 +201,7 @@ claim_state() {
 
 # True (rc 0) if the airplanes-mlat wrapper would early-exit with "MLAT
 # DISABLED + sleep 3600". Mirrors the predicate in feed/scripts/airplanes-mlat.sh:
-# MLAT_ENABLED=false || LATITUDE==0 || LONGITUDE==0. Falls back to legacy
+# MLAT_ENABLED=false || GEO_CONFIGURED != true. Falls back to legacy
 # USER=0|disable when MLAT_ENABLED isn't set yet (a feed.env from before
 # the schema split, or a daemon read between a legacy webconfig write and
 # the next update.sh sweep).
@@ -837,15 +837,13 @@ collect_status_data() {
         disabled)
             case "$mlat_reason" in
                 mlat_enabled_false) SD_MLAT_NOTE="${C_DIM}MLAT disabled in config.${C_RESET}" ;;
+                geo_not_configured) SD_MLAT_NOTE="${C_WARN}Set lat/lon/alt to enable MLAT.${C_RESET}" ;;
                 latitude_zero)      SD_MLAT_NOTE="${C_WARN}Set lat to enable MLAT.${C_RESET}" ;;
                 longitude_zero)     SD_MLAT_NOTE="${C_WARN}Set lon to enable MLAT.${C_RESET}" ;;
             esac
             ;;
         misconfigured)
-            case "$mlat_reason" in
-                mlat_user_empty) SD_MLAT_NOTE="${C_FAIL}MLAT_USER empty (fix config).${C_RESET}" ;;
-                *)               SD_MLAT_NOTE="${C_FAIL}MLAT misconfigured.${C_RESET}" ;;
-            esac
+            SD_MLAT_NOTE="${C_FAIL}MLAT misconfigured.${C_RESET}"
             ;;
         unknown)
             SD_MLAT_NOTE="${C_WARN}MLAT state unknown.${C_RESET}"
