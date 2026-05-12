@@ -8,12 +8,19 @@ export PATH="/usr/local/sbin:${PATH}"
 # values baked into feed.env at image freeze. Operational values are set by
 # the user via the webconfig UI after first boot; first-run on the device only
 # handles the 5-key bootstrap allowlist (HOSTNAME, WIFI_*, FEED_HOST).
+#
+# MLAT is off by default on a fresh image: the operator must explicitly
+# enable it via the webconfig after providing valid lat/lon/altitude.
+# A flashed feeder still feeds Beast (ADS-B) — only MLAT waits for opt-in.
+# GEO_CONFIGURED follows from the lat=0/lon=0 placeholders via
+# configure.sh's derive_geo_configured.
 export AIRPLANES_BUILD_MODE=1
 export AIRPLANES_FEED_REPO="file:///usr/local/src/airplanes-feed-build"
 export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH}"
 export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO}"
 export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH}"
 export AIRPLANES_MLAT_USER=airplanes-live-image
+export AIRPLANES_MLAT_ENABLED=false
 export AIRPLANES_LATITUDE=0
 export AIRPLANES_LONGITUDE=0
 export AIRPLANES_ALTITUDE=0m
