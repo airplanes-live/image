@@ -133,6 +133,9 @@ fi
 RELEASE_DATE="$(date -u -r "$INPUT_ABS" +%Y-%m-%d)"
 
 NAME="airplanes.live feeder (${CHANNEL})"
+# Brand mark for the OS-list entry. Raw GitHub URL is stable for any commit on
+# `main`; rpi-imager fetches it over HTTPS like the upstream RPi_*.png icons.
+ICON_URL="https://raw.githubusercontent.com/airplanes-live/image/main/.github/assets/airplanes-live-icon.png"
 # rpi-imager's Edit Settings (cloudinit-rpi) only exposes Pi OS customization
 # fields: hostname, WiFi, SSH, user/password, locale. Receiver location
 # (LATITUDE/LONGITUDE/ALTITUDE) and the MLAT display name live exclusively in
@@ -207,6 +210,7 @@ trap 'rm -f -- "$TMP"' EXIT INT TERM
 jq -n \
     --arg name "$NAME" \
     --arg description "$DESCRIPTION" \
+    --arg icon "$ICON_URL" \
     --arg release_date "$RELEASE_DATE" \
     --arg url "$IMAGE_URI" \
     --argjson extract_size "$EXTRACT_SIZE" \
@@ -220,7 +224,7 @@ jq -n \
             {
                 name: $name,
                 description: $description,
-                icon: "",
+                icon: $icon,
                 release_date: $release_date,
                 init_format: "cloudinit-rpi",
                 url: $url,
