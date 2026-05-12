@@ -332,6 +332,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Pinned to airplanes-live/feed:dev intentionally — image:dev tracks
+      # feed:dev (see config-dev), so this job is the drift detector for
+      # the JS-preview vs bash-server validator contract across the two
+      # repos. A bash regex change in feed:dev that diverges from the JS
+      # validator here will fail this job on the next image PR.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: airplanes-live/feed
