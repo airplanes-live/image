@@ -33,16 +33,10 @@ WEBCONFIG_VERSION="$(git -C "${BASE_DIR}" rev-parse --short HEAD 2>/dev/null || 
 
 chmod 0755 "${WEBCONFIG_BIN}"
 
-# Cross-build the apply-config helper alongside webconfig. The helper is the
-# only writer of /etc/airplanes/feed.env; webconfig invokes it via sudo.
-APPLY_CONFIG_BIN="${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig/apply-config"
-install -d -m 0755 "${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig"
-( cd "${WEBCONFIG_SRC}" && go build \
-	-trimpath -buildvcs=false \
-	-ldflags "-s -w" \
-	-o "${APPLY_CONFIG_BIN}" \
-	./cmd/apply-config )
-chmod 0755 "${APPLY_CONFIG_BIN}"
+# The feed.env writer no longer lives in webconfig — it's `apl-feed apply
+# --json`, installed by stage-airplanes/01-install-feed from the feed
+# scripts. Sudoers (files/etc/sudoers.d/010_airplanes-webconfig) pins the
+# exact argv. webconfig now shells out via that grant.
 
 # Lighttpd reverse-proxy snippet — symlinked into conf-enabled in the chroot.
 install -D -m 0644 files/etc/lighttpd/conf-available/40-airplanes-webconfig.conf \
@@ -66,8 +60,8 @@ install -D -m 0644 files/etc/sudoers.d/010_airplanes-webconfig \
 	"${ROOTFS_DIR}/etc/sudoers.d/010_airplanes-webconfig"
 
 # tmpfiles.d snippet creates /run/airplanes/ at boot for the feed-env lock
-# (root-owned 0755, world-readable but writable only by root). apply-config
-# locks /run/airplanes/feed-env.lock here.
+# (root-owned 0755, world-readable but writable only by root). `apl-feed
+# apply` locks /run/airplanes/feed-env.lock here.
 install -D -m 0644 files/usr/lib/tmpfiles.d/airplanes-webconfig.conf \
 	"${ROOTFS_DIR}/usr/lib/tmpfiles.d/airplanes-webconfig.conf"
 

@@ -324,11 +324,10 @@ visudo -cf /etc/sudoers.d/010_airplanes-webconfig >/dev/null \
 id -nG airplanes-webconfig | tr ' ' '\n' | grep -qx systemd-journal \
     || fail "airplanes-webconfig not in systemd-journal group"
 
-# apply-config (PR-4): root-owned helper that mediates feed.env writes.
-[[ -x /usr/local/lib/airplanes-webconfig/apply-config ]] \
-    || fail "apply-config binary missing or not executable"
-file /usr/local/lib/airplanes-webconfig/apply-config | grep -q 'ARM aarch64' \
-    || fail "apply-config is not an arm64 binary"
+# apl-feed apply (the canonical feed.env writer) is shipped by
+# stage-airplanes/01-install-feed and lives at /usr/local/bin/apl-feed.
+[[ -x /usr/local/bin/apl-feed ]] \
+    || fail "apl-feed binary missing or not executable"
 
 # tmpfiles.d snippet for /run/airplanes (the feed-env lock dir).
 [[ -f /usr/lib/tmpfiles.d/airplanes-webconfig.conf ]] \
@@ -336,38 +335,31 @@ file /usr/local/lib/airplanes-webconfig/apply-config | grep -q 'ARM aarch64' \
 grep -Eq '^d /run/airplanes 0755 root root' /usr/lib/tmpfiles.d/airplanes-webconfig.conf \
     || fail "tmpfiles.d snippet wrong shape"
 
-# Sudoers expected set: apply-config + every systemctl verb the write
-# handlers use + reboot + systemd-run. PR 4 collapsed the 8 978-related
-# enable/start/stop/disable entries into 2 plain restart lines (the daemons
-# self-decide on UAT_INPUT, so reconcile is no longer needed).
+# Sudoers expected set: apl-feed apply --json + reboot + systemd-run.
+# The per-unit restart entries are gone — apl-feed apply owns the restart
+# fan-out now (one writer pinned by sudoers; service restarts run as root
+# inside that helper, not as a separate sudo grant).
 for entry in \
-    'apply-config' \
-    'systemctl restart airplanes-feed.service' \
-    'systemctl restart airplanes-mlat.service' \
-    'systemctl restart dump978-fa.service' \
-    'systemctl restart airplanes-978.service' \
+    '/usr/local/bin/apl-feed apply --json' \
     'systemctl reboot' \
-    'systemd-run --unit=airplanes-update --collect /usr/local/share/airplanes/update.sh'
+    'systemd-run --unit=airplanes-update'
 do
     grep -F -q "$entry" /etc/sudoers.d/010_airplanes-webconfig \
         || fail "sudoers missing entry: $entry"
 done
 
-# PR 4 retired the 8 enable/start/stop/disable 978 entries — none of these
-# legacy verbs should remain in the policy. A leftover line is dead authorization
-# (still a valid sudo escalation surface).
+# PR-3 retired every per-unit restart entry from the sudoers policy.
+# Any leftover line is dead authorization (still a valid sudo
+# escalation surface).
 for stale in \
-    'systemctl start dump978-fa.service' \
-    'systemctl start airplanes-978.service' \
-    'systemctl stop dump978-fa.service' \
-    'systemctl stop airplanes-978.service' \
-    'systemctl enable dump978-fa.service' \
-    'systemctl enable airplanes-978.service' \
-    'systemctl disable dump978-fa.service' \
-    'systemctl disable airplanes-978.service'
+    'systemctl restart airplanes-feed.service' \
+    'systemctl restart airplanes-mlat.service' \
+    'systemctl restart dump978-fa.service' \
+    'systemctl restart airplanes-978.service' \
+    'apply-config'
 do
     if grep -F -q "$stale" /etc/sudoers.d/010_airplanes-webconfig; then
-        fail "sudoers still contains retired 978 entry: $stale (PR 4 collapsed these into restart)"
+        fail "sudoers still contains retired entry: $stale"
     fi
 done
 

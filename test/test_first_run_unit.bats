@@ -61,15 +61,14 @@ unit_get() {
 
 # ---- script ↔ unit consistency --------------------------------------------
 
-@test "script LOCK_FILE matches webconfig lockFilePath" {
-    # Both first-run and webconfig flock the same file so concurrent edits
-    # to feed.env can never interleave. The two must stay in sync.
-    [ -f "$WEBCONFIG_APPLY" ] || skip "webconfig apply-config/main.go not present"
+@test "script LOCK_FILE is the canonical /run/airplanes/feed-env.lock" {
+    # first-run.sh flocks the same file that `apl-feed apply --json` uses
+    # so concurrent edits to feed.env can never interleave. The canonical
+    # path lives in feed/'s scripts/lib/feed-env-apply.sh; here we pin the
+    # value so the first-run side cannot drift independently.
     script_lock="$(grep -E '^LOCK_FILE=' "$SCRIPT" | head -n1 | sed -E 's/.*"\$\{LOCK_FILE:-([^}]+)\}".*/\1/')"
-    webconfig_lock="$(grep -E 'lockFilePath\s*=' "$WEBCONFIG_APPLY" | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')"
     [ -n "$script_lock" ]
-    [ -n "$webconfig_lock" ]
-    [ "$script_lock" = "$webconfig_lock" ]
+    [ "$script_lock" = "/run/airplanes/feed-env.lock" ]
 }
 
 @test "unit has no obsolete ConditionPathExists for the removed marker" {
