@@ -26,8 +26,11 @@ PrivateTmp=yes
 # (as root) can write feed.env. Webconfig itself has no perms on
 # /etc/airplanes (mode 0755 root:root) — only the helper, mediated by the
 # sudoers entry, can mutate it. /run/airplanes is the tmpfiles-managed lock
-# directory.
-ReadWritePaths=/var/lib/airplanes-webconfig /etc/airplanes /etc/airplanes/webconfig /run/airplanes
+# directory. /etc/NetworkManager/system-connections is where apl-wifi writes
+# keyfiles; the sudo child inherits this unit's mount namespace so the path
+# must be in ReadWritePaths or atomic-rename fails on the booted feeder
+# (chroot tests don't see this).
+ReadWritePaths=/var/lib/airplanes-webconfig /etc/airplanes /etc/airplanes/webconfig /run/airplanes /etc/NetworkManager/system-connections
 
 # Webconfig invokes `sudo -n systemctl ...` for service restart, so
 # NoNewPrivileges must stay false. The sudoers entry constrains the
