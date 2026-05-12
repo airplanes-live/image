@@ -38,32 +38,32 @@ APL_WIFI_FIRST_RUN_ID="airplanes-config-wifi"
 APL_WIFI_MANAGED_PREFIX="airplanes-wifi-"
 APL_WIFI_KEYFILE_EXT=".nmconnection"
 
-# shellcheck source=../lib/airplanes/wifi-validators.sh disable=SC1091
-. "$APL_WIFI_LIB_DIR/wifi-validators.sh"
-# shellcheck source=../lib/airplanes/wifi-keyfile.sh disable=SC1091
-. "$APL_WIFI_LIB_DIR/wifi-keyfile.sh"
+# Managed id regex: the first-run keyfile or airplanes-wifi-<slug>, where the
+# slug is 1-41 lowercase alnum-or-hyphen chars starting alphanumerically. This
+# matches apl_wifi_slugify's output. Enforced server-side so a path-traversal
+# attempt (encoded slashes, .., control bytes, …) is rejected before any
+# filesystem op.
+APL_WIFI_MANAGED_ID_RE='^(airplanes-config-wifi|airplanes-wifi-[a-z0-9][a-z0-9-]{0,40})$'
 
-# --- JSON envelope helpers -------------------------------------------------
+# --- JSON envelope helpers + traps -----------------------------------------
+#
+# Trap is installed BEFORE library sourcing so a missing/corrupt library can
+# still surface as a JSON envelope rather than empty stdout. Cleanup trap on
+# EXIT removes orphan transient test keyfiles and rollback snapshots that
+# would otherwise survive a crashed helper.
 
 _apl_wifi_emitted=0
 
-# _emit_json BODY-JSON
-#   Print BODY-JSON to stdout, mark the envelope emitted (so the error trap
-#   doesn't double-emit).
 _emit_json() {
 	_apl_wifi_emitted=1
 	printf '%s\n' "$1"
 }
 
-# _emit_error STATUS MESSAGE [extra-jq-args...]
-#   Convenience for { "status": STATUS, "message": MESSAGE }.
 _emit_error() {
 	local status="$1" message="$2"
 	shift 2
 	local body
 	if ! body="$(jq -nc --arg s "$status" --arg m "$message" "$@" '{status:$s, message:$m} + $ARGS.named')"; then
-		# jq itself failed; emit a hand-built fallback so callers never see
-		# empty stdout.
 		printf '{"status":"%s","message":"jq emit failed"}\n' "$status"
 		_apl_wifi_emitted=1
 		return
@@ -71,9 +71,6 @@ _emit_error() {
 	_emit_json "$body"
 }
 
-# ERR trap: if anything blows up before a normal status envelope is emitted,
-# print a synthetic filesystem_error envelope so the caller always parses
-# valid JSON.
 _apl_wifi_err_trap() {
 	local rc=$?
 	if (( _apl_wifi_emitted == 0 )); then
@@ -81,7 +78,26 @@ _apl_wifi_err_trap() {
 	fi
 	exit "$rc"
 }
+
+_apl_wifi_exit_cleanup() {
+	# Best-effort sweep of files only this helper would have created. Glob is
+	# tight enough that we won't disturb production keyfiles, but we still
+	# silence errors so a missing directory at test-host shutdown can't blow
+	# up the trap chain.
+	[[ -d "$APL_WIFI_KEYFILE_DIR" ]] && \
+		rm -f "$APL_WIFI_KEYFILE_DIR/${APL_WIFI_MANAGED_PREFIX}test-"*"$APL_WIFI_KEYFILE_EXT" 2>/dev/null
+	[[ -d "$APL_WIFI_ROLLBACK_DIR" ]] && \
+		rm -f "$APL_WIFI_ROLLBACK_DIR"/*"$APL_WIFI_KEYFILE_EXT" 2>/dev/null
+	return 0
+}
+
 trap _apl_wifi_err_trap ERR
+trap _apl_wifi_exit_cleanup EXIT
+
+# shellcheck source=../lib/airplanes/wifi-validators.sh disable=SC1091
+. "$APL_WIFI_LIB_DIR/wifi-validators.sh"
+# shellcheck source=../lib/airplanes/wifi-keyfile.sh disable=SC1091
+. "$APL_WIFI_LIB_DIR/wifi-keyfile.sh"
 
 # --- id / slug / managed helpers -------------------------------------------
 
@@ -103,10 +119,7 @@ apl_wifi_keyfile_path() {
 }
 
 apl_wifi_is_managed_id() {
-	local id="$1"
-	[[ "$id" == "$APL_WIFI_FIRST_RUN_ID" ]] && return 0
-	[[ "$id" == "$APL_WIFI_MANAGED_PREFIX"* ]] && return 0
-	return 1
+	[[ "$1" =~ $APL_WIFI_MANAGED_ID_RE ]]
 }
 
 # Generate a unique managed id from an SSID. Appends -2, -3, … if the slug
@@ -214,6 +227,11 @@ _apl_wifi_load_nm_state() {
 	# (no colons), DEVICE names are alnum/hyphen (no colons). If a future NM
 	# version starts surfacing colon-bearing values here, switch to a proper
 	# unescape pass.
+	# Whitelist physical uplinks only. Loopback, VPN/tunnel/wireguard, bridges,
+	# and container interfaces appear in `connection show --active` but cannot
+	# replace a Wi-Fi link if it's deleted; counting them as a non-Wi-Fi uplink
+	# would bypass the strong-confirm lockout. Ethernet + cellular cover the
+	# real recovery paths.
 	local uplinks='[]' line u t d ipv4
 	while IFS= read -r line; do
 		[[ -n "$line" ]] || continue
@@ -223,15 +241,17 @@ _apl_wifi_load_nm_state() {
 				NMCLI_ACTIVE_WIFI_UUID="$u"
 				NMCLI_ACTIVE_WIFI_DEV="$d"
 				;;
-			"")
-				continue
-				;;
-			*)
+			802-3-ethernet|gsm|cdma)
 				ipv4="$(_apl_wifi_device_ipv4 "$d")"
 				uplinks="$(jq -c \
 					--arg device "$d" --arg type "$t" --arg uuid "$u" --arg ipv4 "$ipv4" \
 					'. + [{device:$device, type:$type, uuid:$uuid, state:"activated", ipv4:$ipv4}]' \
 					<<< "$uplinks")"
+				;;
+			*)
+				# loopback, vpn, wireguard, tun, tap, bridge, bond, team, vlan,
+				# container, dummy, … — not real independent uplinks.
+				continue
 				;;
 		esac
 	done <<< "$out"
@@ -331,6 +351,17 @@ _apl_wifi_read_request() {
 		extras="$(jq -r --arg allowed "$allowed_csv" \
 			'(keys - ($allowed | split(","))) | join(",")' <<< "$buf")"
 		_emit_error parse_error "unknown field(s): $extras"
+		exit 5
+	fi
+	# Reject control bytes (C0 0x00-0x1f, DEL 0x7f) in any string field.
+	# jq -r → bash command substitution silently strips trailing newlines and
+	# drops NUL bytes downstream, so a payload like {"ssid":"abc\n"} would
+	# slip past validators after sanitization. Catch it at the JSON layer
+	# while we still see the raw bytes. The walk is over `..` so nested
+	# objects/arrays are covered, defense-in-depth even though our schemas
+	# are flat.
+	if jq -e '[.. | strings | test("[[:cntrl:]]")] | any' >/dev/null 2>&1 <<< "$buf"; then
+		_emit_error parse_error "string fields must not contain control characters"
 		exit 5
 	fi
 	APL_WIFI_REQ_JSON="$buf"
@@ -588,6 +619,14 @@ _apl_wifi_run_test_flow() {
 		return 3
 	}
 
+	# When the candidate is already the active connection (update path on the
+	# in-use profile), NM may report "already activated" without re-evaluating
+	# the new PSK — accepting a wrong password as a passing test. Force a
+	# disconnect first so the up call actually re-associates.
+	if [[ "$uuid" == "$prior_active" ]]; then
+		_apl_wifi_nmcli_down "$uuid"
+	fi
+
 	if _apl_wifi_nmcli_up "$uuid"; then
 		local state
 		state="$(_apl_wifi_connection_state "$uuid")"
@@ -600,9 +639,12 @@ _apl_wifi_run_test_flow() {
 		fi
 	fi
 
-	# Fail path.
+	# Fail path. Capture the classifier inputs before rollback so a slow or
+	# failing restore can't overwrite NMCLI_OUT_LAST / NMCLI_RC_LAST and lose
+	# the original reason.
+	local last_out="${NMCLI_OUT_LAST:-}" last_rc="${NMCLI_RC_LAST:-1}"
 	local reason
-	reason="$(_apl_wifi_classify_failure "${NMCLI_OUT_LAST:-}" "${NMCLI_RC_LAST:-1}")"
+	reason="$(_apl_wifi_classify_failure "$last_out" "$last_rc")"
 	_apl_wifi_nmcli_down "$uuid"
 
 	case "$action" in
@@ -616,13 +658,16 @@ _apl_wifi_run_test_flow() {
 			;;
 	esac
 
+	# Bound the prior-active restore. If the prior network is no longer
+	# reachable, nmcli can block past the Go handler ceiling — losing the
+	# JSON envelope and leaving the helper as an orphan sudo child.
 	if [[ -n "$prior_active" && "$prior_active" != "$uuid" ]]; then
-		"$APL_WIFI_NMCLI" connection up uuid "$prior_active" >/dev/null 2>&1 || true
+		timeout 10 "$APL_WIFI_NMCLI" --wait 5 connection up uuid "$prior_active" >/dev/null 2>&1 || true
 	fi
 
 	_emit_json "$(jq -nc \
 		--arg r "$reason" \
-		--arg nm "${NMCLI_OUT_LAST:-}" \
+		--arg nm "$last_out" \
 		--argjson rolled true \
 		'{status:"test_failed", reason:$r, nm_reason:$nm, rolled_back:$rolled}')"
 	return 2
@@ -940,13 +985,23 @@ _cmd_test_locked() {
 		return 3
 	}
 
-	local pass=false
+	local pass=false dev="" ipv4=""
 	if _apl_wifi_nmcli_up "$uuid"; then
 		local state; state="$(_apl_wifi_connection_state "$uuid")"
 		if [[ "$state" == activated || "$state" == 100* ]]; then
 			pass=true
+			# Capture device + ipv4 BEFORE teardown — querying the UUID after
+			# `nmcli connection delete` fails (the connection is gone), and
+			# with set -Eeuo pipefail the resulting non-zero would fire the
+			# ERR trap and turn a passing test into filesystem_error.
+			dev="$(_apl_wifi_connection_device "$uuid")"
+			ipv4="$(_apl_wifi_device_ipv4 "$dev")"
 		fi
 	fi
+
+	# Capture the failure-classifier inputs too, since teardown / restore can
+	# overwrite NMCLI_OUT_LAST / NMCLI_RC_LAST.
+	local last_out="${NMCLI_OUT_LAST:-}" last_rc="${NMCLI_RC_LAST:-1}"
 
 	# Always tear down the test connection — it never persists.
 	_apl_wifi_nmcli_down "$uuid"
@@ -954,22 +1009,20 @@ _cmd_test_locked() {
 	apl_wifi_delete_keyfile "$dest" || true
 	_apl_wifi_nmcli_reload || true
 
-	# Restore prior active connection (best effort).
+	# Bound the prior-active restore; see the matching note in
+	# _apl_wifi_run_test_flow for the timeout rationale.
 	if [[ -n "$prior_active" && "$prior_active" != "$uuid" ]]; then
-		"$APL_WIFI_NMCLI" connection up uuid "$prior_active" >/dev/null 2>&1 || true
+		timeout 10 "$APL_WIFI_NMCLI" --wait 5 connection up uuid "$prior_active" >/dev/null 2>&1 || true
 	fi
 
 	if [[ "$pass" == true ]]; then
-		local dev ipv4
-		dev="$(_apl_wifi_connection_device "$uuid")"
-		ipv4="$(_apl_wifi_device_ipv4 "$dev")"
 		_emit_json "$(jq -nc --arg dev "$dev" --arg ipv4 "$ipv4" \
 			'{status:"test_passed", device:$dev, ipv4:$ipv4}')"
 		return 0
 	fi
 
-	local reason; reason="$(_apl_wifi_classify_failure "${NMCLI_OUT_LAST:-}" "${NMCLI_RC_LAST:-1}")"
-	_emit_json "$(jq -nc --arg r "$reason" --arg nm "${NMCLI_OUT_LAST:-}" \
+	local reason; reason="$(_apl_wifi_classify_failure "$last_out" "$last_rc")"
+	_emit_json "$(jq -nc --arg r "$reason" --arg nm "$last_out" \
 		'{status:"test_failed", reason:$r, nm_reason:$nm, rolled_back:true}')"
 	return 2
 }

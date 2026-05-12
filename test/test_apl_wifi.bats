@@ -179,12 +179,27 @@ EOF
 }
 
 @test "add: PSK with embedded LF rejected" {
-    # Use a non-trailing LF — bash's $() strips trailing newlines, which would
-    # mask the case. Middle-LF survives command substitution and exercises the
-    # validator's actual rejection path.
+    # jq-layer control-byte gate catches this before command substitution
+    # has a chance to strip it — works regardless of LF position.
     run_apl_wifi add '{"ssid":"HomeNet","psk":"hunt\ner22","test":false}'
-    [ "$status" -eq 2 ]
-    [ "$(out_field '.errors.psk')" != "null" ]
+    [ "$status" -eq 5 ]
+    [ "$(out_field '.status')" = "parse_error" ]
+}
+
+@test "add: PSK with trailing LF rejected at jq layer" {
+    # Without the jq gate this would slip past validators because bash $()
+    # strips trailing newlines from command substitution output.
+    run_apl_wifi add '{"ssid":"HomeNet","psk":"hunter22\n","test":false}'
+    [ "$status" -eq 5 ]
+    [ "$(out_field '.status')" = "parse_error" ]
+}
+
+@test "add: SSID with NUL byte rejected at jq layer" {
+    # NUL bytes are dropped silently by bash command substitution; the jq
+    # gate sees the raw JSON-escaped \u0000 and rejects.
+    run_apl_wifi add '{"ssid":"home\u0000net","psk":"hunter22","test":false}'
+    [ "$status" -eq 5 ]
+    [ "$(out_field '.status')" = "parse_error" ]
 }
 
 @test "add: unknown field rejected as parse_error" {
@@ -380,6 +395,72 @@ EOF
     [ "$status" -eq 2 ]
     [ "$(out_field '.reason')" = "requires_force_flag" ]
     [ "$(out_field '.missing[0]')" = "force_active_no_uplink" ]
+}
+
+@test "delete: active connection + loopback only → still requires force" {
+    # Loopback appears in `connection show --active` on real NM installs but
+    # is not an independent uplink. The fix filters to physical types only;
+    # without it, a `lo` activation would silently suppress the strong-confirm.
+    cat > "$APL_WIFI_KEYFILE_DIR/airplanes-wifi-x.nmconnection" <<EOF
+[connection]
+id=x
+uuid=22222222-2222-4222-8222-222222222222
+type=wifi
+
+[wifi]
+ssid=X
+EOF
+    cat > "$APL_WIFI_KEYFILE_DIR/airplanes-wifi-y.nmconnection" <<EOF
+[connection]
+id=y
+uuid=33333333-3333-4333-8333-333333333333
+type=wifi
+
+[wifi]
+ssid=Y
+EOF
+    export NMCLI_STUB_ACTIVE='22222222-2222-4222-8222-222222222222:802-11-wireless:wlan0
+55555555-5555-4555-8555-555555555555:loopback:lo'
+    run_apl_wifi delete '{"id":"airplanes-wifi-x"}'
+    [ "$status" -eq 2 ]
+    [ "$(out_field '.reason')" = "requires_force_flag" ]
+    [ "$(out_field '.missing[0]')" = "force_active_no_uplink" ]
+}
+
+@test "delete: active connection + vpn only → still requires force" {
+    cat > "$APL_WIFI_KEYFILE_DIR/airplanes-wifi-x.nmconnection" <<EOF
+[connection]
+id=x
+uuid=22222222-2222-4222-8222-222222222222
+type=wifi
+
+[wifi]
+ssid=X
+EOF
+    cat > "$APL_WIFI_KEYFILE_DIR/airplanes-wifi-y.nmconnection" <<EOF
+[connection]
+id=y
+uuid=33333333-3333-4333-8333-333333333333
+type=wifi
+
+[wifi]
+ssid=Y
+EOF
+    export NMCLI_STUB_ACTIVE='22222222-2222-4222-8222-222222222222:802-11-wireless:wlan0
+66666666-6666-4666-8666-666666666666:wireguard:wg0'
+    run_apl_wifi delete '{"id":"airplanes-wifi-x"}'
+    [ "$status" -eq 2 ]
+    [ "$(out_field '.missing[0]')" = "force_active_no_uplink" ]
+}
+
+@test "delete: invalid id (path traversal attempt) rejected" {
+    # Regex gate rejects anything outside the canonical id shape. With the
+    # prefix-only gate this would have reached apl_wifi_keyfile_path with
+    # the `..` sequence and tried to access an unintended path.
+    run_apl_wifi delete '{"id":"airplanes-wifi-../etc/passwd"}'
+    [ "$status" -eq 2 ]
+    [ "$(out_field '.status')" = "rejected" ]
+    [ "$(out_field '.reason')" = "unmanaged_id" ]
 }
 
 @test "delete: active connection but ethernet up → no force needed" {
