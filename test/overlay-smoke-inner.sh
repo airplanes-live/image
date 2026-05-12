@@ -92,6 +92,14 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ -s /etc/airplanes/.build-feed-sha ]] || fail ".build-feed-sha missing or empty"
 [[ ! -d /usr/local/src/airplanes-feed-build ]] || fail "/usr/local/src/airplanes-feed-build was not cleaned up"
 
+# Fresh-image MLAT posture: off by default until the operator opts in via the
+# webconfig with valid lat/lon/altitude. GEO_CONFIGURED follows from the lat=0
+# /lon=0 placeholders via feed's derive_geo_configured.
+grep -qE '^MLAT_ENABLED="?false"?$' /etc/airplanes/feed.env \
+    || fail "feed.env: expected MLAT_ENABLED=false on fresh image"
+grep -qE '^GEO_CONFIGURED="?false"?$' /etc/airplanes/feed.env \
+    || fail "feed.env: expected GEO_CONFIGURED=false on fresh image"
+
 # Service files contain expected directives
 grep -q 'ExecStart=/usr/local/share/airplanes/airplanes-feed.sh' /etc/systemd/system/airplanes-feed.service \
     || fail "airplanes-feed.service missing ExecStart=…/airplanes-feed.sh"
