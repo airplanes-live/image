@@ -11,7 +11,12 @@ setup() {
     LOGO="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/logo.txt"
     BANNER="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/banner.txt"
     BANNER_NARROW="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/banner-narrow.txt"
+    ICON="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/icon.txt"
     TMP="$(mktemp -d)"
+    # Pin the random tagline index so every snapshot test sees the same
+    # string. Must be exported before the `source "$SCRIPT"` below — the
+    # tagline pick happens at script load.
+    export AIRPLANES_STATUS_TAGLINE_INDEX=0
 
     # All PATHS_* default to /nonexistent so an un-overridden test gets the
     # "all sources missing" baseline. Individual tests then point a single
@@ -28,6 +33,7 @@ setup() {
     export PATHS_LOGO="$LOGO"
     export PATHS_BANNER="$BANNER"
     export PATHS_BANNER_NARROW="$BANNER_NARROW"
+    export PATHS_ICON="$ICON"
     # State-file paths default to non-existent so the defensive
     # `airplanes_read_state() { return 1; }` stub kicks in. Tests that
     # exercise the state-file path call `setup_mlat_state_test_env` to
@@ -852,13 +858,50 @@ EOF
 @test "snapshot: contains all section headers" {
     run bash "$SCRIPT" --snapshot
     [ "$status" -eq 0 ]
+    # Banner header: airplanes.live + tagline (index 0) + feed version.
+    [[ "$output" == *"airplanes.live"* ]]
+    [[ "$output" == *"Unfiltered flight data"* ]]
+    [[ "$output" == *"feed sha="* ]]
     [[ "$output" == *Access* ]]
     [[ "$output" == *"Feeder ID"* ]]
     [[ "$output" == *Claim* ]]
     [[ "$output" == *Services* ]]
     [[ "$output" == *Feed* ]]
-    [[ "$output" == *Build* ]]
     [[ "$output" == *System* ]]
+}
+
+@test "snapshot: omits the Build line (folded into banner header)" {
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    # The pre-refactor compact panel printed "Build channel=..."; the new
+    # banner header carries the version so the compact Feed/System block
+    # never re-shows it. Match the leading "Build" label (with at least
+    # one trailing space) to avoid matching "Builds" or build-manifest
+    # text that might land elsewhere.
+    ! grep -q 'Build  *channel=' <<<"$output"
+}
+
+@test "snapshot: omits 'sudo apl-feed claim register' hint" {
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    ! grep -q 'sudo apl-feed claim register' <<<"$output"
+}
+
+@test "snapshot: surfaces friendly service labels (one row per service)" {
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Data upload (feed)"* ]]
+    [[ "$output" == *"Aircraft triangulation (mlat)"* ]]
+    [[ "$output" == *"ADS-B decoder (readsb)"* ]]
+    [[ "$output" == *"UAT receiver (978)"* ]]
+}
+
+@test "snapshot: does not render dump978-fa.service as a standalone row" {
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    # The producer unit folds into the UAT receiver row; it must never
+    # appear as its own labelled line.
+    ! grep -q 'dump978-fa' <<<"$output"
 }
 
 @test "snapshot: shows '(not yet generated)' when feeder-id missing" {
@@ -1084,11 +1127,12 @@ EOF
     [ "${#out[@]}" = "1" ]
 }
 
-@test "snapshot: side-by-side puts the logo column to the left of status" {
-    # Side-by-side prints `${logo[i]}  ${status[i]}` per row. The shipped
-    # 40-col logo contains block characters; "Feeder ID" is one of the
-    # early status rows. Verify the line containing it has a non-empty
-    # prefix before the status text — i.e. the logo column is present.
+@test "snapshot: side-by-side puts the icon column to the left of status" {
+    # render_snapshot_with_header prints `${icon[i]}  ${right[i]}` per row.
+    # The shipped 20-col icon contains non-space characters; "Feeder ID"
+    # is one of the status rows (below the 3-line banner header). Verify
+    # the line containing it has a non-empty, non-whitespace prefix —
+    # i.e. the icon column is present.
     run bash "$SCRIPT" --snapshot
     [ "$status" -eq 0 ]
     line="$(printf '%s' "$output" | grep -m1 'Feeder ID' || true)"
@@ -1096,7 +1140,6 @@ EOF
     prefix="${line%%Feeder ID*}"
     # Vertical layout would place "Feeder ID" at byte 0 → empty prefix.
     [ -n "$prefix" ]
-    # And the prefix must contain a non-whitespace character (the logo).
     [[ "$prefix" =~ [^[:space:]] ]]
 }
 
@@ -1171,15 +1214,17 @@ EOF
     [[ "$out" == *status-marker* ]]
 }
 
-@test "snapshot with missing logo: degrades to status-only without crashing" {
-    PATHS_LOGO="$TMP/nx-missing-logo"
+@test "snapshot with missing icon: degrades to text-header + status without crashing" {
+    PATHS_ICON="$TMP/nx-missing-icon"
     run bash "$SCRIPT" --snapshot
     [ "$status" -eq 0 ]
-    # All section labels must still appear even with no artwork.
+    # Banner header still renders (icon column just collapses); status
+    # panel below stays intact.
+    [[ "$output" == *"airplanes.live"* ]]
+    [[ "$output" == *"feed sha="* ]]
     [[ "$output" == *Access* ]]
     [[ "$output" == *"Feeder ID"* ]]
     [[ "$output" == *Services* ]]
-    [[ "$output" == *Build* ]]
 }
 
 @test "live with missing banner: dispatch keeps narrow tier" {
@@ -1371,15 +1416,245 @@ STUB
     [ "$output" = 'idle peer_no_hardware' ]
 }
 
-@test "svc_marker: wait token → ':wait' marker (warn colour)" {
-    # TERM=dumb in setup() disables colour, so we just assert the marker text.
-    run svc_marker dump978-fa.service wait
-    [ "$output" = 'dump978-fa:wait' ]
+# ---- svc_token_text: plain-text token for each classifier -----------------
+
+@test "svc_token_text: ok → 'OK'"                       { [ "$(svc_token_text ok)" = 'OK' ]; }
+@test "svc_token_text: fail → 'FAIL'"                   { [ "$(svc_token_text fail)" = 'FAIL' ]; }
+@test "svc_token_text: misconfigured → '!!'"            { [ "$(svc_token_text misconfigured)" = '!!' ]; }
+@test "svc_token_text: masked → 'MASK'"                 { [ "$(svc_token_text masked)" = 'MASK' ]; }
+@test "svc_token_text: disabled → 'off'"                { [ "$(svc_token_text disabled)" = 'off' ]; }
+@test "svc_token_text: disabled-by-config → 'off'"      { [ "$(svc_token_text disabled-by-config)" = 'off' ]; }
+@test "svc_token_text: wait → 'wait'"                   { [ "$(svc_token_text wait)" = 'wait' ]; }
+@test "svc_token_text: idle → 'idle'"                   { [ "$(svc_token_text idle)" = 'idle' ]; }
+@test "svc_token_text: partial → 'partial'"             { [ "$(svc_token_text partial)" = 'partial' ]; }
+@test "svc_token_text: unknown/timeout/other → '?'" {
+    [ "$(svc_token_text unknown)" = '?' ]
+    [ "$(svc_token_text timeout)" = '?' ]
+    [ "$(svc_token_text bogus-state)" = '?' ]
 }
 
-@test "svc_marker: idle token → ':idle' marker (warn colour)" {
-    run svc_marker airplanes-978.service idle
-    [ "$output" = '978:idle' ]
+# ---- _978_combined_state matrix: consumer + producer → combined classifier
+#
+# Helper closes over local consumer/producer state by overriding unit_state
+# in the test's shell. The setup-level `source "$SCRIPT"` exposed the
+# function, and Bash's last-definition-wins rule means the override here
+# takes precedence inside the test body.
+_978_stub_states() {
+    local consumer="$1" producer="$2"
+    eval "unit_state() {
+        case \"\$1\" in
+            airplanes-978.service) printf '%s' '$consumer' ;;
+            dump978-fa.service)    printf '%s' '$producer' ;;
+            *)                     printf 'unknown' ;;
+        esac
+    }"
+}
+
+@test "_978_combined_state: both ok → ok" {
+    _978_stub_states ok ok
+    [ "$(_978_combined_state)" = 'ok' ]
+}
+
+@test "_978_combined_state: consumer fail wins over producer ok" {
+    _978_stub_states fail ok
+    [ "$(_978_combined_state)" = 'fail' ]
+}
+
+@test "_978_combined_state: producer fail wins when consumer is healthy" {
+    _978_stub_states ok fail
+    [ "$(_978_combined_state)" = 'fail' ]
+}
+
+@test "_978_combined_state: misconfigured propagates" {
+    _978_stub_states misconfigured ok
+    [ "$(_978_combined_state)" = 'misconfigured' ]
+    _978_stub_states ok misconfigured
+    [ "$(_978_combined_state)" = 'misconfigured' ]
+}
+
+@test "_978_combined_state: masked propagates" {
+    _978_stub_states masked ok
+    [ "$(_978_combined_state)" = 'masked' ]
+}
+
+@test "_978_combined_state: timeout propagates" {
+    _978_stub_states ok timeout
+    [ "$(_978_combined_state)" = 'timeout' ]
+}
+
+@test "_978_combined_state: unknown wins over off (consumer)" {
+    _978_stub_states unknown disabled-by-config
+    [ "$(_978_combined_state)" = 'unknown' ]
+}
+
+@test "_978_combined_state: unknown wins over off (producer)" {
+    _978_stub_states disabled-by-config unknown
+    [ "$(_978_combined_state)" = 'unknown' ]
+}
+
+@test "_978_combined_state: consumer ok + producer wait → partial" {
+    _978_stub_states ok wait
+    [ "$(_978_combined_state)" = 'partial' ]
+}
+
+@test "_978_combined_state: consumer ok + producer disabled-by-config → partial" {
+    _978_stub_states ok disabled-by-config
+    [ "$(_978_combined_state)" = 'partial' ]
+}
+
+@test "_978_combined_state: consumer idle → idle (producer state ignored)" {
+    _978_stub_states idle disabled-by-config
+    [ "$(_978_combined_state)" = 'idle' ]
+    _978_stub_states idle wait
+    [ "$(_978_combined_state)" = 'idle' ]
+}
+
+@test "_978_combined_state: consumer off + producer ok → partial" {
+    _978_stub_states disabled-by-config ok
+    [ "$(_978_combined_state)" = 'partial' ]
+}
+
+@test "_978_combined_state: consumer off + producer wait → disabled-by-config" {
+    _978_stub_states disabled-by-config wait
+    [ "$(_978_combined_state)" = 'disabled-by-config' ]
+}
+
+@test "_978_combined_state: both disabled-by-config → disabled-by-config" {
+    _978_stub_states disabled-by-config disabled-by-config
+    [ "$(_978_combined_state)" = 'disabled-by-config' ]
+}
+
+@test "_978_combined_state: 'disabled' (non-config) is treated like off in either slot" {
+    # unit_state's generic UnitFileState=disabled fallback emits 'disabled'
+    # (not 'disabled-by-config'). The combined matrix must treat it the
+    # same as disabled-by-config — otherwise a feeder running on the
+    # cache-miss fallback path would render UAT as 'unknown'.
+    _978_stub_states disabled ok
+    [ "$(_978_combined_state)" = 'partial' ]
+    _978_stub_states ok disabled
+    [ "$(_978_combined_state)" = 'partial' ]
+    _978_stub_states disabled wait
+    [ "$(_978_combined_state)" = 'disabled-by-config' ]
+    _978_stub_states disabled disabled
+    [ "$(_978_combined_state)" = 'disabled-by-config' ]
+}
+
+# Cartesian guard: with every consumer/producer pairing across the full
+# classifier vocabulary, only the literal (ok, ok) pair is allowed to
+# resolve to the green 'ok' token. Catches a regression that adds a new
+# state to unit_state without updating the matrix and silently flips
+# UAT to green when it shouldn't.
+@test "_978_combined_state: only (ok,ok) returns 'ok' across the full state vocabulary" {
+    local states=(ok fail masked misconfigured disabled disabled-by-config wait idle unknown timeout)
+    local c p result
+    for c in "${states[@]}"; do
+        for p in "${states[@]}"; do
+            _978_stub_states "$c" "$p"
+            result="$(_978_combined_state)"
+            if [[ "$c" == ok && "$p" == ok ]]; then
+                [ "$result" = 'ok' ] || {
+                    printf 'expected ok for (ok, ok), got %s\n' "$result" >&2
+                    return 1
+                }
+            else
+                [ "$result" != 'ok' ] || {
+                    printf '(%s, %s) silently rendered ok\n' "$c" "$p" >&2
+                    return 1
+                }
+            fi
+        done
+    done
+}
+
+# ---- render_snapshot_with_header: icon-threshold boundary ------------------
+
+@test "render_snapshot_with_header: at exactly SNAPSHOT_ICON_MIN_COLS the icon column appears" {
+    STATUS_LINES=("status-marker")
+    out="$(render_snapshot_with_header "$SNAPSHOT_ICON_MIN_COLS")"
+    # The icon's first row has a non-space character; verify the line
+    # containing "status-marker" has a non-empty, non-whitespace prefix.
+    line="$(printf '%s' "$out" | grep -m1 'status-marker' || true)"
+    [ -n "$line" ]
+    prefix="${line%%status-marker*}"
+    [[ "$prefix" =~ [^[:space:]] ]]
+}
+
+@test "render_snapshot_with_header: just below SNAPSHOT_ICON_MIN_COLS drops the icon" {
+    STATUS_LINES=("status-marker")
+    out="$(render_snapshot_with_header "$(( SNAPSHOT_ICON_MIN_COLS - 1 ))")"
+    line="$(printf '%s' "$out" | grep -m1 'status-marker' || true)"
+    [ -n "$line" ]
+    # No icon column → status-marker starts at the line's first cell
+    # (after the leading newline that printf already consumed).
+    [[ "$line" =~ ^status-marker ]]
+}
+
+@test "AIRPLANES_STATUS_TAGLINE_INDEX=08 (leading zero) does not leak a stderr error" {
+    err="$(AIRPLANES_STATUS_TAGLINE_INDEX=08 bash "$SCRIPT" --snapshot 2>&1 >/dev/null)"
+    # Pre-fix: `$(( 08 ))` would print "value too great for base (error
+    # token is "08")" to stderr; that text would land in the MOTD.
+    [[ ! "$err" =~ "value too great" ]] || {
+        printf 'octal error leaked: %s\n' "$err" >&2
+        return 1
+    }
+}
+
+# ---- service_display_state: id → classifier --------------------------------
+
+@test "service_display_state: known ids dispatch to the right backend" {
+    unit_state() {
+        case "$1" in
+            airplanes-feed.service) printf 'ok' ;;
+            airplanes-mlat.service) printf 'disabled-by-config' ;;
+            readsb.service)         printf 'fail' ;;
+            *)                      printf 'unknown' ;;
+        esac
+    }
+    [ "$(service_display_state feed)" = 'ok' ]
+    [ "$(service_display_state mlat)" = 'disabled-by-config' ]
+    [ "$(service_display_state readsb)" = 'fail' ]
+}
+
+@test "service_display_state: unknown id → 'unknown'" {
+    [ "$(service_display_state nonsense)" = 'unknown' ]
+}
+
+# ---- display_service_rows: end-to-end row formatting -----------------------
+
+@test "display_service_rows: emits one labelled row per display service" {
+    _978_stub_states disabled-by-config disabled-by-config
+    # All other units fall through to the _978_stub_states unit_state
+    # function which returns 'unknown' for non-978 services.
+    out="$(display_service_rows '  ')"
+    n="$(printf '%s\n' "$out" | wc -l)"
+    [ "$n" -eq 4 ]
+    grep -q 'Data upload (feed)' <<<"$out"
+    grep -q 'Aircraft triangulation (mlat)' <<<"$out"
+    grep -q 'ADS-B decoder (readsb)' <<<"$out"
+    grep -q 'UAT receiver (978)' <<<"$out"
+    # Combined off renders as 'off' (disabled token); not 'OK'.
+    grep -q 'UAT receiver (978).*off' <<<"$out"
+}
+
+# ---- tagline-index override: deterministic snapshot output -----------------
+
+@test "AIRPLANES_STATUS_TAGLINE_INDEX clamps deterministic tagline" {
+    # setup() pins index 0 already. Sanity-check the mechanism by
+    # asserting the snapshot output contains the index-0 string and not
+    # any other tagline.
+    run bash "$SCRIPT" --snapshot
+    [[ "$output" == *"Unfiltered flight data"* ]]
+    ! grep -q 'Signal desk' <<<"$output"
+}
+
+# ---- icon artwork ships at the documented width ---------------------------
+
+@test "load_artwork: icon.txt is 20 cols × non-empty" {
+    declare -a art=()
+    load_artwork "$PATHS_ICON" "$ICON_WIDTH" art
+    rc=$?
+    [ "$rc" -eq 0 ]
+    [ "${#art[@]}" -gt 0 ]
 }
 
 # ---- Network section: _fmt_eth_speed ---------------------------------------

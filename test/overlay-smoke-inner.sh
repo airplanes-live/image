@@ -665,12 +665,37 @@ PATHS_CLAIM_VERSION=/nx \
 PATHS_AIRCRAFT_JSON=/nx \
 PATHS_THERMAL=/nx \
 PATHS_LOGO=/usr/local/share/airplanes/logo.txt \
+PATHS_ICON=/usr/local/share/airplanes/icon.txt \
 TERM=dumb \
+AIRPLANES_STATUS_TAGLINE_INDEX=0 \
     bash /usr/local/lib/airplanes/render-status --snapshot >"$SNAP_OUT" 2>&1 \
     || fail "render-status --snapshot exited non-zero with all sources missing"
-for needle in 'Access' 'Feeder ID' 'Claim' 'Services' 'Feed' 'Build' 'System'; do
-    grep -q "$needle" "$SNAP_OUT" || fail "snapshot missing section: $needle"
+# Banner header (icon + airplanes.live + tagline + version) replaces the
+# old standalone "Build channel=…" line. Section list mirrors the labels
+# emitted by build_status_lines_compact.
+for needle in 'airplanes.live' 'Unfiltered flight data' 'feed sha=' \
+              'Access' 'Feeder ID' 'Claim' 'Services' 'Feed' 'System'; do
+    grep -q "$needle" "$SNAP_OUT" || fail "snapshot missing marker: $needle"
 done
+# Friendly service rows: one labelled line per display service.
+for needle in 'Data upload (feed)' 'Aircraft triangulation (mlat)' \
+              'ADS-B decoder (readsb)' 'UAT receiver (978)'; do
+    grep -q "$needle" "$SNAP_OUT" || fail "snapshot missing service row: $needle"
+done
+# Dropped from the MOTD copy: claim-register action hint and Build line.
+if grep -q 'sudo apl-feed claim register' "$SNAP_OUT"; then
+    fail "snapshot must no longer print 'sudo apl-feed claim register' on the MOTD"
+fi
+if grep -E -q 'Build[[:space:]]+channel=' "$SNAP_OUT"; then
+    fail "snapshot still emits the standalone 'Build channel=' line"
+fi
+# dump978-fa folds into the UAT row; raw producer must never appear.
+if grep -q 'dump978-fa' "$SNAP_OUT"; then
+    fail "snapshot renders dump978-fa as a standalone row (should fold into uat978)"
+fi
+# Icon artwork must land in the rootfs at the documented path.
+[[ -s /usr/local/share/airplanes/icon.txt ]] \
+    || fail "/usr/local/share/airplanes/icon.txt missing in installed rootfs"
 grep -q '(not yet generated)' "$SNAP_OUT" \
     || fail "snapshot did not show '(not yet generated)' for missing feeder-id"
 grep -q 'unclaimed' "$SNAP_OUT" \

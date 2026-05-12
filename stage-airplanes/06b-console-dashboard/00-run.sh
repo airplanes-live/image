@@ -11,6 +11,8 @@ install -m 644 files/usr/local/share/airplanes/banner.txt \
     "${ROOTFS_DIR}/usr/local/share/airplanes/banner.txt"
 install -m 644 files/usr/local/share/airplanes/banner-narrow.txt \
     "${ROOTFS_DIR}/usr/local/share/airplanes/banner-narrow.txt"
+install -m 644 files/usr/local/share/airplanes/icon.txt \
+    "${ROOTFS_DIR}/usr/local/share/airplanes/icon.txt"
 
 install -d -m 755 "${ROOTFS_DIR}/etc/systemd/system"
 install -m 644 files/etc/systemd/system/airplanes-dashboard.service \

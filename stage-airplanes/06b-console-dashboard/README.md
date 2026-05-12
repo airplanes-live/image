@@ -40,8 +40,8 @@ else (besides sshd's own `Last login:` line, which is out of scope).
   `--live` (loop, double-buffered repaint every 5s; used by the systemd
   unit), `--once` (one-shot with screen clear).
 - `/usr/local/share/airplanes/logo.txt` — 40×22 plane-badge artwork
-  used in the SSH/TTY2 side-by-side layout (and as the last-resort
-  `--live` fallback when even the narrow banner won't fit).
+  used as the last-resort `--live` fallback when even the narrow banner
+  won't fit.
 - `/usr/local/share/airplanes/banner.txt` — 135×20 banner artwork
   (badge + "airplanes.live" wordmark) used at the top of the HDMI
   dashboard on wide displays.
@@ -50,6 +50,12 @@ else (besides sshd's own `Last login:` line, which is out of scope).
   HDMI dashboard when the framebuffer console is too narrow for the
   wide banner. Fits any ≥720p HDMI output at the default 8×16 kernel
   console font.
+- `/usr/local/share/airplanes/icon.txt` — 20×11 small ASCII airplane
+  badge used by the snapshot (SSH MOTD / `--once`) layout. Renders to
+  the left of a 3-line text header (airplanes.live / random tagline /
+  feed version) above the compact status panel. The text header takes
+  prime real estate from the version line, so the compact panel no
+  longer prints a standalone "Build channel=… sha=…" row.
 - `/etc/systemd/system/airplanes-dashboard.service` — owns `/dev/tty1`,
   `Conflicts=getty@tty1.service`, `WantedBy=multi-user.target`.
 - `/etc/systemd/system/getty@tty1.service.d/override.conf` —
@@ -82,10 +88,10 @@ available.
 The renderer picks a layout based on mode and a runtime width guard so
 under-sized terminals degrade rather than wrap:
 
-| Mode         | ≥ 135 cols                            | ≥ 74 cols                                       | ≥ 80 cols                                       | < threshold                              |
+| Mode         | ≥ 135 cols                            | ≥ 74 cols                                       | ≥ 60 cols                                       | < threshold                              |
 |--------------|---------------------------------------|-------------------------------------------------|-------------------------------------------------|------------------------------------------|
 | `--live`     | wide `banner.txt` (135 cols) on top, full status below | `banner-narrow.txt` (74 cols) on top, full status below | —                                               | small `logo.txt` (40 cols) on top, full status below |
-| `--snapshot` | —                                     | —                                               | `logo.txt` (40 cols) on the left, 38-col compact status panel on the right | compact status only, no logo |
+| `--snapshot` | —                                     | —                                               | `icon.txt` (20 cols) on the left, 3-line text header + compact status panel on the right | text-only header + compact status, no icon |
 | `--once`     | same as `--snapshot`                  | same as `--snapshot`                            | same as `--snapshot`                            | same as `--snapshot`                     |
 
 `term_cols()` reports `tput cols` when stdout is a TTY and `TERM` is
@@ -115,8 +121,10 @@ and fully readable.
 The committed `logo.txt` and `banner.txt` were rendered from
 `https://www.airplanes.live/img/airplanes-live-logo.png` (1029×287 PNG)
 with `chafa` and hand-trimmed. `banner-narrow.txt` was hand-built from
-the same source. All three files are shipped verbatim — no runtime
-image-conversion dependency.
+the same source. `icon.txt` is a 20×11 hand-trimmed ASCII rendition of
+the same logo, sized to sit next to the 3-line snapshot text header
+without dominating it. All four files are shipped verbatim — no
+runtime image-conversion dependency.
 
 To regenerate when the upstream logo changes:
 
@@ -151,6 +159,8 @@ Constraints, enforced by `load_artwork` in the renderer:
   the file has at least one line.
 - Each line in `banner-narrow.txt` is exactly **74 display columns**
   wide; the file has at least one line.
+- Each line in `icon.txt` is exactly **20 display columns** wide; the
+  file has at least one line.
 - No CRLF (LF only).
 - Trailing whitespace **must be preserved** so each line is padded to
   the expected width — do **not** run `sed 's/[[:space:]]*$//'`.

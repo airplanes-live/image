@@ -41,6 +41,7 @@ LC_ALL=C
 : "${PATHS_LOGO:=/usr/local/share/airplanes/logo.txt}"
 : "${PATHS_BANNER:=/usr/local/share/airplanes/banner.txt}"
 : "${PATHS_BANNER_NARROW:=/usr/local/share/airplanes/banner-narrow.txt}"
+: "${PATHS_ICON:=/usr/local/share/airplanes/icon.txt}"
 : "${PATHS_STATE_FILE_MLAT:=/run/airplanes-mlat/state}"
 : "${PATHS_STATE_FILE_FEED:=/run/airplanes-feed/state}"
 : "${PATHS_STATE_FILE_978:=/run/airplanes-978/state}"
@@ -61,8 +62,15 @@ fi
 readonly LOGO_WIDTH=40
 readonly BANNER_WIDTH=135
 readonly BANNER_NARROW_WIDTH=74
-readonly SIDE_BY_SIDE_MIN_COLS=80
+readonly ICON_WIDTH=20
 readonly STATUS_PANEL_WIDTH=38
+# Snapshot header switches to icon+text when ICON_WIDTH + 2 (gutter) +
+# the worst-case right-column row width fit; below that it's text-only.
+# Worst case is the UAT row with the `partial` token: 2 (indent) +
+# SVC_LABEL_WIDTH (29) + 2 (sep) + 7 ("partial") = 40 cells. The
+# constant computes that from SVC_LABEL_WIDTH so future label edits
+# don't silently re-introduce wrap. SVC_LABEL_WIDTH is filled in below
+# right after SVC_DISPLAY_LABELS is declared.
 
 readonly UNITS=(
     airplanes-feed.service
@@ -71,6 +79,62 @@ readonly UNITS=(
     dump978-fa.service
     airplanes-978.service
 )
+
+# Display services drive rendering; separate from UNITS (which drives
+# systemd priming) so a grouped service like UAT (consumer + producer
+# combined) can't accidentally render its underlying units as standalone
+# rows. The mapping from display id to underlying unit(s) lives in
+# service_display_state(); these two arrays only carry id + label.
+readonly SVC_DISPLAY_IDS=(feed mlat readsb uat978)
+readonly SVC_DISPLAY_LABELS=(
+    "Data upload (feed)"
+    "Aircraft triangulation (mlat)"
+    "ADS-B decoder (readsb)"
+    "UAT receiver (978)"
+)
+_svc_label_width=0
+for _label in "${SVC_DISPLAY_LABELS[@]}"; do
+    (( ${#_label} > _svc_label_width )) && _svc_label_width=${#_label}
+done
+readonly SVC_LABEL_WIDTH=$_svc_label_width
+# Longest plain status token. Bumping it (e.g. by adding a new state in
+# svc_token_text) automatically widens SNAPSHOT_ICON_MIN_COLS below so
+# the icon column doesn't push the worst row past the terminal width.
+readonly SVC_TOKEN_MAX_WIDTH=7  # 'partial'
+readonly SVC_ROW_MAX_WIDTH=$(( 2 + SVC_LABEL_WIDTH + 2 + SVC_TOKEN_MAX_WIDTH ))
+readonly SNAPSHOT_ICON_MIN_COLS=$(( ICON_WIDTH + 2 + SVC_ROW_MAX_WIDTH ))
+unset _label _svc_label_width
+
+# Random tagline pool — verbatim copy of the 9 EN strings rendered in the
+# website navigation header (website/website/templates/_base/nav.html).
+# Picked once at script load via $RANDOM so live mode (5s repaint loop)
+# doesn't reshuffle every frame. AIRPLANES_STATUS_TAGLINE_INDEX overrides
+# the random pick — used by bats and the chroot smoke test for
+# deterministic output.
+readonly TAGLINES=(
+    "Unfiltered flight data"
+    "Signal desk"
+    "Community-Run"
+    "For enthusiasts"
+    "Aviation 24/7"
+    "Independent"
+    "Passionate"
+    "Here for you."
+    "No compromises"
+)
+# Force base-10 with `10#…` so leading-zero values like `08` don't trip
+# Bash's "invalid octal" arithmetic error (which would leak to stderr,
+# and the MOTD wrapper does not scrub stderr from the renderer).
+TAGLINE_INDEX=""
+if [[ "${AIRPLANES_STATUS_TAGLINE_INDEX:-}" =~ ^[0-9]+$ ]]; then
+    _override_idx=$(( 10#$AIRPLANES_STATUS_TAGLINE_INDEX ))
+    if (( _override_idx < ${#TAGLINES[@]} )); then
+        TAGLINE_INDEX=$_override_idx
+    fi
+    unset _override_idx
+fi
+[[ -z "$TAGLINE_INDEX" ]] && TAGLINE_INDEX=$(( RANDOM % ${#TAGLINES[@]} ))
+readonly TAGLINE_INDEX
 
 # ---- Color (gated on TTY-ness of stdout + non-dumb $TERM). -----------------
 ESC=$'\e'
@@ -114,7 +178,11 @@ read_channel() {
     [[ -r "$PATHS_RELEASE_CHANNEL" ]] || return 0
     local v
     v="$(head -n1 "$PATHS_RELEASE_CHANNEL" 2>/dev/null | tr -d '[:space:]')"
-    sanitize "$v" 16
+    # 10-char clamp: realistic values are "dev" / "stable"; this keeps the
+    # snapshot header (`feed sha=abc1234 (channel=stable)`) inside
+    # STATUS_PANEL_WIDTH=38 even when /etc/airplanes/release-channel has
+    # been hand-edited with a longer string.
+    sanitize "$v" 10
 }
 
 # Pull the airplanes_feed component SHA (the user-visible "what version of the
@@ -924,48 +992,113 @@ claim_color_compact() {
     esac
 }
 
-svc_marker() {
-    local unit="$1"
-    local s="$2"
-    # Strip the redundant "airplanes-" / ".service" so the row fits 80 cols.
-    local short="${unit%.service}"
-    short="${short#airplanes-}"
-    case "$s" in
-        ok)
-            printf '%b%s:OK%b' "$C_OK" "$short" "$C_RESET"
-            ;;
-        fail)
-            printf '%b%s:FAIL%b' "$C_FAIL" "$short" "$C_RESET"
-            ;;
-        misconfigured)
-            printf '%b%s:!!%b' "$C_FAIL" "$short" "$C_RESET"
-            ;;
-        masked)
-            printf '%b%s:MASK%b' "$C_FAIL" "$short" "$C_RESET"
-            ;;
-        disabled|disabled-by-config)
-            printf '%b%s:off%b' "$C_DIM" "$short" "$C_RESET"
-            ;;
-        wait)
-            # dump978-fa self-disabled because no 978-serial RTL-SDR is
-            # present. Distinct from "off" so the user notices.
-            printf '%b%s:wait%b' "$C_WARN" "$short" "$C_RESET"
-            ;;
-        idle)
-            # airplanes-978 is running but the producer (dump978-fa) is in
-            # the no_hardware state — the relay is alive with no input.
-            printf '%b%s:idle%b' "$C_WARN" "$short" "$C_RESET"
-            ;;
-        unknown)
-            printf '%b%s:?%b' "$C_WARN" "$short" "$C_RESET"
-            ;;
-        timeout)
-            printf '%b%s:?%b' "$C_DIM" "$short" "$C_RESET"
-            ;;
-        *)
-            printf '%b%s:?%b' "$C_DIM" "$short" "$C_RESET"
-            ;;
+# Combined UAT (978) state — folds the consumer (airplanes-978) and
+# producer (dump978-fa) into a single display classifier. The matrix:
+#   - either unit fail/masked/misconfigured/timeout → propagate (consumer wins ties)
+#   - either unit unknown → unknown
+#   - both ok → ok
+#   - consumer ok, producer wait/disabled-by-config/disabled → partial
+#   - consumer idle (producer has no SDR) → idle
+#   - consumer off, producer ok → partial
+#   - consumer off, producer wait/disabled-by-config/disabled → disabled-by-config
+#   - anything else → unknown (defensive — new states never silently render ok)
+_978_combined_state() {
+    local consumer producer
+    consumer="$(unit_state airplanes-978.service)"
+    producer="$(unit_state dump978-fa.service)"
+    case "$consumer" in
+        fail|masked|misconfigured|timeout) printf '%s' "$consumer"; return ;;
     esac
+    case "$producer" in
+        fail|masked|misconfigured|timeout) printf '%s' "$producer"; return ;;
+    esac
+    case "$consumer" in unknown) printf 'unknown'; return ;; esac
+    case "$producer" in unknown) printf 'unknown'; return ;; esac
+    case "$consumer" in
+        ok)
+            case "$producer" in
+                ok)                                printf 'ok' ;;
+                wait|disabled-by-config|disabled)  printf 'partial' ;;
+                *)                                 printf 'unknown' ;;
+            esac ;;
+        idle)
+            printf 'idle' ;;
+        disabled-by-config|disabled)
+            case "$producer" in
+                ok)                                printf 'partial' ;;
+                wait|disabled-by-config|disabled)  printf 'disabled-by-config' ;;
+                *)                                 printf 'unknown' ;;
+            esac ;;
+        *)
+            printf 'unknown' ;;
+    esac
+}
+
+# Resolve a display id to a state classifier. Wraps unit_state for
+# single-unit services and _978_combined_state for the grouped uat978
+# row. The grouped resolver still triggers individual unit_state calls,
+# which hit the per-frame property cache primed in collect_status_data.
+service_display_state() {
+    case "$1" in
+        feed)   unit_state airplanes-feed.service ;;
+        mlat)   unit_state airplanes-mlat.service ;;
+        readsb) unit_state readsb.service ;;
+        uat978) _978_combined_state ;;
+        *)      printf 'unknown' ;;
+    esac
+}
+
+# Plain (uncolored) status token for a classifier. Padding/alignment runs
+# on this string; coloring wraps the result. Keeps Bash's ${#var}
+# alignment honest — ANSI escape bytes never enter the column accounting.
+svc_token_text() {
+    case "$1" in
+        ok)                            printf 'OK' ;;
+        fail)                          printf 'FAIL' ;;
+        misconfigured)                 printf '!!' ;;
+        masked)                        printf 'MASK' ;;
+        disabled|disabled-by-config)   printf 'off' ;;
+        wait)                          printf 'wait' ;;
+        idle)                          printf 'idle' ;;
+        partial)                       printf 'partial' ;;
+        *)                             printf '?' ;;
+    esac
+}
+
+# Color sequence for a classifier (use with $C_RESET to close).
+svc_token_color() {
+    case "$1" in
+        ok)                            printf '%s' "$C_OK" ;;
+        fail|misconfigured|masked)     printf '%s' "$C_FAIL" ;;
+        disabled|disabled-by-config)   printf '%s' "$C_DIM" ;;
+        wait|idle|partial)             printf '%s' "$C_WARN" ;;
+        timeout)                       printf '%s' "$C_DIM" ;;
+        *)                             printf '%s' "$C_WARN" ;;
+    esac
+}
+
+# Emit one indented row per display service to stdout. $1 is the indent
+# string (2 spaces in the full layout, matches the URL/network rows in
+# the compact layout). Labels are right-padded to SVC_LABEL_WIDTH; the
+# token is colored separately so ANSI escapes don't break the padding.
+# Worst case width for the new "partial" token (only producible by
+# uat978): 2 + 29 + 2 + 7 = 40 cells. This is 2 cells over
+# STATUS_PANEL_WIDTH but still well within the 58-cell right column in
+# the snapshot side-by-side layout (cols >= 80 - ICON_WIDTH - 2 = 58).
+display_service_rows() {
+    local indent="$1"
+    local id state token_text token_color label
+    local i
+    for (( i = 0; i < ${#SVC_DISPLAY_IDS[@]}; i++ )); do
+        id="${SVC_DISPLAY_IDS[$i]}"
+        label="${SVC_DISPLAY_LABELS[$i]}"
+        state="$(service_display_state "$id")"
+        token_text="$(svc_token_text "$state")"
+        token_color="$(svc_token_color "$state")"
+        printf '%s%-*s  %s%s%s\n' \
+            "$indent" "$SVC_LABEL_WIDTH" "$label" \
+            "$token_color" "$token_text" "$C_RESET"
+    done
 }
 
 # ---- Status-line builders. Each writes into the STATUS_LINES array. -------
@@ -999,15 +1132,11 @@ build_status_lines_full() {
     STATUS_LINES+=("$(printf '%bClaim%b       %s' "$C_BOLD" "$C_RESET" "$(claim_color "$SD_CLAIM")")")
     STATUS_LINES+=("")
 
-    local svc_row first=1 u s marker
-    svc_row="$(printf '%bServices%b    ' "$C_BOLD" "$C_RESET")"
-    for u in "${UNITS[@]}"; do
-        s="$(unit_state "$u")"
-        marker="$(svc_marker "$u" "$s")"
-        if (( first )); then first=0; else svc_row+="  "; fi
-        svc_row+="$marker"
-    done
-    STATUS_LINES+=("$svc_row")
+    STATUS_LINES+=("$(printf '%bServices%b' "$C_BOLD" "$C_RESET")")
+    local svc_line
+    while IFS= read -r svc_line; do
+        STATUS_LINES+=("$svc_line")
+    done < <(display_service_rows "  ")
     STATUS_LINES+=("")
 
     if [[ "$mode" == "snapshot" ]]; then
@@ -1096,45 +1225,32 @@ build_status_lines_compact() {
     # column budget; the compact panel doesn't.)
     STATUS_LINES+=("$(printf '%bFeeder ID%b  %s' "$C_BOLD" "$C_RESET" "$id_short")")
 
-    # Claim — colored value on its own row; for unclaimed/secret states
-    # the action hint goes on a second indented line so the panel never
-    # overflows.
+    # Claim — colored value on its own row. The MOTD intentionally drops
+    # the `sudo apl-feed claim register` action hint that used to live on
+    # the next line; first-boot users see the hint plenty of times via
+    # the webconfig + claim QR flow and don't need it on every SSH login.
     STATUS_LINES+=("$(printf '%bClaim%b      %s' "$C_BOLD" "$C_RESET" "$(claim_color_compact "$SD_CLAIM")")")
-    case "$SD_CLAIM" in
-        registered*) ;;
-        *) STATUS_LINES+=("  sudo apl-feed claim register") ;;
-    esac
 
     STATUS_LINES+=("")
 
-    # Services — header + 2-marker rows (5 services → 3 rows max).
+    # Services — header + one labelled row per display service. The
+    # uat978 row groups dump978-fa + airplanes-978 into a single
+    # user-meaningful "UAT receiver" status; see _978_combined_state.
     STATUS_LINES+=("$(printf '%bServices%b' "$C_BOLD" "$C_RESET")")
-    local row_buf="" in_row=0 u
-    for u in "${UNITS[@]}"; do
-        local marker
-        marker="$(svc_marker "$u" "$(unit_state "$u")")"
-        if (( in_row == 0 )); then
-            row_buf="  $marker"
-            in_row=1
-        else
-            row_buf+="   $marker"
-            STATUS_LINES+=("$row_buf")
-            row_buf=""
-            in_row=0
-        fi
-    done
-    [[ -n "$row_buf" ]] && STATUS_LINES+=("$row_buf")
+    local svc_line
+    while IFS= read -r svc_line; do
+        STATUS_LINES+=("$svc_line")
+    done < <(display_service_rows "  ")
     STATUS_LINES+=("")
 
     # Feed (compact never shows msgs/s — that's a live-only signal).
     # Label column width is 11, matching Feeder ID / Claim / Services /
-    # Build / System below — the panel reads as one consistent column.
+    # System below — the panel reads as one consistent column. The
+    # Build line that used to live here moved into the snapshot banner
+    # header (rendered by render_snapshot_with_header) so the version
+    # gets prime real-estate instead of competing with system stats.
     STATUS_LINES+=("$(printf '%bFeed%b       aircraft: %s' \
         "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}")")
-    # Build — single space between channel and sha so the realistic worst
-    # case ("channel=stable sha=abcdef1") still fits the 38-col panel.
-    STATUS_LINES+=("$(printf '%bBuild%b      channel=%s sha=%s' \
-        "$C_BOLD" "$C_RESET" "${SD_CHANNEL:-?}" "${SD_BUILD:-?}")")
 
     # System — split across two indented rows so a worst-case "999d 23h
     # 59m" + load + CPU never crosses 38 cols. ASCII "C" (no ° degree
@@ -1199,33 +1315,47 @@ render_banner_narrow_stack() {
     printf '%s\n' "${STATUS_LINES[@]}"
 }
 
-render_side_by_side() {
-    # 40-col logo on the left, 38-col compact status on the right, 2-col
-    # gutter. If the logo is missing/malformed, fall back to plain
-    # vertical: status only.
-    local logo=()
-    if ! load_artwork "$PATHS_LOGO" "$LOGO_WIDTH" logo; then
-        printf '%s\n' "${STATUS_LINES[@]}"
+render_snapshot_with_header() {
+    # Snapshot layout (--snapshot / --once): small ASCII icon on the left
+    # (when the terminal has room), with a 3-line header (airplanes.live
+    # / random tagline / feed version) above the compact status panel on
+    # the right. When the terminal is narrower than
+    # SNAPSHOT_ICON_MIN_COLS, the icon column is dropped and the header
+    # text stacks above the status panel.
+    local cols="$1"
+    local tagline="${TAGLINES[$TAGLINE_INDEX]}"
+    local version_line
+    version_line="$(printf 'feed sha=%s (channel=%s)' "${SD_BUILD:-?}" "${SD_CHANNEL:-?}")"
+    local header=(
+        "$(printf '%bairplanes.live%b' "$C_BOLD" "$C_RESET")"
+        "$(printf '%b%s%b' "$C_DIM" "$tagline" "$C_RESET")"
+        "$(printf '%b%s%b' "$C_DIM" "$version_line" "$C_RESET")"
+        ""
+    )
+    local right=("${header[@]}" "${STATUS_LINES[@]}")
+
+    local icon=() use_icon=0
+    if (( cols >= SNAPSHOT_ICON_MIN_COLS )) \
+        && load_artwork "$PATHS_ICON" "$ICON_WIDTH" icon; then
+        use_icon=1
+    fi
+    if (( use_icon == 0 )); then
+        printf '%s\n' "${right[@]}"
         return
     fi
-    local logo_n=${#logo[@]}
-    local status_n=${#STATUS_LINES[@]}
-    local n=$(( logo_n > status_n ? logo_n : status_n ))
-    local i pad
-    pad="$(printf '%*s' "$LOGO_WIDTH" '')"
+
+    local icon_n=${#icon[@]}
+    local right_n=${#right[@]}
+    local n=$(( icon_n > right_n ? icon_n : right_n ))
+    local pad i
+    pad="$(printf '%*s' "$ICON_WIDTH" '')"
     for (( i = 0; i < n; i++ )); do
-        if (( i < logo_n )); then
-            printf '%s%s%s  %s\n' "$C_HDR" "${logo[i]}" "$C_RESET" "${STATUS_LINES[i]:-}"
+        if (( i < icon_n )); then
+            printf '%s%s%s  %s\n' "$C_HDR" "${icon[i]}" "$C_RESET" "${right[i]:-}"
         else
-            printf '%s  %s\n' "$pad" "${STATUS_LINES[i]:-}"
+            printf '%s  %s\n' "$pad" "${right[i]:-}"
         fi
     done
-}
-
-render_vertical_compact() {
-    # Narrow-terminal fallback for snapshot/once: the logo would wrap so
-    # we drop it and print the compact status only.
-    printf '%s\n' "${STATUS_LINES[@]}"
 }
 
 render_vertical_full_with_logo() {
@@ -1267,11 +1397,7 @@ render_once() {
             ;;
         snapshot|once)
             build_status_lines_compact
-            if (( cols >= SIDE_BY_SIDE_MIN_COLS )); then
-                render_side_by_side
-            else
-                render_vertical_compact
-            fi
+            render_snapshot_with_header "$cols"
             ;;
         *)
             # Defensive fallthrough for unknown modes — render the live
