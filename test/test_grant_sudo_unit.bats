@@ -59,8 +59,16 @@ unit_get() {
     [ "$val" = "!/var/lib/airplanes/grant-sudo-done" ]
 }
 
-@test "WantedBy=multi-user.target" {
-    [ "$(unit_get WantedBy)" = "multi-user.target" ]
+@test "WantedBy=cloud-init.target (NOT multi-user.target)" {
+    # WantedBy=multi-user.target combined with After=cloud-final.service
+    # forms an ordering cycle that systemd silently breaks by dropping us
+    # from the boot transaction:
+    #   grant-sudo  Before multi-user.target   (implicit, oneshot WantedBy=)
+    #   multi-user  Before cloud-final.service (cloud-final After=multi-user)
+    #   cloud-final Before grant-sudo          (our After=cloud-final.service)
+    # cloud-init.target activates after cloud-final and is itself
+    # WantedBy=multi-user.target, so it's the correct phase to hook into.
+    [ "$(unit_get WantedBy)" = "cloud-init.target" ]
 }
 
 # ---- ordering -------------------------------------------------------------
@@ -70,12 +78,13 @@ unit_get() {
     [[ "$val" == *"cloud-final.service"* ]]
 }
 
-@test "Wants= includes cloud-final.service" {
-    # Wants=, not Requires=: if cloud-final fails for any reason we still
-    # want our oneshot to attempt the grant (e.g. against a pi-gen-baked
-    # human account on an image flashed without rpi-imager customisation).
-    val="$(unit_get Wants)"
-    [[ "$val" == *"cloud-final.service"* ]]
+@test "no Wants=cloud-final.service (cycle-prone)" {
+    # cloud-init.target already pulls cloud-final.service into its
+    # transaction. An explicit Wants= here is redundant and historically
+    # paired with WantedBy=multi-user.target to produce the ordering cycle
+    # documented above — keep it out so a future re-introduction of either
+    # half doesn't silently re-form the loop.
+    ! grep -qE '^Wants=.*cloud-final\.service' "$UNIT"
 }
 
 # ---- script ↔ unit consistency -------------------------------------------

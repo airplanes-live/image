@@ -1,0 +1,11 @@
+[Unit]
+# CI stub. Real /lib/systemd/system/multi-user.target is shipped by
+# systemd. This stub exists so the systemd-verify job can resolve
+# After=/Before= edges that pass through multi-user.target — in
+# particular the cloud-final.service After=multi-user.target edge that
+# previously formed a 3-cycle with airplanes-grant-sudo.service.
+Description=Multi-User System (CI stub)
+Requires=basic.target
+Conflicts=rescue.service rescue.target
+After=basic.target rescue.service rescue.target
+AllowIsolate=yes

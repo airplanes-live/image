@@ -240,10 +240,10 @@ jobs:
           sudo install -m 0644 \
             stage-airplanes/06c-grant-sudo/files/etc/systemd/system/airplanes-grant-sudo.service \
             /etc/systemd/system/
-          # The unit Wants=cloud-final.service. On hosted runners cloud-init
-          # is preinstalled but its datasource detection generally fails, so
-          # cloud-final.service is inactive — Wants= will pull it in but
-          # not block on it (and failures don't propagate to our unit).
+          # This job exercises the runtime behavior via `systemctl start`,
+          # which bypasses the boot-time ordering graph. Cycle detection
+          # through the cloud-init chain is covered by the systemd-verify
+          # job, which loads stub cloud-init units alongside ours.
           sudo systemctl daemon-reload
 
       - name: Create synthetic operator user
@@ -492,6 +492,66 @@ jobs:
               graphs1090.service \
               airplanes-webconfig.service \
               airplanes-webconfig-reset.service
+
+      - name: Verify no boot-ordering cycle through cloud-init
+        # Dedicated cycle check for airplanes-grant-sudo.service. The main
+        # systemd-analyze verify above uses --recursive-errors=no, which
+        # silences "unit not found" warnings but ALSO prevents cycle
+        # detection because the missing-unit edges are dropped from the
+        # graph. Here we build a small isolated root with just enough
+        # systemd targets + cloud-init stubs to make the dependency graph
+        # complete around grant-sudo, then run a strict verify.
+        #
+        # Regression caught: an earlier version had
+        # WantedBy=multi-user.target on grant-sudo, which combined with
+        # cloud-final.service After=multi-user.target to form a 3-cycle
+        # that systemd silently broke by dropping grant-sudo from the
+        # boot transaction. The fix is WantedBy=cloud-init.target; this
+        # step makes systemd-analyze the gatekeeper.
+        run: |
+          set -e
+          CYCLE_ROOT="$RUNNER_TEMP/cycle-root"
+          mkdir -p "$CYCLE_ROOT/etc/systemd/system" \
+                   "$CYCLE_ROOT/usr/local/sbin" \
+                   "$CYCLE_ROOT/bin"
+          install -m 0644 \
+              stage-airplanes/06c-grant-sudo/files/etc/systemd/system/airplanes-grant-sudo.service \
+              "$CYCLE_ROOT/etc/systemd/system/"
+          install -m 0644 test/systemd-verify-stubs/multi-user.target \
+              "$CYCLE_ROOT/etc/systemd/system/multi-user.target"
+          install -m 0644 test/systemd-verify-stubs/cloud-init.target \
+              "$CYCLE_ROOT/etc/systemd/system/cloud-init.target"
+          install -m 0644 test/systemd-verify-stubs/cloud-final.service \
+              "$CYCLE_ROOT/etc/systemd/system/cloud-final.service"
+          # Minimal stubs for the standard targets pulled in by
+          # DefaultDependencies=yes. Without these systemd-analyze
+          # short-circuits before the cycle walker runs.
+          for t in basic.target sysinit.target shutdown.target rescue.target; do
+              printf '[Unit]\nDescription=%s (CI stub)\n' "$t" \
+                  > "$CYCLE_ROOT/etc/systemd/system/$t"
+          done
+          printf '[Unit]\nDescription=Rescue (CI stub)\n[Service]\nType=oneshot\nExecStart=/bin/true\n' \
+              > "$CYCLE_ROOT/etc/systemd/system/rescue.service"
+          # Materialize [Install] WantedBy= relationships as wants/
+          # symlinks so the dep graph reflects what `systemctl enable`
+          # would create at install time.
+          mkdir -p "$CYCLE_ROOT/etc/systemd/system/multi-user.target.wants" \
+                   "$CYCLE_ROOT/etc/systemd/system/cloud-init.target.wants"
+          ln -sf ../cloud-init.target \
+              "$CYCLE_ROOT/etc/systemd/system/multi-user.target.wants/cloud-init.target"
+          ln -sf ../cloud-final.service \
+              "$CYCLE_ROOT/etc/systemd/system/cloud-init.target.wants/cloud-final.service"
+          ln -sf ../airplanes-grant-sudo.service \
+              "$CYCLE_ROOT/etc/systemd/system/cloud-init.target.wants/airplanes-grant-sudo.service"
+          install -m 0755 /bin/true "$CYCLE_ROOT/bin/true"
+          install -m 0755 /dev/null "$CYCLE_ROOT/usr/local/sbin/airplanes-grant-sudo"
+          # Strict verify (no --recursive-errors=no): every referenced
+          # unit must be loadable, and any ordering cycle fails the run.
+          systemd-analyze verify --root="$CYCLE_ROOT" \
+              airplanes-grant-sudo.service \
+              cloud-final.service \
+              cloud-init.target \
+              multi-user.target
 
   feed-update-regression:
     runs-on: ubuntu-24.04

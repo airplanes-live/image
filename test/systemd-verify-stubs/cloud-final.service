@@ -1,0 +1,18 @@
+[Unit]
+# CI stub mirroring Debian's /lib/systemd/system/cloud-final.service.
+# The After=multi-user.target edge is the one that, paired with
+# WantedBy=multi-user.target on airplanes-grant-sudo.service + our
+# After=cloud-final.service, formed the boot-time ordering cycle that
+# systemd silently broke by dropping grant-sudo. Keep this stub aligned
+# with what cloud-init ships — that's what makes systemd-analyze verify
+# capable of catching a regression here.
+Description=Cloud-init: Final Stage (CI stub)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+RemainAfterExit=yes
+
+[Install]
+WantedBy=cloud-init.target
