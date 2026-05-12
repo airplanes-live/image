@@ -40,11 +40,16 @@ else (besides sshd's own `Last login:` line, which is out of scope).
   `--live` (loop, double-buffered repaint every 5s; used by the systemd
   unit), `--once` (one-shot with screen clear).
 - `/usr/local/share/airplanes/logo.txt` — 40×22 plane-badge artwork
-  used in the SSH/TTY2 side-by-side layout (and as the narrow-terminal
-  fallback for `--live`).
+  used in the SSH/TTY2 side-by-side layout (and as the last-resort
+  `--live` fallback when even the narrow banner won't fit).
 - `/usr/local/share/airplanes/banner.txt` — 135×20 banner artwork
   (badge + "airplanes.live" wordmark) used at the top of the HDMI
-  dashboard.
+  dashboard on wide displays.
+- `/usr/local/share/airplanes/banner-narrow.txt` — 74×11 compact
+  banner (badge + "airplanes.live" wordmark) used at the top of the
+  HDMI dashboard when the framebuffer console is too narrow for the
+  wide banner. Fits any ≥720p HDMI output at the default 8×16 kernel
+  console font.
 - `/etc/systemd/system/airplanes-dashboard.service` — owns `/dev/tty1`,
   `Conflicts=getty@tty1.service`, `WantedBy=multi-user.target`.
 - `/etc/systemd/system/getty@tty1.service.d/override.conf` —
@@ -74,22 +79,27 @@ available.
 
 ## Layout dispatch
 
-The renderer picks one of two layouts based on mode, with a runtime
-width guard so under-sized terminals degrade rather than wrap:
+The renderer picks a layout based on mode and a runtime width guard so
+under-sized terminals degrade rather than wrap:
 
-| Mode         | Wide enough                          | Narrow fallback                        |
-|--------------|--------------------------------------|----------------------------------------|
-| `--live`     | banner (`banner.txt`, 135 cols) on top, full status below (≥ 135 cols) | small logo on top, full status below (< 135 cols) |
-| `--snapshot` | logo (`logo.txt`, 40 cols) on the left, 38-col compact status panel on the right (≥ 80 cols) | compact status only, no logo (< 80 cols) |
-| `--once`     | same as `--snapshot`                 | same as `--snapshot`                   |
+| Mode         | ≥ 135 cols                            | ≥ 74 cols                                       | ≥ 80 cols                                       | < threshold                              |
+|--------------|---------------------------------------|-------------------------------------------------|-------------------------------------------------|------------------------------------------|
+| `--live`     | wide `banner.txt` (135 cols) on top, full status below | `banner-narrow.txt` (74 cols) on top, full status below | —                                               | small `logo.txt` (40 cols) on top, full status below |
+| `--snapshot` | —                                     | —                                               | `logo.txt` (40 cols) on the left, 38-col compact status panel on the right | compact status only, no logo |
+| `--once`     | same as `--snapshot`                  | same as `--snapshot`                            | same as `--snapshot`                            | same as `--snapshot`                     |
 
-`term_cols()` reports `tput cols` when stdout is a TTY, else 80. The
-update-motd.d hook is captured by `pam_motd` (no TTY on stdout), so it
-deterministically uses the 80-col path.
+`term_cols()` reports `tput cols` when stdout is a TTY and `TERM` is
+set, else 80. The update-motd.d hook is captured by `pam_motd` (no TTY
+on stdout), so it deterministically uses the 80-col path. The
+`airplanes-dashboard.service` unit sets `Environment=TERM=linux` so the
+TTY1 renderer can actually measure the framebuffer console width
+(systemd services start with no `TERM` by default, which would make
+`tput` fail the terminfo lookup and force a permanent 80-col fallback).
 
-If `banner.txt` fails to load (missing, CRLF, or wrong width),
-`--live` falls back to the small logo. If `logo.txt` also fails, the
-art is skipped and only the status block prints.
+If an artwork file fails to load (missing, CRLF, or wrong width), the
+`--live` dispatcher walks the chain `banner.txt → banner-narrow.txt →
+logo.txt → no-art` so a missing or malformed file never breaks the
+dashboard.
 
 ## Charset note
 
@@ -104,8 +114,9 @@ and fully readable.
 
 The committed `logo.txt` and `banner.txt` were rendered from
 `https://www.airplanes.live/img/airplanes-live-logo.png` (1029×287 PNG)
-with `chafa` and hand-trimmed. Both files are shipped verbatim — no
-runtime image-conversion dependency.
+with `chafa` and hand-trimmed. `banner-narrow.txt` was hand-built from
+the same source. All three files are shipped verbatim — no runtime
+image-conversion dependency.
 
 To regenerate when the upstream logo changes:
 
@@ -125,6 +136,11 @@ chafa --symbols=block --bg=none --size=40x22 \
 chafa --symbols=block --bg=none --size=135x20 \
     /tmp/aplogo.png \
     > files/usr/local/share/airplanes/banner.txt
+
+# banner-narrow.txt — 74 cols × 11 rows, badge + wordmark sized to fit
+# any ≥720p HDMI output at the default 8×16 kernel console font.
+# Hand-trimmed; chafa's --size output usually needs manual cleanup at
+# this aspect ratio.
 ```
 
 Constraints, enforced by `load_artwork` in the renderer:
@@ -133,9 +149,12 @@ Constraints, enforced by `load_artwork` in the renderer:
   file has at least one line.
 - Each line in `banner.txt` is exactly **135 display columns** wide;
   the file has at least one line.
+- Each line in `banner-narrow.txt` is exactly **74 display columns**
+  wide; the file has at least one line.
 - No CRLF (LF only).
 - Trailing whitespace **must be preserved** so each line is padded to
   the expected width — do **not** run `sed 's/[[:space:]]*$//'`.
 
 If a regenerated file violates any of these, the renderer falls back
-silently (banner→logo→no-art) so SSH login is never broken.
+silently (banner → narrow banner → logo → no-art) so the dashboard
+keeps rendering.

@@ -14,6 +14,12 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
+# TERM=linux: systemd starts services with no TERM in the environment, so
+# `tput cols` in the renderer fails the terminfo lookup and falls back to
+# the 80-col default — which then trips the narrow-banner fallback even on
+# 1080p HDMI. The framebuffer console is always the `linux` terminal type,
+# so this is the correct value.
+Environment=TERM=linux
 # sleep: coarse grace for late kmsg (USB enumeration, rfkill, NM late events)
 # that arrives after multi-user.target. Generous; multi-user→quiet is sub-
 # second in practice but the budget is free.

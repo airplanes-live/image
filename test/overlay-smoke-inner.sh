@@ -571,6 +571,9 @@ echo "==> 06b post-install assertions"
 [[ -s /usr/local/share/airplanes/banner.txt ]] || fail "banner.txt missing or empty"
 [[ "$(stat -c %a /usr/local/share/airplanes/banner.txt)" == "644" ]] \
     || fail "banner.txt mode != 0644"
+[[ -s /usr/local/share/airplanes/banner-narrow.txt ]] || fail "banner-narrow.txt missing or empty"
+[[ "$(stat -c %a /usr/local/share/airplanes/banner-narrow.txt)" == "644" ]] \
+    || fail "banner-narrow.txt mode != 0644"
 [[ -f /etc/systemd/system/airplanes-dashboard.service ]] \
     || fail "airplanes-dashboard.service missing"
 [[ -f /etc/systemd/system/getty@tty1.service.d/override.conf ]] \
@@ -597,6 +600,10 @@ grep -q '^ExecStartPre=/usr/bin/sleep 6$' /etc/systemd/system/airplanes-dashboar
 grep -Eq '^ExecStartPre=-/usr/bin/setterm .*--clear all.*--msg off' \
     /etc/systemd/system/airplanes-dashboard.service \
     || fail "dashboard service missing ExecStartPre=-/usr/bin/setterm with --clear all and --msg off"
+# Without TERM=linux, render-status' `tput cols` fails the terminfo lookup
+# and the dispatcher falls back to the 80-col default even on wide HDMI.
+grep -q '^Environment=TERM=linux$' /etc/systemd/system/airplanes-dashboard.service \
+    || fail "dashboard service missing Environment=TERM=linux"
 [[ -x /usr/bin/setterm ]] || fail "/usr/bin/setterm missing (util-linux base assumption)"
 
 # Getty@tty1 must be masked (symlinked to /dev/null) and NOT in

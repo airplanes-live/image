@@ -10,6 +10,7 @@ setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/lib/airplanes/render-status"
     LOGO="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/logo.txt"
     BANNER="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/banner.txt"
+    BANNER_NARROW="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/banner-narrow.txt"
     TMP="$(mktemp -d)"
 
     # All PATHS_* default to /nonexistent so an un-overridden test gets the
@@ -26,6 +27,7 @@ setup() {
     export PATHS_THERMAL="$TMP/nx-thermal"
     export PATHS_LOGO="$LOGO"
     export PATHS_BANNER="$BANNER"
+    export PATHS_BANNER_NARROW="$BANNER_NARROW"
     # State-file paths default to non-existent so the defensive
     # `airplanes_read_state() { return 1; }` stub kicks in. Tests that
     # exercise the state-file path call `setup_mlat_state_test_env` to
@@ -1123,12 +1125,40 @@ EOF
     [[ "$out" == *status-marker* ]]
 }
 
-@test "render_banner_stack: missing banner falls back to small logo" {
+@test "render_banner_stack: missing wide banner falls back to narrow banner" {
     PATHS_BANNER="$TMP/nx-banner"
     declare -a STATUS_LINES=("status-marker")
     out="$(render_banner_stack)"
     width="$(printf '%s' "$out" | strip_ansi | max_display_width)"
+    # Narrow banner is BANNER_NARROW_WIDTH=74 cells wide.
+    [ "$width" = "74" ]
+    [[ "$out" == *status-marker* ]]
+}
+
+@test "render_banner_stack: missing wide+narrow banner falls back to logo" {
+    PATHS_BANNER="$TMP/nx-banner"
+    PATHS_BANNER_NARROW="$TMP/nx-banner-narrow"
+    declare -a STATUS_LINES=("status-marker")
+    out="$(render_banner_stack)"
+    width="$(printf '%s' "$out" | strip_ansi | max_display_width)"
     # Logo is LOGO_WIDTH=40 cells wide.
+    [ "$width" = "40" ]
+    [[ "$out" == *status-marker* ]]
+}
+
+@test "render_banner_narrow_stack: emits 74-col banner lines + status content" {
+    declare -a STATUS_LINES=("status-marker")
+    out="$(render_banner_narrow_stack)"
+    width="$(printf '%s' "$out" | strip_ansi | max_display_width)"
+    [ "$width" = "74" ]
+    [[ "$out" == *status-marker* ]]
+}
+
+@test "render_banner_narrow_stack: missing narrow banner falls back to logo" {
+    PATHS_BANNER_NARROW="$TMP/nx-banner-narrow"
+    declare -a STATUS_LINES=("status-marker")
+    out="$(render_banner_narrow_stack)"
+    width="$(printf '%s' "$out" | strip_ansi | max_display_width)"
     [ "$width" = "40" ]
     [[ "$out" == *status-marker* ]]
 }
@@ -1144,10 +1174,11 @@ EOF
     [[ "$output" == *Build* ]]
 }
 
-@test "live with missing banner: dispatch keeps narrow vertical layout" {
-    # In bats `run` term_cols=80, so the dispatcher takes
-    # render_vertical_full_with_logo regardless of banner presence. The
-    # banner-missing path is exercised directly above; here we just
+@test "live with missing banner: dispatch keeps narrow tier" {
+    # In bats `run` term_cols=80 (no TTY), so the dispatcher takes
+    # render_banner_narrow_stack (cols >= BANNER_NARROW_WIDTH but
+    # < BANNER_WIDTH) regardless of wide-banner presence. The narrow
+    # banner is loaded from the real shipped fixture; here we just
     # confirm --live with a missing banner.txt still produces a clean
     # frame (no crash, no stderr leak).
     PATHS_BANNER="$TMP/nx-missing-banner"
