@@ -6,14 +6,25 @@
 # for consumers (apl-feed status, render-status, webconfig dashboard).
 #
 # Decision matrix (state, reason):
-#   UAT_INPUT == ""                                → disabled, uat_disabled        (exit 64)
-#   UAT_INPUT == "127.0.0.1:30978" + no matching SDR → disabled, no_hardware       (exit 64)
+#   UAT_INPUT == ""                                → disabled, uat_disabled        (sleep + exit 0)
+#   UAT_INPUT == "127.0.0.1:30978" + no matching SDR → disabled, no_hardware       (sleep + exit 0)
 #   UAT_INPUT == "127.0.0.1:30978" + matching SDR    → enabled, ok                 (exec daemon)
 #   anything else                                  → misconfigured, uat_input_invalid (exit 64)
 #
-# Exit 64 paired with RestartPreventExitStatus=64 in the unit file marks
-# the service failed terminal so systemd does not restart-loop on the
-# self-disable. Symmetric with airplanes-mlat.sh / airplanes-978.sh.
+# Disabled states sleep then exit 0 so systemd reports the unit as active
+# (matching airplanes-mlat.sh's pattern) instead of failed; Restart=always
+# in the unit re-runs us after the sleep so a hot-plug picks up on the
+# next cycle. The state file is written before the sleep, so consumers
+# see the decision immediately. Misconfigured keeps exit 64 paired with
+# RestartPreventExitStatus=64 so real operator errors surface as failed
+# in `systemctl status` instead of being silently masked.
+#
+# Sleep durations are tuned per reason: no_hardware uses a short cycle
+# so plugging in the 978 SDR is auto-picked up within ~60s; uat_disabled
+# uses a long cycle (there's nothing to poll for). Both are env-overridable
+# for the bats suite — DUMP978_FA_DISABLED_SLEEP / DUMP978_FA_NO_HARDWARE_SLEEP
+# are test-only knobs (do not set in feed.env: 0 would create a restart
+# storm with Restart=always).
 #
 # Hardware probe is intentionally non-mutating: reads /sys/bus/usb/devices/*/serial
 # rather than invoking `rtl_eeprom -s` (which is a *setter* — running it would
@@ -38,6 +49,11 @@ DUMP978_JSON_BIND="${DUMP978_JSON_BIND:-127.0.0.1}"
 # Probe override: glob expanded for USB serial files. Tests point this at a
 # temp dir; production reads /sys/bus/usb/devices/*/serial.
 : "${DUMP978_FA_USB_SERIAL_GLOB:=/sys/bus/usb/devices/*/serial}"
+# Test-only sleep overrides — see the header comment. Default values keep
+# production behaviour; bats sets these to 0 so wrapper invocations return
+# promptly. Don't override in feed.env: 0 + Restart=always = restart storm.
+: "${DUMP978_FA_DISABLED_SLEEP:=3600}"
+: "${DUMP978_FA_NO_HARDWARE_SLEEP:=60}"
 
 STATE_FILE="$DUMP978_FA_RUNTIME_DIR/state"
 
@@ -104,13 +120,15 @@ case "$STATE" in
         case "$REASON" in
             uat_disabled)
                 echo "UAT disabled (UAT_INPUT empty); not starting dump978-fa." >&2
+                sleep "$DUMP978_FA_DISABLED_SLEEP"
                 ;;
             no_hardware)
                 printf 'No RTL-SDR with serial=%q present; not starting dump978-fa.\n' \
                     "$DUMP978_SDR_SERIAL" >&2
+                sleep "$DUMP978_FA_NO_HARDWARE_SLEEP"
                 ;;
         esac
-        exit 64
+        exit 0
         ;;
     misconfigured)
         printf 'UAT_INPUT=%q invalid; must be "" or "127.0.0.1:30978".\n' "$UAT_INPUT" >&2

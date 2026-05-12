@@ -9,14 +9,18 @@ EnvironmentFile=-/etc/airplanes/feed.env
 User=readsb
 RuntimeDirectory=airplanes-978
 RuntimeDirectoryMode=0755
-# Wrapper writes /run/airplanes-978/state and exits 64 when UAT_INPUT is empty
-# or invalid. Preserve=yes keeps the state file across the resulting failed
-# terminal state so /api/status can read decision=disabled after the daemon
-# self-disabled. (Symmetric with airplanes-mlat.service.)
+# Wrapper writes /run/airplanes-978/state, then either execs airplanes-978,
+# sleeps for uat_disabled (exit 0, unit stays active), or exits 64 when
+# UAT_INPUT is invalid. Preserve=yes keeps the state file across wrapper
+# re-runs so /api/status can keep reading decision=disabled. Symmetric
+# with airplanes-mlat.service.
 RuntimeDirectoryPreserve=yes
 ExecStart=/usr/local/share/airplanes/airplanes-978.sh
 Restart=always
 RestartSec=15
+# Misconfigured-input branch in the wrapper exits 64; this prevents systemd
+# from restart-looping every 15s into the same misconfig. Disabled branch
+# exits 0 after a sleep so the unit reports active.
 RestartPreventExitStatus=64
 Nice=-5
 

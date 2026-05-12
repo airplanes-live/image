@@ -5,15 +5,20 @@
 # (apl-feed status, render-status, webconfig dashboard).
 #
 # Decision matrix (state, reason):
-#   UAT_INPUT == ""              → disabled, uat_disabled       (exit 64)
+#   UAT_INPUT == ""              → disabled, uat_disabled       (sleep + exit 0)
 #   UAT_INPUT == "127.0.0.1:30978" + peer (dump978-fa) is idle for no_hardware
 #                                → enabled, peer_no_hardware    (exec daemon, relay idle)
 #   UAT_INPUT == "127.0.0.1:30978" → enabled, ok                (exec daemon)
 #   anything else                → misconfigured, uat_input_invalid (exit 64)
 #
-# Exit 64 paired with RestartPreventExitStatus=64 in the unit file marks
-# the service failed terminal so systemd does not restart-loop on the
-# self-disable. Symmetric with airplanes-mlat.sh.
+# The uat_disabled branch sleeps then exits 0 so systemd reports the unit
+# as active (matching airplanes-mlat.sh's pattern) instead of failed; the
+# state file is written before the sleep so consumers see the decision
+# immediately. Misconfigured keeps exit 64 paired with RestartPreventExitStatus=64
+# so real operator errors surface in `systemctl status`.
+#
+# AIRPLANES_978_DISABLED_SLEEP is a test-only knob (bats sets it to 0).
+# Do not set in feed.env: 0 + Restart=always = restart storm.
 #
 # The peer_no_hardware reason exists so the dashboard can honestly say
 # "relay is up but there's no local decoder feeding it" instead of the
@@ -34,6 +39,9 @@ UAT_INPUT="${UAT_INPUT-}"
 : "${STATE_WRITER_LIB:=/usr/local/share/airplanes/lib/state-writer.sh}"
 : "${STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
 : "${DUMP978_FA_STATE_FILE:=/run/dump978-fa/state}"
+# Test-only sleep override. Bats sets to 0 so wrapper invocations return
+# promptly. Not for feed.env (see header comment).
+: "${AIRPLANES_978_DISABLED_SLEEP:=3600}"
 
 STATE_FILE="$AIRPLANES_978_RUNTIME_DIR/state"
 
@@ -60,8 +68,8 @@ fi
 mkdir -p "$AIRPLANES_978_RUNTIME_DIR"
 
 # Clean stale lighttpd-served outputs before deciding. RuntimeDirectoryPreserve=yes
-# keeps the state file across the failed terminal state (so consumers can read
-# decision=disabled), but we don't want to keep serving stale aircraft.json
+# keeps the state file across the sleep so consumers can read
+# decision=disabled, but we don't want to keep serving stale aircraft.json
 # from a previous enabled-run after the user disables UAT. The binary rewrites
 # these on every poll when UAT is enabled, so the gap is bounded.
 rm -f "$AIRPLANES_978_RUNTIME_DIR"/*.json
@@ -104,7 +112,8 @@ airplanes_write_state "$STATE_FILE" \
 case "$STATE" in
     disabled)
         echo "UAT disabled (UAT_INPUT empty); not starting airplanes-978." >&2
-        exit 64
+        sleep "$AIRPLANES_978_DISABLED_SLEEP"
+        exit 0
         ;;
     misconfigured)
         printf 'UAT_INPUT=%q invalid; must be "" or "127.0.0.1:30978".\n' "$UAT_INPUT" >&2

@@ -51,9 +51,10 @@ adduser readsb dialout || true
 # readsb writes heatmap + coverage history here (--write-globe-history); tar1090 reads it.
 install -d -m 0755 -o readsb -g readsb /var/globe_history
 
-# 4. Enable services. 978 units always-enabled and self-disable via exit 64
-# when UAT_INPUT is empty/invalid (parallel to airplanes-mlat). UAT_INPUT
-# lands in /etc/airplanes/feed.env via webconfig (the boot config no longer
-# touches operational keys); the wrappers read it and decide.
+# 4. Enable services. 978 units always-enabled; when UAT_INPUT is empty
+# the wrappers publish a disabled decision file and sleep so the unit
+# stays active (parallel to airplanes-mlat). Invalid UAT_INPUT exits 64
+# and surfaces as failed. UAT_INPUT lands in /etc/airplanes/feed.env via
+# webconfig (the boot config no longer touches operational keys).
 systemctl enable readsb.service
 systemctl enable dump978-fa.service airplanes-978.service

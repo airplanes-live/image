@@ -3,12 +3,15 @@
 # Tests for airplanes-978.sh — the UAT relay wrapper. The wrapper reads
 # UAT_INPUT from the EnvironmentFile-loaded env, classifies into
 # enabled / disabled / misconfigured, writes /run/airplanes-978/state via
-# state-writer.sh, and either execs the daemon or exits 64.
+# state-writer.sh, and either execs the daemon, sleeps (uat_disabled →
+# exit 0, unit stays active), or exits 64 (misconfigured input).
 #
 # Test hooks consumed:
-#   AIRPLANES_978_RUNTIME_DIR — state file path + cleanup target
-#   AIRPLANES_978_BIN          — binary stub (avoids real /usr/bin/airplanes-978)
-#   STATE_WRITER_LIB           — points at the source-tree state-writer.sh
+#   AIRPLANES_978_RUNTIME_DIR    — state file path + cleanup target
+#   AIRPLANES_978_BIN            — binary stub (avoids real /usr/bin/airplanes-978)
+#   STATE_WRITER_LIB             — points at the source-tree state-writer.sh
+#   AIRPLANES_978_DISABLED_SLEEP — set to 0 by setup() so the wrapper
+#                                  returns promptly from the disabled branch
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/02-install-decoder/files/usr/local/share/airplanes/airplanes-978.sh"
@@ -84,11 +87,17 @@ exit 0
 EOF
     chmod +x "$AIRPLANES_978_BIN"
 
+    # Bypass the uat_disabled sleep so the wrapper returns promptly. 0 is
+    # test-only; in production it would create a restart storm under
+    # Restart=always.
+    AIRPLANES_978_DISABLED_SLEEP=0
+
     export AIRPLANES_978_RUNTIME_DIR
     export AIRPLANES_978_BIN
     export STATE_WRITER_LIB
     export STATE_READER_LIB
     export DUMP978_FA_STATE_FILE
+    export AIRPLANES_978_DISABLED_SLEEP
 }
 
 # Helper: write a peer state file with the given state/reason. Used to
@@ -117,11 +126,11 @@ run_wrapper() {
     fi
 }
 
-# ---- UAT_INPUT="" → state=disabled, exit 64 -------------------------------
+# ---- UAT_INPUT="" → state=disabled, sleep + exit 0 -----------------------
 
-@test "01: UAT_INPUT empty → state=disabled reason=uat_disabled, exit 64" {
+@test "01: UAT_INPUT empty → state=disabled reason=uat_disabled, exit 0" {
     run_wrapper ""
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     [ -f "$AIRPLANES_978_RUNTIME_DIR/state" ]
     grep -Fxq 'schema_version=1' "$AIRPLANES_978_RUNTIME_DIR/state"
     grep -Fxq 'state=disabled' "$AIRPLANES_978_RUNTIME_DIR/state"
@@ -136,7 +145,7 @@ run_wrapper() {
 @test "03: UAT_INPUT unset → treated as empty (state=disabled)" {
     # Use env -u to actually unset the var, distinguishing "" from absent.
     run env -u UAT_INPUT bash "$SCRIPT"
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     grep -Fxq 'state=disabled' "$AIRPLANES_978_RUNTIME_DIR/state"
 }
 
@@ -202,7 +211,7 @@ run_wrapper() {
     : > "$AIRPLANES_978_RUNTIME_DIR/stats.json"
 
     run_wrapper ""
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     [ ! -e "$AIRPLANES_978_RUNTIME_DIR/aircraft.json" ]
     [ ! -e "$AIRPLANES_978_RUNTIME_DIR/receiver.json" ]
     [ ! -e "$AIRPLANES_978_RUNTIME_DIR/stats.json" ]
@@ -212,7 +221,7 @@ run_wrapper() {
     : > "$AIRPLANES_978_RUNTIME_DIR/aircraft.json"
 
     run_wrapper ""
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     [ -f "$AIRPLANES_978_RUNTIME_DIR/state" ]
     [ ! -e "$AIRPLANES_978_RUNTIME_DIR/aircraft.json" ]
 }
@@ -241,10 +250,10 @@ run_wrapper() {
 
 @test "16: missing state-writer lib → wrapper still self-disables (defensive)" {
     STATE_WRITER_LIB="/nonexistent/state-writer.sh" run_wrapper ""
-    [ "$status" -eq 64 ]
-    # State file is NOT written (no library to write it), but the daemon
-    # correctly self-disables — degrades to systemd-only rendering, which
-    # is the documented fallback.
+    [ "$status" -eq 0 ]
+    # State file is NOT written (no library to write it), but the wrapper
+    # correctly skips the daemon exec and sleeps out the disabled branch —
+    # degrades to systemd-only rendering, which is the documented fallback.
     [ ! -e "$AIRPLANES_978_RUNTIME_DIR/state" ]
 }
 
@@ -304,6 +313,6 @@ run_wrapper() {
     # when its OWN classification says disabled.
     write_peer_state disabled no_hardware
     run_wrapper ""
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     grep -Fxq 'reason=uat_disabled' "$AIRPLANES_978_RUNTIME_DIR/state"
 }
