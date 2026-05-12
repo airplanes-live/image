@@ -54,6 +54,15 @@ install -D -m 0644 files/etc/systemd/system/airplanes-webconfig-reset.service \
 install -D -m 0755 files/usr/local/lib/airplanes-webconfig/reset \
 	"${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig/reset"
 
+# Shared Wi-Fi predicate + keyfile-writer libraries. Sourced by both
+# /usr/local/sbin/airplanes-first-run (boot-config flow, stage 06) and the
+# forthcoming /usr/local/bin/apl-wifi (webconfig flow). Installed at 0644 —
+# they are sourced via `.` not exec'd, and root reads them on every boot.
+install -D -m 0644 files/usr/local/lib/airplanes/wifi-validators.sh \
+	"${ROOTFS_DIR}/usr/local/lib/airplanes/wifi-validators.sh"
+install -D -m 0644 files/usr/local/lib/airplanes/wifi-keyfile.sh \
+	"${ROOTFS_DIR}/usr/local/lib/airplanes/wifi-keyfile.sh"
+
 # Sudoers entries — installed at 0440 in the chroot step so visudo
 # accepts them at runtime.
 install -D -m 0644 files/etc/sudoers.d/010_airplanes-webconfig \
