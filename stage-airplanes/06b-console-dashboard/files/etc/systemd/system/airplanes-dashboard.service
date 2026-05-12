@@ -1,0 +1,58 @@
+[Unit]
+Description=airplanes.live console dashboard on /dev/tty1
+Documentation=https://github.com/airplanes-live/image
+ConditionPathExists=/dev/tty1
+Conflicts=getty@tty1.service
+# Defer until the system has reached a steady state: boot/systemd output is
+# done, so the handoff to the dashboard is on a clean screen rather than
+# painting over a half-printed boot log.
+After=multi-user.target systemd-vconsole-setup.service systemd-user-sessions.service
+After=airplanes-first-run.service
+# Crashloop guard (StartLimit* belong in [Unit], not [Service]).
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# TERM=linux: systemd starts services with no TERM in the environment, so
+# `tput cols` in the renderer fails the terminfo lookup and falls back to
+# the 80-col default — which then trips the narrow-banner fallback even on
+# 1080p HDMI. The framebuffer console is always the `linux` terminal type,
+# so this is the correct value.
+Environment=TERM=linux
+# sleep: coarse grace for late kmsg (USB enumeration, rfkill, NM late events)
+# that arrives after multi-user.target. Generous; multi-user→quiet is sub-
+# second in practice but the budget is free.
+ExecStartPre=/usr/bin/sleep 6
+# `-` prefix → best-effort. setterm clears whatever boot output reached the
+# VT and disables kernel printk-on-VT for tty1 only (`--msg off` is per-VT,
+# so the serial console on serial0,115200 is unaffected). A failure here
+# does not block the dashboard from starting.
+ExecStartPre=-/usr/bin/setterm --term linux --clear all --msg off
+ExecStart=/usr/local/lib/airplanes/render-status --live
+Restart=on-failure
+RestartSec=10s
+
+# Own /dev/tty1 like a getty does. We never read input — render-status only
+# writes — but TTYPath ensures we get the VT cleanly on every restart.
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+# Hardening — only what's safe for a script that needs /dev/tty1 (rules out
+# PrivateDevices=yes) and netlink (rules out RestrictAddressFamilies=AF_UNIX).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

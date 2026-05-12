@@ -13,3 +13,15 @@ ln -sf airplanes-systemctl-stub "${ROOTFS_DIR}/usr/local/sbin/service"
 ln -sf airplanes-systemctl-stub "${ROOTFS_DIR}/usr/local/sbin/deb-systemd-invoke"
 
 install -d -m 755 "${ROOTFS_DIR}/etc/airplanes"
+
+# Record pi-gen HEAD SHA for the build manifest. `-dirty` flags local builds
+# with uncommitted changes; CI runners always have clean checkouts.
+{
+	if sha="$(git -C "${BASE_DIR}" rev-parse HEAD 2>/dev/null)" && [[ -n "$sha" ]]; then
+		suffix=""
+		git -C "${BASE_DIR}" diff-index --quiet HEAD -- 2>/dev/null || suffix="-dirty"
+		printf '%s%s\n' "$sha" "$suffix"
+	else
+		printf 'unknown\n'
+	fi
+} > "${ROOTFS_DIR}/etc/airplanes/.build-pi-gen-sha"

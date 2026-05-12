@@ -1,0 +1,129 @@
+#!/bin/bash
+# Grant NOPASSWD sudo to each non-system login user found in /etc/passwd by
+# writing a per-user /etc/sudoers.d/099_airplanes-sudo-<name> drop-in.
+#
+# Why this exists: rpi-imager's cloud-init user-data emitter omits the
+# `groups: [..., sudo, ...]` and `sudo: ALL=(ALL) NOPASSWD: ALL` keys when
+# the image identifies as the `debian` cloud-init Distro (this image flips
+# from raspberry-pi-os to dodge the userconf-pi race — see
+# stage-airplanes/00-prep/files/etc/cloud/cloud.cfg.d/99-airplanes-distro-debian.cfg).
+# Without this oneshot, fresh flashes have no sudo at all, the dashboard's
+# `sudo apl-feed claim register` hint doesn't work, and operators can't
+# read journalctl.
+#
+# Why per-user drop-ins (not %sudo + usermod -aG sudo):
+#   - No /etc/group mutation → smaller sandbox-tripping surface (the unit
+#     can stay tighter without breaking the writes)
+#   - An already-open SSH session does NOT pick up new group membership;
+#     per-user sudoers grants are re-read on every sudo invocation, so the
+#     grant takes effect immediately for operators who SSH in during the
+#     boot before this unit runs.
+
+PASSWD_FILE="${PASSWD_FILE:-/etc/passwd}"
+DONE_MARKER="${DONE_MARKER:-/var/lib/airplanes/grant-sudo-done}"
+SUDOERS_DIR="${SUDOERS_DIR:-/etc/sudoers.d}"
+VISUDO_BIN="${VISUDO_BIN:-/usr/sbin/visudo}"
+
+# Service accounts to skip even if they fall inside the UID gate or have a
+# login shell. All three are normally created with `--system` (UID < 1000)
+# so the UID gate already excludes them; this list is defense-in-depth in
+# case a future packaging change shifts them into the human UID range.
+#
+# `pi` is intentionally NOT in this list — operators may pick `pi` as their
+# rpi-imager username, in which case they need sudo like any other operator
+# account. pi-gen's stock `pi` account is created `--disabled-login`, so a
+# sudoers grant on a stale `pi` account is harmless (no way to log in).
+SERVICE_USERS=(airplanes-feed airplanes-webconfig readsb)
+
+log() {
+	if command -v logger >/dev/null 2>&1; then
+		logger -t airplanes-grant-sudo -- "$*"
+	else
+		echo "airplanes-grant-sudo: $*" >&2
+	fi
+}
+
+is_service_user() {
+	local needle="$1" u
+	for u in "${SERVICE_USERS[@]}"; do
+		[[ "$u" == "$needle" ]] && return 0
+	done
+	return 1
+}
+
+# Writes a per-user grant to $SUDOERS_DIR/099_airplanes-sudo-$name. Returns 0
+# on success or "already present" (idempotent), 1 on any write/visudo failure.
+# On failure, no partial file is left behind.
+grant_to() {
+	local name="$1"
+	local final="$SUDOERS_DIR/099_airplanes-sudo-$name"
+	local tmp="$final.tmp.$$"
+	if [[ -f "$final" ]]; then
+		log "$name: sudoers grant already present at $final"
+		return 0
+	fi
+	if ! printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$name" >"$tmp"; then
+		log "$name: failed to write tmp sudoers file"
+		rm -f "$tmp"
+		return 1
+	fi
+	if ! chmod 0440 "$tmp"; then
+		log "$name: failed to chmod tmp sudoers file"
+		rm -f "$tmp"
+		return 1
+	fi
+	if ! chown root:root "$tmp" 2>/dev/null; then
+		# chown failure is non-fatal when this script runs in a test harness
+		# as non-root; the chroot install and real-systemd boot both run as
+		# root and will succeed. Log so a real failure surfaces.
+		log "$name: chown root:root failed (running non-root?); continuing"
+	fi
+	if ! "$VISUDO_BIN" -cf "$tmp" >/dev/null; then
+		log "$name: visudo rejected the per-user sudoers grant; rolling back"
+		rm -f "$tmp"
+		return 1
+	fi
+	if ! mv -f "$tmp" "$final"; then
+		log "$name: failed to rename tmp into place"
+		rm -f "$tmp"
+		return 1
+	fi
+	log "$name: NOPASSWD sudo granted at $final"
+	return 0
+}
+
+main() {
+	local added=0 skipped=0 errors=0
+	local name _pw uid _gid _gecos _home shell
+	while IFS=: read -r name _pw uid _gid _gecos _home shell; do
+		[[ "$uid" =~ ^[0-9]+$ ]] || continue
+		if (( uid < 1000 )) || (( uid >= 65534 )); then
+			continue
+		fi
+		case "$shell" in
+			*/bash | */zsh | */sh | */fish | */dash | */ash) ;;
+			*) continue ;;
+		esac
+		if is_service_user "$name"; then
+			skipped=$((skipped + 1))
+			continue
+		fi
+		if grant_to "$name"; then
+			added=$((added + 1))
+		else
+			errors=$((errors + 1))
+		fi
+	done <"$PASSWD_FILE"
+
+	if (( errors > 0 )); then
+		log "complete with errors: added=$added skipped=$skipped errors=$errors — marker not written, systemd will retry"
+		return 1
+	fi
+
+	mkdir -p "$(dirname "$DONE_MARKER")"
+	: >"$DONE_MARKER"
+	log "complete: added=$added skipped=$skipped"
+	return 0
+}
+
+main "$@"

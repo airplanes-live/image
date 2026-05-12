@@ -1,0 +1,14 @@
+#!/bin/bash
+# update-motd.d hook — prints the airplanes.live dashboard once at SSH login
+# (and at any local TTY login that uses pam_motd). Snapshot mode: no
+# screen-clear, no loop, no rate-derived field. Runs as root via pam_motd.
+#
+# Scrub the renderer's PATHS_* test hooks before exec — pam_motd may
+# inherit env from the user's session (e.g. SSH SendEnv, locale-related
+# vars), and these overrides are root-equivalent file reads. Also pin
+# PATH to system defaults so a hostile $PATH cannot redirect the helper
+# binaries the renderer calls (jq, ip, hostname, systemctl, awk).
+unset "${!PATHS_@}"
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+exec /usr/local/lib/airplanes/render-status --snapshot

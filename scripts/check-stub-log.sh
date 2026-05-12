@@ -1,5 +1,6 @@
 #!/bin/bash
-# Verify that the systemctl-stub was actually exercised during stages 01-05
+# Verify that the systemctl-stub was actually exercised during the
+# stage-airplanes substages that touch systemctl (01-05 + 06b)
 # and that no start/restart line ever made it through. Writes a one-line
 # fingerprint into the rootfs that later steps (manifest, release smoke) can
 # fold into the build provenance.
@@ -21,9 +22,18 @@ fi
 # inside hyphenated unit names (e.g. "enable foo-stop.service" gives a false
 # positive on "stop" because - is a word boundary).
 FORBIDDEN_RE='[[:space:]](start|restart|stop|kill)([[:space:]]|$)'
-if grep -E -q "$FORBIDDEN_RE" "$LOG"; then
-	echo "ERROR: ${LOG} contains forbidden lifecycle verbs — host services were touched during build" >&2
-	grep -E "$FORBIDDEN_RE" "$LOG" >&2
+
+# tar1090, graphs1090, lighttpd, collectd installers call systemctl restart on
+# their own units during install. The stub swallows these (they're no-ops in
+# chroot), but they still appear in the log. Allowlist them; any other unit
+# touched by start|restart|stop|kill remains a build-time error.
+ALLOWED_LINE_RE='[[:space:]](start|restart|stop|kill)[[:space:]](tar1090|graphs1090|collectd|lighttpd)(\.service)?([[:space:]]|$)'
+
+# Lines hitting the forbidden verb but NOT matching the allowlist are real
+# violations.
+if grep -E "$FORBIDDEN_RE" "$LOG" | grep -v -E "$ALLOWED_LINE_RE" | grep -q .; then
+	echo "ERROR: ${LOG} contains forbidden lifecycle verbs on non-allowlisted units" >&2
+	grep -E "$FORBIDDEN_RE" "$LOG" | grep -v -E "$ALLOWED_LINE_RE" >&2
 	exit 1
 fi
 

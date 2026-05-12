@@ -1,0 +1,17 @@
+# /etc/sudoers.d/010_airplanes-webconfig
+#
+# Allow the airplanes-webconfig service account to invoke a tightly-scoped
+# set of privileged commands without a password. Every line must be a fixed
+# argv — no wildcards, no env passthrough, no shell quoting holes. The
+# sudoers ""-after-command form forces "no arguments" on apply-config so
+# even sudo's relaxed default cannot let extra args slip in.
+
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/local/lib/airplanes-webconfig/apply-config ""
+
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl restart airplanes-feed.service
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl restart airplanes-mlat.service
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl restart dump978-fa.service
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl restart airplanes-978.service
+
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
+airplanes-webconfig ALL=(root) NOPASSWD: /usr/bin/systemd-run --unit=airplanes-update --collect /usr/local/share/airplanes/update.sh

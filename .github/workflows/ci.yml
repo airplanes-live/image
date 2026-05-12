@@ -9,10 +9,10 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  shell-lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
@@ -21,8 +21,13 @@ jobs:
         run: |
           shopt -s globstar nullglob
           mapfile -d '' files < <(
-            find scripts stage-airplanes -type f \
-              \( -name '*.sh' -o -name 'systemctl-stub' -o -name 'airplanes-first-run' \) \
+            find scripts stage-airplanes test -type f \
+              \( -name '*.sh' \
+                 -o -name 'systemctl-stub' \
+                 -o -name 'airplanes-first-run' \
+                 -o -name 'airplanes-grant-sudo' \
+                 -o -name 'render-status' \
+                 -o -name '10-airplanes-status' \) \
               -print0
           )
           if (( ${#files[@]} == 0 )); then
@@ -36,18 +41,476 @@ jobs:
           shopt -s globstar nullglob
           for f in scripts/systemctl-stub scripts/*.sh \
                    stage-airplanes/**/*.sh \
-                   stage-airplanes/**/files/**/airplanes-first-run; do
+                   stage-airplanes/**/files/**/airplanes-first-run \
+                   stage-airplanes/**/files/**/airplanes-grant-sudo \
+                   stage-airplanes/**/files/**/render-status \
+                   stage-airplanes/**/files/**/10-airplanes-status \
+                   test/*.sh; do
             [[ -e "$f" ]] || continue
             bash -n "$f"
           done
 
-  bats:
+      - name: No nested on_chroot in *-run-chroot.sh
+        run: |
+          # pi-gen's build.sh already invokes each *-run-chroot.sh via
+          # `on_chroot < script.sh`, so the body executes inside the chroot
+          # where on_chroot is undefined. A nested call silently broke the
+          # 06b stage in PR #29; this guard prevents a repeat. Anchored at
+          # line-start so docstring mentions don't trip it.
+          shopt -s globstar nullglob
+          if grep -nE '^[[:space:]]*on_chroot([[:space:]<;]|$)' \
+               stage-airplanes/**/*-run-chroot.sh; then
+            echo "*-run-chroot.sh files are already executed via on_chroot by pi-gen build.sh" >&2
+            exit 1
+          fi
+
+  shell-tests:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install bats
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats
 
       - name: bats test/
         run: bats test/
+
+  # Real-systemd smoke for airplanes-first-run.service. Installs the unit
+  # and the script onto the runner, runs the unit via systemctl, and asserts
+  # the consume-and-rename + error-file outcomes. This is the dynamic
+  # counterpart to test/test_first_run_unit.bats (static lint) — catches
+  # any future regression where the unit-file directives drift away from
+  # what the script actually writes (e.g. a ProtectSystem= re-mount that
+  # silently locks /etc, which chroot tests cannot see).
+  #
+  # feeder-id is pre-seeded so generate_feeder_id no-ops — that lets us
+  # skip the feed/ checkout (create-uuid.sh is exercised separately by the
+  # feed repo's CI). The runner is ephemeral, so /etc / /boot/firmware /
+  # /run/airplanes state created here is discarded with the VM.
+  first-run-systemd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install unit + script onto runner
+        run: |
+          sudo install -m 0755 \
+            stage-airplanes/06-firstboot/files/usr/local/sbin/airplanes-first-run \
+            /usr/local/sbin/
+          sudo install -m 0644 \
+            stage-airplanes/06-firstboot/files/etc/systemd/system/airplanes-first-run.service \
+            /etc/systemd/system/
+          sudo install -d -m 0755 /etc/airplanes
+          # Pre-seed feeder-id so generate_feeder_id no-ops (covered separately
+          # by feed's CI; here we only care about the consume-rename behaviour
+          # under real systemd sandboxing).
+          printf '00000000-0000-0000-0000-000000000000\n' \
+            | sudo tee /etc/airplanes/feeder-id >/dev/null
+          sudo install -d -m 0755 /boot/firmware
+          # Every path in the unit's ReadWritePaths= must exist on disk before
+          # the unit starts — otherwise systemd fails the mount-namespace setup
+          # with status=226/NAMESPACE. On the real image, /usr/local/share/airplanes
+          # is created by stage-airplanes/01-install-feed; here we have to
+          # materialise it ourselves.
+          sudo install -d -m 0755 /usr/local/share/airplanes
+          # apply_hostname rewrites the /etc/hosts 127.0.1.1 line whose
+          # hostname matches /etc/hostname's current value. GitHub-hosted
+          # runners don't always have a 127.0.1.1 entry that matches, so
+          # set a known baseline (clean hostname + matching /etc/hosts line)
+          # before starting the unit.
+          echo 'ci-runner-baseline' | sudo tee /etc/hostname >/dev/null
+          sudo sh -c "grep -v '^127\\.0\\.1\\.1' /etc/hosts > /etc/hosts.new || true; mv /etc/hosts.new /etc/hosts"
+          echo '127.0.1.1 ci-runner-baseline' | sudo tee -a /etc/hosts >/dev/null
+          sudo systemctl daemon-reload
+
+      - name: Happy path — apply succeeds, source renamed to .applied.txt
+        run: |
+          # HOSTNAME exercises the hostnamectl path under the unit's sandbox
+          # (CapabilityBoundingSet= empty + RestrictAddressFamilies=AF_UNIX +
+          # PrivateNetwork=yes): the script's primary apply path calls
+          # hostnamectl, which D-Buses systemd-hostnamed via AF_UNIX. This
+          # also confirms /etc/hostname + /etc/hosts writes work — those are
+          # the writes ProtectSystem=full would have silently locked.
+          # FEED_HOST exercises expand_feed_host's MLATSERVER/TARGET synthesis
+          # under the same sandbox.
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          HOSTNAME=airplanes-ci-smoke
+          FEED_HOST=ci-backend.local
+          CFG
+          sudo systemctl start airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ ! -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source not consumed"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.applied.txt ]] \
+            || { echo "applied.txt missing"; exit 1; }
+          [[ ! -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "unexpected error.txt"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          sudo grep -q '^MLATSERVER="ci-backend.local:31090"$' /etc/airplanes/feed.env \
+            || { echo "MLATSERVER not derived from FEED_HOST"; sudo cat /etc/airplanes/feed.env; exit 1; }
+          sudo grep -q '^TARGET="--net-connector ci-backend.local,30004,beast_reduce_plus_out"$' /etc/airplanes/feed.env \
+            || { echo "TARGET not derived from FEED_HOST"; sudo cat /etc/airplanes/feed.env; exit 1; }
+          [[ "$(sudo cat /etc/hostname | tr -d '\n\r')" = "airplanes-ci-smoke" ]] \
+            || { echo "/etc/hostname not updated: got '$(sudo cat /etc/hostname)'"; exit 1; }
+          sudo grep -qE '^127\.0\.1\.1[[:space:]]+airplanes-ci-smoke' /etc/hosts \
+            || { echo "/etc/hosts 127.0.1.1 line not updated"; sudo cat /etc/hosts; exit 1; }
+          # HOSTNAME and FEED_HOST are synthetic keys — must never reach feed.env.
+          ! sudo grep -qE '^HOSTNAME=' /etc/airplanes/feed.env \
+            || { echo "HOSTNAME leaked into feed.env"; exit 1; }
+          ! sudo grep -qE '^FEED_HOST=' /etc/airplanes/feed.env \
+            || { echo "FEED_HOST leaked into feed.env"; exit 1; }
+
+      - name: Failure path — invalid HOSTNAME leaves source + writes .error.txt; valid key still applies
+        run: |
+          # Invalid HOSTNAME blocks the rename; a valid FEED_HOST alongside it
+          # still gets its derived endpoints merged into feed.env (errors don't
+          # prevent the merge — they only prevent the source-rename step).
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          HOSTNAME=foo.bar
+          FEED_HOST=ci-failure-backend.local
+          CFG
+          sudo systemctl restart airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source missing after failure"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "error.txt missing"; exit 1; }
+          sudo grep -qi 'HOSTNAME' /boot/firmware/airplanes-config.error.txt \
+            || { echo "error.txt does not mention HOSTNAME"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          # The valid FEED_HOST in the same file should still have been merged
+          # via expand_feed_host -> MLATSERVER + TARGET.
+          sudo grep -q '^MLATSERVER="ci-failure-backend.local:31090"$' /etc/airplanes/feed.env \
+            || { echo "MLATSERVER not merged from partial-error file"; sudo cat /etc/airplanes/feed.env; exit 1; }
+
+      - name: Allowlist path — non-bootstrap key is rejected with category-specific message
+        run: |
+          # LATITUDE is webconfig-writable; the parser must reject it at parse
+          # time with a 'webconfig UI' pointer rather than silently dropping it
+          # or letting it reach feed.env.
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          HOSTNAME=airplanes-ci-allowlist
+          LATITUDE=51.5
+          CFG
+          sudo systemctl restart airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source missing after allowlist rejection"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "error.txt missing"; exit 1; }
+          sudo grep -q 'LATITUDE' /boot/firmware/airplanes-config.error.txt \
+            || { echo "error.txt does not mention LATITUDE"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          sudo grep -q 'webconfig UI' /boot/firmware/airplanes-config.error.txt \
+            || { echo "error.txt does not point at the webconfig UI for LATITUDE"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          # LATITUDE must NOT have reached feed.env via this path.
+          ! sudo grep -qE '^LATITUDE="51.5"$' /etc/airplanes/feed.env \
+            || { echo "LATITUDE leaked into feed.env despite allowlist rejection"; exit 1; }
+          # The valid HOSTNAME in the same file should still have been applied.
+          [[ "$(sudo cat /etc/hostname | tr -d '\n\r')" = "airplanes-ci-allowlist" ]] \
+            || { echo "valid HOSTNAME not applied alongside allowlist rejection"; exit 1; }
+
+      - name: Dump unit logs on failure
+        if: failure()
+        run: |
+          sudo journalctl -u airplanes-first-run.service --no-pager || true
+          sudo ls -la /boot/firmware/ || true
+          sudo cat /boot/firmware/airplanes-config.error.txt 2>/dev/null || true
+
+  # Real-systemd smoke for airplanes-grant-sudo.service. Installs the unit
+  # and the script onto the runner, creates a synthetic UID-1001 human user,
+  # starts the unit, and asserts the per-user sudoers grant lands with the
+  # right content + mode + owner, that visudo accepts the merged sudoers,
+  # and that the synthetic user can actually `sudo -n true`. This is the
+  # dynamic counterpart to test/test_grant_sudo_unit.bats (static lint) —
+  # catches a future ProtectSystem= re-mount or sandbox tightening that
+  # would silently break the sudoers writes.
+  grant-sudo-systemd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install unit + script onto runner
+        run: |
+          sudo install -m 0755 \
+            stage-airplanes/06c-grant-sudo/files/usr/local/sbin/airplanes-grant-sudo \
+            /usr/local/sbin/
+          sudo install -m 0644 \
+            stage-airplanes/06c-grant-sudo/files/etc/systemd/system/airplanes-grant-sudo.service \
+            /etc/systemd/system/
+          # The unit Wants=cloud-final.service. On hosted runners cloud-init
+          # is preinstalled but its datasource detection generally fails, so
+          # cloud-final.service is inactive — Wants= will pull it in but
+          # not block on it (and failures don't propagate to our unit).
+          sudo systemctl daemon-reload
+
+      - name: Create synthetic operator user
+        run: |
+          # UID 2001 sits above the runner's pre-allocated `runner` user
+          # (UID 1001) to avoid the `useradd: UID is not unique` collision.
+          # Any UID in the [1000, 65534) range satisfies the script's gate
+          # — the exact value doesn't matter, only that it's free.
+          sudo useradd -m -s /bin/bash -u 2001 ciop
+          # The runner's sudoers default already has `%sudo ALL=(ALL:ALL) ALL`,
+          # but ciop is not in the sudo group and has no prior NOPASSWD grant.
+          # `sudo -n -u ciop sudo -n true` MUST fail right now — the grant
+          # we're about to install is what flips it to success.
+          if sudo -n -u ciop sudo -n true 2>/dev/null; then
+            echo "precondition failed: ciop already has NOPASSWD sudo before the unit ran" >&2
+            exit 1
+          fi
+
+      - name: Start the unit and assert grant lands
+        run: |
+          sudo systemctl start airplanes-grant-sudo.service
+          sudo systemctl status airplanes-grant-sudo.service --no-pager
+
+          # All file checks below go through `sudo` because /etc/sudoers.d/
+          # is mode 0750 root:root on hosted runners — `[[ -f $GRANT ]]`
+          # as the workflow's unprivileged shell user reports "missing"
+          # even when the file is in fact present.
+          GRANT=/etc/sudoers.d/099_airplanes-sudo-ciop
+          sudo test -f "$GRANT" \
+            || { echo "expected grant file $GRANT missing"; sudo ls -la /etc/sudoers.d/; exit 1; }
+          sudo grep -qE '^ciop ALL=\(ALL:ALL\) NOPASSWD: ALL$' "$GRANT" \
+            || { echo "grant content unexpected"; sudo cat "$GRANT"; exit 1; }
+          [[ "$(sudo stat -c '%a' "$GRANT")" = "440" ]] \
+            || { echo "grant mode is not 0440: $(sudo stat -c '%a' "$GRANT")"; exit 1; }
+          [[ "$(sudo stat -c '%U:%G' "$GRANT")" = "root:root" ]] \
+            || { echo "grant owner is not root:root: $(sudo stat -c '%U:%G' "$GRANT")"; exit 1; }
+
+          # Validate the merged sudoers is still well-formed.
+          sudo visudo -cf /etc/sudoers
+
+          # Effective check: the synthetic user can now sudo without a password.
+          # ProtectSystem=full would have silently dropped the grant on the
+          # rootfs — this is the dynamic catch the static lint can't provide.
+          sudo -n -u ciop sudo -n true \
+            || { echo "ciop cannot sudo -n after grant"; exit 1; }
+
+          sudo test -f /var/lib/airplanes/grant-sudo-done \
+            || { echo "marker not written"; exit 1; }
+
+      - name: Re-running the unit is a no-op (gated by marker)
+        run: |
+          # Restart should ConditionPathExists-skip (marker exists).
+          sudo systemctl restart airplanes-grant-sudo.service
+          # The unit's ActiveState stays active (RemainAfterExit=yes); we
+          # verify the condition skipped via the result property.
+          state=$(sudo systemctl show airplanes-grant-sudo.service \
+                    --property=ConditionResult --value)
+          [[ "$state" = "no" ]] \
+            || { echo "expected ConditionResult=no on re-run, got '$state'"; exit 1; }
+
+      - name: Dump unit logs on failure
+        if: failure()
+        run: |
+          sudo journalctl -u airplanes-grant-sudo.service --no-pager || true
+          sudo ls -la /etc/sudoers.d/ || true
+
+  feed-overlay-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/feed
+          ref: dev
+          path: feed
+
+      - name: Run overlay smoke
+        run: bash test/overlay-smoke.sh feed
+
+  webconfig-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: webconfig/go.mod
+          cache-dependency-path: webconfig/go.sum
+
+      - name: go vet
+        working-directory: webconfig
+        run: go vet ./...
+
+      - name: go mod verify
+        working-directory: webconfig
+        run: go mod verify
+
+      - name: go test
+        working-directory: webconfig
+        run: go test ./...
+
+  webconfig-cross-build:
+    name: webconfig-cross-build-${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            goarch: arm64
+            goarm: ''
+          - arch: armhf
+            goarch: arm
+            goarm: '7'
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: webconfig/go.mod
+          cache-dependency-path: webconfig/go.sum
+
+      - name: cross-build webconfig for ${{ matrix.arch }}
+        working-directory: webconfig
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          go build -trimpath -buildvcs=false \
+              -ldflags "-s -w -X main.version=ci" \
+              -o /tmp/airplanes-webconfig.${{ matrix.arch }} \
+              ./cmd/webconfig
+          file /tmp/airplanes-webconfig.${{ matrix.arch }}
+
+  systemd-verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Load tar1090/graphs1090 SHAs from config-dev
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          . config-dev
+          set +a
+          {
+            echo "AIRPLANES_TAR1090_REPO=$AIRPLANES_TAR1090_REPO"
+            echo "AIRPLANES_TAR1090_BRANCH=$AIRPLANES_TAR1090_BRANCH"
+            echo "AIRPLANES_GRAPHS1090_REPO=$AIRPLANES_GRAPHS1090_REPO"
+            echo "AIRPLANES_GRAPHS1090_BRANCH=$AIRPLANES_GRAPHS1090_BRANCH"
+          } >> "$GITHUB_ENV"
+
+      - name: Fetch tar1090 + graphs1090 unit files
+        run: |
+          set -e
+          UNITS_DIR="$RUNNER_TEMP/upstream-units"
+          mkdir -p "$UNITS_DIR"
+          # tar1090 ships its unit as a template named `tar1090.service` with
+          # SOURCE_DIR / SERVICE placeholders the installer sed-substitutes.
+          # Substitute the same defaults the chroot install uses so the unit
+          # is verifiable.
+          curl -fsSL \
+            "https://raw.githubusercontent.com/wiedehopf/tar1090/$AIRPLANES_TAR1090_BRANCH/tar1090.service" \
+            -o "$UNITS_DIR/tar1090.service.in"
+          sed -e 's?SOURCE_DIR?/run/readsb?g' -e 's?SERVICE?tar1090?g' \
+            "$UNITS_DIR/tar1090.service.in" > "$UNITS_DIR/tar1090.service"
+          curl -fsSL \
+            "https://raw.githubusercontent.com/wiedehopf/graphs1090/$AIRPLANES_GRAPHS1090_BRANCH/service.service" \
+            -o "$UNITS_DIR/graphs1090.service"
+          echo "UPSTREAM_UNITS_DIR=$UNITS_DIR" >> "$GITHUB_ENV"
+
+      - name: Stage units in temp root with stub binaries
+        run: |
+          ROOT="$RUNNER_TEMP/unit-root"
+          mkdir -p "$ROOT/etc/systemd/system" \
+                   "$ROOT/usr/local/sbin" \
+                   "$ROOT/usr/local/bin" \
+                   "$ROOT/usr/local/share/airplanes" \
+                   "$ROOT/usr/local/share/tar1090" \
+                   "$ROOT/usr/share/graphs1090" \
+                   "$ROOT/usr/bin" \
+                   "$ROOT/usr/sbin"
+          install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.service \
+              "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/06-firstboot/files/etc/systemd/system/*.timer \
+              "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/06b-console-dashboard/files/etc/systemd/system/*.service \
+              "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/02-install-decoder/files/etc/systemd/system/*.service \
+              "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/05-install-webconfig/files/etc/systemd/system/*.service \
+              "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/06c-grant-sudo/files/etc/systemd/system/*.service \
+              "$ROOT/etc/systemd/system/"
+          install -m 0644 "$UPSTREAM_UNITS_DIR/tar1090.service" \
+              "$ROOT/etc/systemd/system/tar1090.service"
+          install -m 0644 "$UPSTREAM_UNITS_DIR/graphs1090.service" \
+              "$ROOT/etc/systemd/system/graphs1090.service"
+          # Stub binaries so ExecStart= path checks resolve.
+          install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-first-run"
+          install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-grant-sudo"
+          install -m 0755 /dev/null "$ROOT/usr/local/bin/apl-feed"
+          install -m 0755 /dev/null "$ROOT/usr/local/bin/airplanes-webconfig"
+          mkdir -p "$ROOT/usr/local/lib/airplanes-webconfig" "$ROOT/usr/local/lib/airplanes"
+          install -m 0755 /dev/null "$ROOT/usr/local/lib/airplanes-webconfig/reset"
+          install -m 0755 /dev/null "$ROOT/usr/local/lib/airplanes/render-status"
+          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/readsb.sh"
+          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/airplanes-978.sh"
+          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/dump978-fa.sh"
+          # tar1090 + graphs1090 ExecStart targets (placeholder shell scripts the
+          # upstream installers normally drop in)
+          install -m 0755 /dev/null "$ROOT/usr/local/share/tar1090/tar1090.sh"
+          install -m 0755 /dev/null "$ROOT/usr/share/graphs1090/service.sh"
+          install -m 0755 /dev/null "$ROOT/usr/share/graphs1090/service-graphs1090.sh"
+          install -m 0755 /dev/null "$ROOT/usr/sbin/rfkill"
+          # util-linux / coreutils binaries referenced by ExecStartPre= in
+          # airplanes-dashboard.service (sleep grace + setterm to clear the
+          # VT and mute kernel printk on tty1).
+          install -m 0755 /dev/null "$ROOT/usr/bin/sleep"
+          install -m 0755 /dev/null "$ROOT/usr/bin/setterm"
+          # Default env files referenced by EnvironmentFile=
+          mkdir -p "$ROOT/etc/default"
+          : > "$ROOT/etc/default/tar1090"
+          echo "UNIT_ROOT=$ROOT" >> "$GITHUB_ENV"
+
+      - name: systemd-analyze verify
+        # --recursive-errors=no silences "unit not found" warnings for
+        # external targets (sysinit.target, network-online.target, etc.) that
+        # the temp root doesn't contain. Real syntax errors still fail the run.
+        run: |
+          systemd-analyze verify --root="$UNIT_ROOT" --recursive-errors=no \
+              airplanes-first-run.service \
+              airplanes-claim.service \
+              airplanes-claim.timer \
+              airplanes-rfkill-unblock.service \
+              airplanes-dashboard.service \
+              airplanes-grant-sudo.service \
+              readsb.service \
+              dump978-fa.service \
+              airplanes-978.service \
+              tar1090.service \
+              graphs1090.service \
+              airplanes-webconfig.service \
+              airplanes-webconfig-reset.service
+
+  feed-update-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/feed
+          ref: dev
+          path: feed
+
+      - name: Run update-regression smoke
+        run: bash test/update-regression-smoke.sh feed
+
+      - name: Upload regression artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: update-regression-artifacts
+          path: ${{ runner.temp }}/update-regression

@@ -16,6 +16,8 @@ curl
 xxd
 file
 git
+go:golang-go
+jq
 lsmod:kmod
 bc
 gpg

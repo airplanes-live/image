@@ -1,13 +1,89 @@
 [Unit]
 Description=airplanes.live first-run setup
-ConditionPathExists=!/var/lib/airplanes/first-run-done
-After=local-fs.target network.target
+# Runs every boot — gated on file presence, not on a rootfs marker. The
+# script self-gates internally: if /etc/airplanes/feeder-id exists and no
+# /boot/firmware/airplanes-config.txt is present, it returns immediately.
+# Otherwise it consumes the boot config and renames the source to
+# airplanes-config.applied.txt on success (or writes
+# airplanes-config.error.txt on failure, leaving the source for retry).
+#
+# Run BEFORE NetworkManager so the WiFi keyfile generated from
+# /boot/firmware/airplanes-config.txt (WIFI_SSID/PASS/COUNTRY) is in place
+# when NM starts and autoconnects. After=systemd-rfkill.service keeps us
+# behind the rfkill state restore. feed.env merge (FEED_HOST-derived
+# MLATSERVER + TARGET) and feeder-id are both local file ops that don't
+# need network either.
+#
+# Before=avahi-daemon.service lighttpd.service so apply_hostname's
+# /etc/hostname + hostnamectl run before mDNS broadcasts the system name and
+# before lighttpd serves its first response with hostname-derived headers.
+After=local-fs.target systemd-rfkill.service
+Before=NetworkManager.service network-pre.target avahi-daemon.service lighttpd.service
 Wants=local-fs.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/airplanes-first-run
+
+# Sandboxing. The unit runs as root because /etc/airplanes/ is root-owned
+# (deliberately — see airplanes-claim.service for the trust-boundary
+# rationale around feed.env). The directives below shrink the blast radius
+# of root for this oneshot.
+#
+# ProtectSystem=true keeps /usr and /boot read-only but leaves /etc
+# writable — required for the script's writes to /etc/airplanes/,
+# /etc/hostname, /etc/hosts, /etc/NetworkManager/system-connections/,
+# /etc/wpa_supplicant/, /etc/default/. ProtectSystem=full would re-mount
+# /etc read-only too (per systemd.exec(5)); ProtectSystem=strict would
+# require enumerating every /etc subdir (and raspi-config's WiFi-country
+# path may touch more), which is brittle.
+#
+# ReadWritePaths re-opens the two paths that ProtectSystem=true closed:
+#   /boot/firmware  — needed for consume_boot_config's rename of
+#                     airplanes-config.txt → airplanes-config.applied.txt
+#                     and for write_error_file's airplanes-config.error.txt.
+#   /usr/local/share/airplanes — the legacy
+#                     /usr/local/share/airplanes/airplanes-uuid symlink
+#                     reinstalled by feed/create-uuid.sh.
+#
+# RuntimeDirectory creates /run/airplanes/ for the feed.env flock; matches
+# webconfig's lock path so a concurrent webconfig write can never interleave.
+# RuntimeDirectoryPreserve=yes keeps the dir across the oneshot exit so
+# webconfig (which assumes the dir exists) doesn't race on startup.
+ProtectSystem=true
+ReadWritePaths=/boot/firmware /usr/local/share/airplanes
+RuntimeDirectory=airplanes
+RuntimeDirectoryPreserve=yes
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# AF_UNIX for journal + dbus (apply_hostname calls hostnamectl which sends
+# a dbus message to systemd-hostnamed). PrivateNetwork=yes is defense in
+# depth — the only AF that's allowed is local IPC anyway, but explicitly
+# disabling network namespace participation makes the contract obvious.
+RestrictAddressFamilies=AF_UNIX
+PrivateNetwork=yes
+# Empty bounding set: with hostnamectl as the primary path, the dbus IPC
+# does the privileged work in systemd-hostnamed. The fallback `hostname`
+# binary (sethostname(2), needs CAP_SYS_ADMIN) silently fails under this
+# bounding set; airplanes-first-run already has `|| true` on that path so
+# it doesn't abort the unit. raspi-config's WiFi-country path (needs
+# CAP_NET_ADMIN for `iw`, plus writes to /boot/firmware/cmdline.txt) also
+# fails; the script's documented fallback writes /etc/wpa_supplicant/
+# wpa_supplicant.conf directly, which doesn't need any capability.
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target

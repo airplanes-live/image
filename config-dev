@@ -1,8 +1,64 @@
-export CHANNEL=dev
-export STAGE_LIST="${BASE_DIR}/stage0 ${BASE_DIR}/stage1 ${BASE_DIR}/stage2 ${BASE_DIR}/stage-airplanes"
-export DEPLOY_COMPRESSION=xz
-export IMG_SUFFIX=""
-export AIRPLANES_FEED_REPO="https://github.com/airplanes-live/feed.git"
-export AIRPLANES_FEED_BRANCH=dev
-export AIRPLANES_READSB_REPO="https://github.com/airplanes-live/readsb.git"
-export AIRPLANES_READSB_BRANCH=dev
+# build.sh sets GIT_HASH after sourcing configs, but we need it earlier for
+# ARCHIVE_FILENAME below. build-docker.sh exports GIT_HASH into the container,
+# so this fallback only fires on bare-host invocations.
+: "${GIT_HASH:="$(git -C "${BASE_DIR:-.}" rev-parse HEAD 2>/dev/null || echo unknown)"}"
+export GIT_HASH
+
+export IMG_NAME="${IMG_NAME:-airplanes-feeder-dev-arm64}"
+# Same-day rebuilds from different commits would collide on pi-gen's default
+# `image_${IMG_DATE}-${IMG_NAME}` and silently overwrite the prior artifact.
+# Commit short-SHA gives every commit a unique file; same-commit rebuilds
+# overwrite themselves (identical content). IMG_DATE is still in the .info.
+export ARCHIVE_FILENAME="${ARCHIVE_FILENAME:-${IMG_NAME}-${GIT_HASH:0:7}}"
+export CHANNEL="${CHANNEL:-dev}"
+export STAGE_LIST="${STAGE_LIST:-${BASE_DIR:-.}/stage0 ${BASE_DIR:-.}/stage1 ${BASE_DIR:-.}/stage2 ${BASE_DIR:-.}/stage-airplanes}"
+export DEPLOY_COMPRESSION="${DEPLOY_COMPRESSION:-xz}"
+# Pi-gen's default is 6 (slow, ~30% smaller). Level 1 trades ~10-15% size
+# growth for roughly 3x faster xz compression — meaningful on a ~700 MB image
+# every dev rebuild. Stable channel keeps the upstream default for smaller
+# release artifacts.
+export COMPRESSION_LEVEL="${COMPRESSION_LEVEL:-1}"
+export IMG_SUFFIX="${IMG_SUFFIX:-}"
+
+# Ship sshd enabled so rpi-imager's v2.0.x customization can reach a working
+# SSH posture (the bare `enable_ssh: true` flag the imager emits is a no-op
+# nobody handles — fixed upstream in 2c428de4 but not yet released as of
+# v2.0.8). Password auth stays off in shipped sshd_config via
+# stage-airplanes/00-prep/02-run.sh dropping
+# /etc/ssh/sshd_config.d/90-airplanes.conf; cloud-init's 50-cloud-init.conf
+# wins lexical order when ssh_pwauth is emitted. Posture per case:
+#   - SSH off + user/pass set     → user created, sshd up but pwauth off,
+#                                   no key dropped → no SSH access (matches
+#                                   "password is for console only" intent)
+#   - SSH on + key                → ssh_pwauth: false → key auth only
+#   - SSH on + password           → ssh_pwauth: true  → password SSH works
+#   - No customization at all     → only the upstream pi user with
+#                                   --disabled-login, no creds → sshd
+#                                   reachable but unauthenticatable
+export ENABLE_SSH="${ENABLE_SSH:-1}"
+
+# Branch-tracking on dev — moving target by design, catches upstream drift early.
+export AIRPLANES_FEED_REPO="${AIRPLANES_FEED_REPO:-https://github.com/airplanes-live/feed.git}"
+export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-dev}"
+# Runtime update channel baked into /etc/airplanes/release-channel by stage
+# 06. Dev images continue tracking feed/dev branch HEAD at runtime, so the
+# feed-side resolver skips tag resolution entirely for this channel.
+export AIRPLANES_FEED_UPDATE_CHANNEL="${AIRPLANES_FEED_UPDATE_CHANNEL:-dev}"
+
+export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
+export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-dev}"
+
+export AIRPLANES_READSB_DECODER_REPO="${AIRPLANES_READSB_DECODER_REPO:-https://github.com/wiedehopf/readsb.git}"
+export AIRPLANES_READSB_DECODER_BRANCH="${AIRPLANES_READSB_DECODER_BRANCH:-dev}"
+
+export AIRPLANES_DUMP978_REPO="${AIRPLANES_DUMP978_REPO:-https://github.com/flightaware/dump978.git}"
+export AIRPLANES_DUMP978_BRANCH="${AIRPLANES_DUMP978_BRANCH:-master}"
+
+export AIRPLANES_TAR1090_REPO="${AIRPLANES_TAR1090_REPO:-https://github.com/wiedehopf/tar1090.git}"
+export AIRPLANES_TAR1090_BRANCH="${AIRPLANES_TAR1090_BRANCH:-master}"
+
+export AIRPLANES_TAR1090_DB_REPO="${AIRPLANES_TAR1090_DB_REPO:-https://github.com/wiedehopf/tar1090-db.git}"
+export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-master}"
+
+export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
+export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-master}"

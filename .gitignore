@@ -7,3 +7,8 @@ SKIP_IMAGES
 .pc
 *-pc
 .vscode/
+
+# Upstream pi-gen ignores SKIP files as a local-only build-control convenience.
+# We use them as a tracked mechanism to disable specific pi-gen substages —
+# whitelist those here so the gitignore doesn't hide intentional commits.
+!export-image/01-user-rename/SKIP

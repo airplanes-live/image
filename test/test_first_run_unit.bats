@@ -1,0 +1,105 @@
+#!/usr/bin/env bats
+
+# Static lint of airplanes-first-run.service. Parses the unit file and asserts
+# the sandbox directives are consistent with the script's actual write paths.
+#
+# Why a separate test: chroot smoke (first-run-chroot-smoke.sh) bypasses
+# systemd's namespacing, so it cannot catch a ProtectSystem= misconfig that
+# only manifests under real systemd. This lint is the cheapest static guard
+# against that class of regression — every directive listed below is one the
+# script depends on at runtime.
+
+setup() {
+    UNIT="$BATS_TEST_DIRNAME/../stage-airplanes/06-firstboot/files/etc/systemd/system/airplanes-first-run.service"
+    SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06-firstboot/files/usr/local/sbin/airplanes-first-run"
+    WEBCONFIG_APPLY="$BATS_TEST_DIRNAME/../webconfig/cmd/apply-config/main.go"
+    [ -f "$UNIT" ] || skip "unit file missing"
+}
+
+# Returns the value of a directive (after the '=', whitespace trimmed). Last
+# occurrence wins, mirroring systemd semantics.
+unit_get() {
+    local key="$1"
+    grep -E "^${key}=" "$UNIT" | tail -n1 | sed -E "s/^${key}=//"
+}
+
+# ---- sandbox directives ----------------------------------------------------
+
+@test "ProtectSystem=true (NOT full or strict)" {
+    # full would re-mount /etc read-only, breaking writes to /etc/hostname,
+    # /etc/airplanes/, /etc/NetworkManager/system-connections/, etc.
+    # strict would require enumerating every /etc subpath in ReadWritePaths.
+    [ "$(unit_get ProtectSystem)" = "true" ]
+}
+
+@test "ReadWritePaths contains /boot/firmware" {
+    # Required for consume_boot_config's rename and write_error_file's write.
+    # Without this, the unit appears to succeed (chroot tests pass) but the
+    # rename fails under real systemd.
+    val="$(unit_get ReadWritePaths)"
+    [[ "$val" == *"/boot/firmware"* ]]
+}
+
+@test "ReadWritePaths contains /usr/local/share/airplanes" {
+    # Required for feed/create-uuid.sh's legacy
+    # /usr/local/share/airplanes/airplanes-uuid symlink.
+    val="$(unit_get ReadWritePaths)"
+    [[ "$val" == *"/usr/local/share/airplanes"* ]]
+}
+
+@test "RuntimeDirectory=airplanes" {
+    # Creates /run/airplanes/ so the feed.env flock has a parent dir on a
+    # fresh boot. Matches webconfig's expected lock-file directory.
+    [ "$(unit_get RuntimeDirectory)" = "airplanes" ]
+}
+
+@test "RuntimeDirectoryPreserve=yes" {
+    # Keep /run/airplanes across the oneshot exit so webconfig (which assumes
+    # the directory exists) doesn't race on startup.
+    [ "$(unit_get RuntimeDirectoryPreserve)" = "yes" ]
+}
+
+# ---- script ↔ unit consistency --------------------------------------------
+
+@test "script LOCK_FILE matches webconfig lockFilePath" {
+    # Both first-run and webconfig flock the same file so concurrent edits
+    # to feed.env can never interleave. The two must stay in sync.
+    [ -f "$WEBCONFIG_APPLY" ] || skip "webconfig apply-config/main.go not present"
+    script_lock="$(grep -E '^LOCK_FILE=' "$SCRIPT" | head -n1 | sed -E 's/.*"\$\{LOCK_FILE:-([^}]+)\}".*/\1/')"
+    webconfig_lock="$(grep -E 'lockFilePath\s*=' "$WEBCONFIG_APPLY" | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')"
+    [ -n "$script_lock" ]
+    [ -n "$webconfig_lock" ]
+    [ "$script_lock" = "$webconfig_lock" ]
+}
+
+@test "unit has no obsolete ConditionPathExists for the removed marker" {
+    # The /var/lib/airplanes/first-run-done marker is gone in the consume-and-
+    # rename model — file presence on FAT is the state. A leftover
+    # ConditionPathExists referencing the marker would prevent the unit from
+    # running at all once the marker existed from a previous boot.
+    ! grep -qE 'ConditionPathExists=.*first-run-done' "$UNIT"
+}
+
+# ---- ordering directives (regression guards) -------------------------------
+
+@test "Before= includes NetworkManager.service" {
+    # WiFi keyfile must land before NM starts so the keyfile is picked up on
+    # first auto-connect.
+    val="$(unit_get Before)"
+    [[ "$val" == *"NetworkManager.service"* ]]
+}
+
+@test "Before= includes lighttpd.service" {
+    # Hostname must be applied before lighttpd serves its first response so
+    # mDNS broadcasts the configured name.
+    val="$(unit_get Before)"
+    [[ "$val" == *"lighttpd.service"* ]]
+}
+
+@test "Type=oneshot with RemainAfterExit=yes" {
+    # The unit must be Type=oneshot so it runs to completion each boot, and
+    # RemainAfterExit=yes so downstream units that order After=this unit
+    # don't fight the inactive state after main exits.
+    [ "$(unit_get Type)" = "oneshot" ]
+    [ "$(unit_get RemainAfterExit)" = "yes" ]
+}
