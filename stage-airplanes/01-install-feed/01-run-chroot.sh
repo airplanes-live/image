@@ -10,10 +10,11 @@ export PATH="/usr/local/sbin:${PATH}"
 # handles the 5-key bootstrap allowlist (HOSTNAME, WIFI_*, FEED_HOST).
 #
 # MLAT is off by default on a fresh image: the operator must explicitly
-# enable it via the webconfig after providing valid lat/lon/altitude.
-# A flashed feeder still feeds Beast (ADS-B) — only MLAT waits for opt-in.
+# enable it via the webconfig after entering real coordinates. A flashed
+# feeder still feeds Beast (ADS-B) — only MLAT waits for opt-in.
 # GEO_CONFIGURED follows from the lat=0/lon=0 placeholders via
-# configure.sh's derive_geo_configured.
+# configure.sh's derive_geo_configured. ALTITUDE=0m is a valid sea-level
+# value the operator can keep or replace.
 export AIRPLANES_BUILD_MODE=1
 export AIRPLANES_FEED_REPO="file:///usr/local/src/airplanes-feed-build"
 export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH}"
