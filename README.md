@@ -38,6 +38,8 @@ The boot config file is consumed on every boot: a successful apply renames it to
 2. In Imager, click the gear icon at the bottom of the OS list → **Custom Repository** → paste the URL.
 3. Pick airplanes.live from the OS list, select your microSD card, click **Next**, then **Edit Settings** to configure hostname, WiFi, and SSH. Save and write.
 
+The OS-list entry's name carries a `· <sha> · <HH:MM>Z` suffix on dev builds — compare it against the `dev-latest` release body to confirm Imager has fetched the current manifest (and is not flashing a cached earlier-today build).
+
 Imager downloads and flashes the image for you. After first boot, browse to `http://<hostname>.local/` to set your receiver location and MLAT display name via the web UI.
 
 ### Already have a Pi feeding another aggregator?

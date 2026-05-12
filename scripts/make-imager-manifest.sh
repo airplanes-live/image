@@ -3,7 +3,9 @@
 # feeder image artifact (.img.xz). The manifest URL pasted into rpi-imager v2.0.8+
 # enables the OS Customization (Edit Settings) flow via init_format=cloudinit-rpi.
 #
-# Usage: make-imager-manifest.sh [--image-url URL] PATH_TO_IMAGE.img.xz
+# Usage: make-imager-manifest.sh [--image-url URL] \
+#                                [--commit-sha HEX --build-time YYYY-MM-DDTHH:MM:SSZ] \
+#                                PATH_TO_IMAGE.img.xz
 #
 # With --image-url, the manifest's `url` field is set to URL instead of a
 # file:// URI of the local artifact. Use this in CI when the manifest will be
@@ -12,10 +14,20 @@
 # the local .img.xz — those have to match the asset rpi-imager downloads from
 # URL, so callers are responsible for keeping the two in sync.
 #
+# With --commit-sha (7-40 lowercase hex) and --build-time (strict
+# YYYY-MM-DDTHH:MM:SSZ — must be passed together), the OS-list entry's
+# `name` gains a ` · <sha12> · HH:MMZ` suffix and `description` gains a
+# final `Build <sha12> @ YYYY-MM-DD HH:MM:SS UTC.` sentence, so rpi-imager
+# disambiguates same-day builds in the OS selection screen. No env-var
+# fallback: a stray GIT_HASH in the developer's shell must not be able to
+# tag a downloaded image as built from the local repo.
+#
 # Output sibling file: ${input%.img.xz}.rpi-imager-manifest.json
 set -euo pipefail
 
 IMAGE_URL_OVERRIDE=""
+COMMIT_SHA=""
+BUILD_TIME=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --image-url)
@@ -28,6 +40,30 @@ while [[ $# -gt 0 ]]; do
             ;;
         --image-url=*)
             IMAGE_URL_OVERRIDE="${1#--image-url=}"
+            shift
+            ;;
+        --commit-sha)
+            if [[ $# -lt 2 ]]; then
+                echo "--commit-sha requires a hex argument" >&2
+                exit 2
+            fi
+            COMMIT_SHA="$2"
+            shift 2
+            ;;
+        --commit-sha=*)
+            COMMIT_SHA="${1#--commit-sha=}"
+            shift
+            ;;
+        --build-time)
+            if [[ $# -lt 2 ]]; then
+                echo "--build-time requires a YYYY-MM-DDTHH:MM:SSZ argument" >&2
+                exit 2
+            fi
+            BUILD_TIME="$2"
+            shift 2
+            ;;
+        --build-time=*)
+            BUILD_TIME="${1#--build-time=}"
             shift
             ;;
         --)
@@ -45,13 +81,40 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -ne 1 ]]; then
-    echo "usage: $(basename -- "$0") [--image-url URL] PATH_TO_IMAGE.img.xz" >&2
+    echo "usage: $(basename -- "$0") [--image-url URL] [--commit-sha HEX --build-time YYYY-MM-DDTHH:MM:SSZ] PATH_TO_IMAGE.img.xz" >&2
     exit 2
 fi
 
 if [[ -n "$IMAGE_URL_OVERRIDE" && "$IMAGE_URL_OVERRIDE" != *://* ]]; then
     echo "--image-url must be an absolute URL (scheme://...): $IMAGE_URL_OVERRIDE" >&2
     exit 2
+fi
+
+# Validate identity flags before any destructive work (rm -f "$OUTPUT" below).
+# Both must be passed together; half-set identity in `name` would mislead more
+# than it helps. Strict shape check on --build-time first because GNU `date -d`
+# alone accepts relative ("yesterday") and local-time inputs and would silently
+# render them as UTC, producing a lying manifest.
+if [[ -n "$COMMIT_SHA" || -n "$BUILD_TIME" ]]; then
+    if [[ -z "$COMMIT_SHA" || -z "$BUILD_TIME" ]]; then
+        echo "--commit-sha and --build-time must be passed together" >&2
+        exit 2
+    fi
+    if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{7,40}$ ]]; then
+        echo "--commit-sha must be 7-40 lowercase hex chars: $COMMIT_SHA" >&2
+        exit 2
+    fi
+    if [[ ! "$BUILD_TIME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+        echo "--build-time must match YYYY-MM-DDTHH:MM:SSZ (UTC): $BUILD_TIME" >&2
+        exit 2
+    fi
+    # Round-trip through `date -u -d` to catch impossible-but-shape-valid
+    # instants like 2026-02-30T00:00:00Z. The shape check above already
+    # rejected anything `date` would misinterpret.
+    if ! date -u -d "$BUILD_TIME" +%s >/dev/null 2>&1; then
+        echo "--build-time is not a valid UTC instant: $BUILD_TIME" >&2
+        exit 2
+    fi
 fi
 
 INPUT="$1"
@@ -144,6 +207,21 @@ ICON_URL="https://raw.githubusercontent.com/airplanes-live/image/main/.github/as
 # airplanes-claim.service — it is not a user-supplied value, so don't promise
 # it here.
 DESCRIPTION="airplanes.live ADS-B/MLAT/UAT feeder image (${CHANNEL} channel). Use Edit Settings to set hostname, WiFi, and SSH access before flashing. Receiver location and MLAT name are configured after first boot via the web UI."
+
+# When both identity flags are present, append a disambiguator to `name`
+# (visible in the OS-list primary cell) and a sentence to `description` (the
+# secondary cell). 12-char SHA matches the immutable-asset filename
+# convention in .github/workflows/build-image.yml (`short_sha="${SHA:0:12}"`)
+# so the displayed id is grep-equivalent to the GitHub-release asset name.
+# Seconds are kept in the description sentence to disambiguate the rare
+# same-SHA same-minute rerun.
+if [[ -n "$COMMIT_SHA" ]]; then
+    SHA_DISPLAY="${COMMIT_SHA:0:12}"
+    BUILD_TIME_SHORT="${BUILD_TIME:11:5}Z"            # HH:MMZ
+    BUILD_TIME_LONG="${BUILD_TIME:0:10} ${BUILD_TIME:11:8} UTC"
+    NAME="${NAME} · ${SHA_DISPLAY} · ${BUILD_TIME_SHORT}"
+    DESCRIPTION="${DESCRIPTION} Build ${SHA_DISPLAY} @ ${BUILD_TIME_LONG}."
+fi
 
 # Tag list the OS entry advertises. arm64-only — this image is not built for
 # 32-bit Pis. rpi-imager's filterOsListWithHWTags keeps an entry when any of
