@@ -54,6 +54,21 @@ install -D -m 0644 files/etc/systemd/system/airplanes-webconfig-reset.service \
 install -D -m 0755 files/usr/local/lib/airplanes-webconfig/reset \
 	"${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig/reset"
 
+# Shared Wi-Fi predicate + keyfile-writer libraries. Sourced by both
+# /usr/local/sbin/airplanes-first-run (boot-config flow, stage 06) and
+# /usr/local/bin/apl-wifi (webconfig flow). Installed at 0644 — they are
+# sourced via `.` not exec'd, and root reads them on every boot.
+install -D -m 0644 files/usr/local/lib/airplanes/wifi-validators.sh \
+	"${ROOTFS_DIR}/usr/local/lib/airplanes/wifi-validators.sh"
+install -D -m 0644 files/usr/local/lib/airplanes/wifi-keyfile.sh \
+	"${ROOTFS_DIR}/usr/local/lib/airplanes/wifi-keyfile.sh"
+
+# Privileged Wi-Fi management helper. Invoked by webconfig via the pinned
+# sudoers grants in /etc/sudoers.d/010_airplanes-webconfig. Owns all
+# NetworkManager keyfile writes and runs nmcli for activation/test.
+install -D -m 0755 files/usr/local/bin/apl-wifi \
+	"${ROOTFS_DIR}/usr/local/bin/apl-wifi"
+
 # System-package upgrade entrypoint — invoked by webconfig via systemd-run
 # inside a transient airplanes-system-upgrade.service. Argv is pinned in
 # sudoers (010_airplanes-webconfig) and in server.go's DefaultPrivilegedArgv.

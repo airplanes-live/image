@@ -1,0 +1,81 @@
+#!/bin/bash
+# Test stub for nmcli, consumed by apl-wifi tests.
+#
+# Records every argv call to $NMCLI_STUB_LOG (one JSON line per invocation)
+# and emits scripted responses controlled by environment variables.
+#
+# Recognized env vars (set per test):
+#   NMCLI_STUB_ACTIVE        — body for `-t -g UUID,TYPE,DEVICE connection show --active`
+#   NMCLI_STUB_UP_EXIT       — exit code for `connection up uuid <uuid>`
+#   NMCLI_STUB_UP_STDERR     — stderr for `connection up uuid <uuid>`
+#   NMCLI_STUB_CONN_STATE    — body for `-t -g GENERAL.STATE connection show uuid <uuid>`
+#   NMCLI_STUB_CONN_DEVICE   — body for `-t -g GENERAL.DEVICES connection show uuid <uuid>`
+#   NMCLI_STUB_DEV_IP4       — body for `-t -g IP4.ADDRESS device show <dev>`
+#   NMCLI_STUB_DEV_STATE     — body for `-t -g GENERAL.STATE device show <dev>`
+#
+# All env vars are optional; defaults emulate "no active connection" / "ok".
+
+set -e
+
+if [[ -n "${NMCLI_STUB_LOG:-}" ]]; then
+	# Log argv as a space-joined line (good enough for grep-based assertions).
+	printf '%s\n' "$*" >> "$NMCLI_STUB_LOG"
+fi
+
+# Skip leading global flags (`--wait N`) for matching purposes — apl-wifi
+# uses them; the stub doesn't care about timing.
+args=("$@")
+filtered=()
+i=0
+while (( i < ${#args[@]} )); do
+	case "${args[i]}" in
+		--wait)
+			i=$((i + 2))
+			;;
+		*)
+			filtered+=("${args[i]}")
+			i=$((i + 1))
+			;;
+	esac
+done
+
+joined="${filtered[*]:-}"
+
+case "$joined" in
+	"-t -g UUID,TYPE,DEVICE connection show --active")
+		printf '%s' "${NMCLI_STUB_ACTIVE:-}"
+		[[ -n "${NMCLI_STUB_ACTIVE:-}" ]] && printf '\n'
+		exit 0
+		;;
+	"connection reload")
+		exit 0
+		;;
+	"connection up uuid "*)
+		[[ -n "${NMCLI_STUB_UP_STDERR:-}" ]] && printf '%s\n' "$NMCLI_STUB_UP_STDERR" >&2
+		exit "${NMCLI_STUB_UP_EXIT:-0}"
+		;;
+	"connection down uuid "*|"connection delete uuid "*)
+		exit 0
+		;;
+	"-t -g GENERAL.STATE connection show uuid "*)
+		printf '%s' "${NMCLI_STUB_CONN_STATE:-activated}"
+		printf '\n'
+		exit 0
+		;;
+	"-t -g GENERAL.DEVICES connection show uuid "*)
+		printf '%s' "${NMCLI_STUB_CONN_DEVICE:-wlan0}"
+		printf '\n'
+		exit 0
+		;;
+	"-t -g IP4.ADDRESS device show "*)
+		[[ -n "${NMCLI_STUB_DEV_IP4:-}" ]] && printf '%s\n' "$NMCLI_STUB_DEV_IP4"
+		exit 0
+		;;
+	"-t -g GENERAL.STATE device show "*)
+		[[ -n "${NMCLI_STUB_DEV_STATE:-}" ]] && printf '%s\n' "$NMCLI_STUB_DEV_STATE"
+		exit 0
+		;;
+	*)
+		exit 0
+		;;
+esac

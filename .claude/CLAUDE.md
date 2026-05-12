@@ -84,7 +84,11 @@ The state machine on FAT visible to a user pulling the SD card: `airplanes-confi
 
 ### Web UI
 
-Go server in `webconfig/` (modules: `auth`, `feedenv`, `identity`, `logs`, `server`, `status`). Built into `/usr/local/bin/airplanes-webconfig` listening on `127.0.0.1:8080`. Reverse-proxied by lighttpd on `:80`. State source of truth is `/etc/airplanes/feed.env` plus the daemon runtime state files at `/run/<service>/state` (the daemons publish; the UI reads).
+Go server in `webconfig/` (modules: `auth`, `feedenv`, `identity`, `logs`, `server`, `status`, `wifi`). Built into `/usr/local/bin/airplanes-webconfig` listening on `127.0.0.1:8080`. Reverse-proxied by lighttpd on `:80`. State source of truth is `/etc/airplanes/feed.env` plus the daemon runtime state files at `/run/<service>/state` (the daemons publish; the UI reads).
+
+### Wi-Fi management
+
+`/api/wifi` endpoints (list / add / update / delete / test / activate / status) proxy to a sudoers-pinned `apl-wifi` helper at `/usr/local/bin/apl-wifi` (installed by stage 05). The helper owns atomic NetworkManager keyfile writes under `/etc/NetworkManager/system-connections/`, the connect-before-save test flow via `nmcli --wait`, and lock-out enforcement (`force_last` / `force_active_no_uplink` flags rechecked under flock so a stale browser cache can't race past the UI confirm). SSID/PSK/country/priority validators live at `/usr/local/lib/airplanes/wifi-validators.sh` and are sourced by both `airplanes-first-run` (boot-config flow) and `apl-wifi` (UI flow) so identical inputs are accepted on either side; JS twins in `app.js` are pinned by `test/test_validator_parity.sh`. Managed keyfiles match `airplanes-config-wifi.nmconnection` or `airplanes-wifi-*.nmconnection`; foreign keyfiles surface read-only in the UI. `airplanes-webconfig.service` adds `/etc/NetworkManager/system-connections` to `ReadWritePaths=` because the sudo child inherits the unit's mount namespace.
 
 ## Channels
 
@@ -106,6 +110,8 @@ The feed.env schema (which webconfig writes via `configspec.WriteKeys` — `LATI
 - CI's `feed-overlay-smoke` and `feed-update-regression` jobs check out feed `dev` and exercise its smoke scripts (`test/image-release-rootfs-smoke.sh`, `test/update-regression-smoke.sh`) against the built image.
 
 Changes to the boot config schema, the `airplanes-first-run` parser, or the unit ordering need a paired feed PR (typically against `feed/dev`); see `feed/.claude/rules/architecture.md` for the daemon-side contract — the daemons own the `/run/<service>/state` format and the `MLAT_ENABLED`-before-geo classifier.
+
+Wi-Fi management is image-only — `apl-wifi` writes NetworkManager keyfiles directly and does not call into `apl-feed`. The boot-config Wi-Fi keys (`WIFI_SSID` / `WIFI_PASS` / `WIFI_COUNTRY`) remain bootstrap-only; adding or removing networks via the webconfig UI does not write back to `airplanes-config.txt`. The shared `wifi-validators.sh` library is installed by stage 05 (alongside `apl-wifi`) and sourced by stage 06's `airplanes-first-run`, so SSID/PSK rules stay aligned across both flows.
 
 ## Migration & legacy
 
