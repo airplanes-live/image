@@ -56,10 +56,13 @@ setup() {
     source "$SCRIPT"
 }
 
-# Install a `nmcli` shim that dispatches on the argument tail:
-#   - "-t -f DEVICE,TYPE,STATE dev status"           → cat $TMP/nmcli-dev-status
-#   - "--rescan no -t -f IN-USE,SIGNAL,SSID dev wifi list ifname <iface>"
-#                                                     → cat $TMP/nmcli-dev-wifi-<iface>
+# Install a `nmcli` shim that dispatches on argv. Mirrors the argv that
+# render-status actually emits — `--rescan no` follows `dev wifi list`
+# because nmcli 1.52+ rejects the global-flag form.
+#   - "-t -f DEVICE,TYPE,STATE dev status"
+#         → cat $TMP/nmcli-dev-status
+#   - "-t -f IN-USE,SIGNAL,SSID dev wifi list ifname <iface> --rescan no"
+#         → cat $TMP/nmcli-dev-wifi-<iface>
 # Missing fixture files yield empty output (the no-op default). Tests
 # write to these fixtures before invoking the renderer.
 install_default_nmcli_stub() {
@@ -72,8 +75,11 @@ case "\$*" in
         [[ -f "$TMP/nmcli-dev-status" ]] && cat "$TMP/nmcli-dev-status"
         exit 0
         ;;
-    "--rescan no -t -f IN-USE,SIGNAL,SSID dev wifi list ifname "*)
-        iface="\${@: -1}"
+    "-t -f IN-USE,SIGNAL,SSID dev wifi list ifname "*" --rescan no")
+        # Extract the iface that sits between "ifname" and "--rescan".
+        # \${@: -3} is the last three args: "<iface> --rescan no".
+        set -- \${@: -3}
+        iface="\$1"
         f="$TMP/nmcli-dev-wifi-\$iface"
         [[ -f "\$f" ]] && cat "\$f"
         exit 0
@@ -1935,6 +1941,41 @@ _978_stub_states() {
     printf '*:78:MyHome\n' > "$TMP/nmcli-dev-wifi-wlan0"
     out="$(read_network_lines)"
     [ "$out" = "wlan0: MyHome 78%" ]
+}
+
+@test "_nm_dev_wifi_list: --rescan no must follow the dev-wifi-list subcommand" {
+    # Regression for the silent-no-WiFi-row bug on nmcli 1.52+: putting
+    # --rescan in the global-flag position (before `dev wifi list`)
+    # makes nmcli exit 2 with "Option '--rescan' is unknown", which
+    # render-status swallowed via 2>/dev/null. The default test stub
+    # doesn't care about argv ordering, so we install a strict shim
+    # that emulates real nmcli's argument parsing.
+    local shim="$TMP/shim-nmcli-strict"
+    mkdir -p "$shim"
+    cat > "$shim/nmcli" <<'EOF'
+#!/bin/bash
+# Reject --rescan in the global position (before `dev`).
+i=1
+for arg in "$@"; do
+    if [ "$arg" = "dev" ]; then
+        break
+    fi
+    if [ "$arg" = "--rescan" ]; then
+        echo "Option '--rescan' is unknown, try 'nmcli -help'." >&2
+        exit 2
+    fi
+    i=$((i + 1))
+done
+# Otherwise, emit a canned in-use row so the caller can confirm it ran.
+echo "*:78:RegressionNet"
+exit 0
+EOF
+    chmod +x "$shim/nmcli"
+    PATH="$shim:$PATH"
+
+    run _nm_dev_wifi_list wlan0
+    [ "$status" -eq 0 ]
+    [ "$output" = "*:78:RegressionNet" ]
 }
 
 @test "read_network_lines: eth + wifi both connected → eth first, wifi second" {

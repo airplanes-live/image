@@ -589,7 +589,11 @@ _nm_dev_status() {
 
 _nm_dev_wifi_list() {
     local iface="$1"
-    timeout 2 nmcli --rescan no -t -f IN-USE,SIGNAL,SSID dev wifi list ifname "$iface" 2>/dev/null
+    # `--rescan no` MUST follow the `dev wifi list` subcommand. nmcli 1.52
+    # rejects the global-position form ("Option '--rescan' is unknown",
+    # exit 2), which previously silently dropped the WiFi row from the
+    # dashboard because stderr was redirected to /dev/null.
+    timeout 2 nmcli -t -f IN-USE,SIGNAL,SSID dev wifi list ifname "$iface" --rescan no 2>/dev/null
 }
 
 _read_eth_speed_mbps() {
