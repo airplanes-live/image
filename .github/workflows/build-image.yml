@@ -268,7 +268,17 @@ jobs:
           # (same cp source), so running the generator against $asset and
           # overriding only `url` is correct.
           immutable_url="https://github.com/$GITHUB_REPOSITORY/releases/download/dev-latest/$immutable_basename"
-          scripts/make-imager-manifest.sh --image-url "$immutable_url" "$asset"
+          # Build identity for the rpi-imager OS-list entry. $SHA is the full
+          # 40-char github.sha; the script slices to 12 chars internally to
+          # match $short_sha above. build_time uses publish-job run time at
+          # second precision so the name (HH:MMZ) plus the description
+          # (HH:MM:SS UTC) disambiguate same-day and same-minute reruns.
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          scripts/make-imager-manifest.sh \
+              --image-url "$immutable_url" \
+              --commit-sha "$SHA" \
+              --build-time "$build_time" \
+              "$asset"
           manifest="${asset%.img.xz}.rpi-imager-manifest.json"
           if [[ ! -f "$manifest" ]]; then
               echo "manifest not produced at expected path: $manifest" >&2
