@@ -72,8 +72,51 @@ jobs:
       - name: Install bats
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats
 
+      # Snapshot host state so the post-bats step can fail loudly if the
+      # tests mutated the runner. The historical instance was apply_hostname
+      # calling `hostnamectl set-hostname` against the live D-Bus during
+      # local `bats test/` runs — fixed by test/lib/host-runtime-stubs.sh,
+      # but stub coverage is a moving target. This snapshot-and-diff is a
+      # broader safety net that catches any future leak from a command we
+      # haven't thought to stub yet.
+      - name: Snapshot host state (pre-bats)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/host-state-pre"
+          cp /etc/hostname "$RUNNER_TEMP/host-state-pre/hostname"
+          cp /etc/hosts "$RUNNER_TEMP/host-state-pre/hosts"
+          # /etc/wpa_supplicant/ may not exist on a fresh ubuntu-24.04 runner.
+          if [ -d /etc/wpa_supplicant ]; then
+            ls -laR /etc/wpa_supplicant > "$RUNNER_TEMP/host-state-pre/wpa-listing"
+          else
+            echo absent > "$RUNNER_TEMP/host-state-pre/wpa-listing"
+          fi
+
       - name: bats test/
         run: bats test/
+
+      - name: Verify host state untouched (post-bats)
+        if: always()
+        run: |
+          set -euo pipefail
+          fail=0
+          if ! diff -u "$RUNNER_TEMP/host-state-pre/hostname" /etc/hostname; then
+            echo "::error::/etc/hostname was mutated during bats test/ — a stub is missing in test/lib/host-runtime-stubs.sh"
+            fail=1
+          fi
+          if ! diff -u "$RUNNER_TEMP/host-state-pre/hosts" /etc/hosts; then
+            echo "::error::/etc/hosts was mutated during bats test/ — a stub is missing in test/lib/host-runtime-stubs.sh"
+            fail=1
+          fi
+          actual_wpa="absent"
+          if [ -d /etc/wpa_supplicant ]; then
+            actual_wpa="$(ls -laR /etc/wpa_supplicant)"
+          fi
+          if ! diff -u "$RUNNER_TEMP/host-state-pre/wpa-listing" <(printf '%s\n' "$actual_wpa"); then
+            echo "::error::/etc/wpa_supplicant/ was mutated during bats test/ — a stub is missing in test/lib/host-runtime-stubs.sh"
+            fail=1
+          fi
+          exit "$fail"
 
   # Real-systemd smoke for airplanes-first-run.service. Installs the unit
   # and the script onto the runner, runs the unit via systemctl, and asserts

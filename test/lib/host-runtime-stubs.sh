@@ -23,6 +23,7 @@
 reset_host_runtime_stubs() {
     HOSTNAMECTL_CALLS=()
     HOSTNAME_CALLS=()
+    RASPI_CONFIG_CALLS=()
 }
 
 hostnamectl() {
@@ -43,6 +44,18 @@ hostname() {
     return 0
 }
 
-export -f hostnamectl hostname
+# Bash function names accept hyphens, so we can intercept `raspi-config`
+# the same way as the other commands. apply_wifi_country invokes
+# `raspi-config nonint do_wifi_country "$_WIFI_COUNTRY"`; without this
+# stub the test would either reach the host's raspi-config (Raspberry Pi
+# devboxes) or fall through to the production script's fallback that
+# writes directly to /etc/wpa_supplicant/wpa_supplicant.conf on the host.
+# shellcheck disable=SC1003,SC2317  # function-name hyphen is intentional
+raspi-config() {
+    RASPI_CONFIG_CALLS+=("$*")
+    return 0
+}
+
+export -f hostnamectl hostname raspi-config
 
 reset_host_runtime_stubs
