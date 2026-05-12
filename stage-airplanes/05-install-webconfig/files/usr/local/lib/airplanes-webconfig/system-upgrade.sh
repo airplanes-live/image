@@ -46,8 +46,11 @@ exec systemd-inhibit \
             -o DPkg::Lock::Timeout=300 \
             update
 
+        # --error-on=any is only honoured by apt-get update (treats sources
+        # that emit warnings as errors); apt rejects the flag outright on
+        # upgrade with exit 100, so it lives on update only.
         echo "==> apt-get upgrade"
-        stdbuf -oL -eL apt-get --error-on=any -y \
+        stdbuf -oL -eL apt-get -y \
             -o DPkg::Lock::Timeout=300 \
             -o Dpkg::Options::=--force-confold \
             -o Dpkg::Options::=--force-confdef \
