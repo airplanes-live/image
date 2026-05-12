@@ -1127,20 +1127,39 @@ EOF
     [ "${#out[@]}" = "1" ]
 }
 
-@test "snapshot: side-by-side puts the icon column to the left of status" {
-    # render_snapshot_with_header prints `${icon[i]}  ${right[i]}` per row.
-    # The shipped 20-col icon contains non-space characters; "Feeder ID"
-    # is one of the status rows (below the 3-line banner header). Verify
-    # the line containing it has a non-empty, non-whitespace prefix —
-    # i.e. the icon column is present.
+@test "snapshot: banner-stack places icon + box above the status block" {
+    # New layout (cols >= 80): render_snapshot_banner_stack prints
+    # `${icon[i]}  ${box[box_idx]}` per banner row, then a blank line,
+    # then the status block flush left. Verify:
+    #   - the first output row carries the icon (non-space prefix), and
+    #   - "Feeder ID" lives on its own row in the status block (line
+    #     starts with the bold-escape + the label at byte 0 of the
+    #     ANSI-stripped form).
     run bash "$SCRIPT" --snapshot
     [ "$status" -eq 0 ]
-    line="$(printf '%s' "$output" | grep -m1 'Feeder ID' || true)"
-    [ -n "$line" ]
-    prefix="${line%%Feeder ID*}"
-    # Vertical layout would place "Feeder ID" at byte 0 → empty prefix.
-    [ -n "$prefix" ]
-    [[ "$prefix" =~ [^[:space:]] ]]
+    first_line="$(printf '%s' "$output" | head -n1)"
+    # Icon column on the first row: non-whitespace within the first
+    # ICON_WIDTH cells.
+    [[ "${first_line:0:20}" =~ [^[:space:]] ]]
+    # Feeder ID row starts flush left (after ANSI strip).
+    fid_line="$(printf '%s' "$output" | strip_ansi | grep -m1 'Feeder ID' || true)"
+    [ -n "$fid_line" ]
+    [[ "$fid_line" =~ ^Feeder\ ID ]]
+}
+
+@test "snapshot: banner-stack box contains title, tagline, and build line" {
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    plain="$(printf '%s' "$output" | strip_ansi)"
+    # Top border + bottom border + a divider between title/tagline and
+    # the build row. Each border line should contain box-drawing glyphs.
+    [[ "$plain" == *"┌"* ]]
+    [[ "$plain" == *"└"* ]]
+    [[ "$plain" == *"├"* ]]
+    # Title + tagline + build are inside the box rows.
+    [[ "$plain" == *"airplanes.live"* ]]
+    [[ "$plain" == *"Unfiltered flight data"* ]]
+    [[ "$plain" == *"feed sha="* ]]
 }
 
 @test "snapshot: every output line is <= 80 display cells" {
@@ -1148,6 +1167,95 @@ EOF
     [ "$status" -eq 0 ]
     width="$(printf '%s' "$output" | strip_ansi | max_display_width)"
     (( width <= 80 ))
+}
+
+@test "snapshot: renders the full UUID feeder ID (not just a prefix)" {
+    # The legacy compact panel printed the first 8 chars of the UUID; the
+    # new banner-stack layout has room for the canonical 36-char form.
+    local uuid="70265ea1-aaaa-bbbb-cccc-dddddddddddd"
+    printf '%s\n' "$uuid" > "$PATHS_FEEDER_ID"
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$uuid"* ]]
+}
+
+@test "snapshot: banner box auto-sizes to the build line under channel=stable" {
+    # channel=stable is 10 chars including padding; the build line
+    # "feed sha=abcdef1 (channel=stable)" is 33 chars. The box must
+    # expand to contain it (inner >= 33 + 2*pad). Outer width = inner+2.
+    printf '%s\n' "stable" > "$PATHS_RELEASE_CHANNEL"
+    cat > "$PATHS_MANIFEST" <<'EOF'
+{"components":{"airplanes_feed":"abcdef1234567890abcdef1234567890abcdef12"}}
+EOF
+    run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    plain="$(printf '%s' "$output" | strip_ansi)"
+    [[ "$plain" == *"feed sha=abcdef1 (channel=stable)"* ]]
+    # Top border must be long enough that the build row fits inside it.
+    top_line="$(printf '%s' "$plain" | grep -m1 '┌')"
+    border_inner="${top_line//[^─]/}"
+    (( ${#border_inner} >= 33 + 4 ))
+}
+
+@test "snapshot: Access section spills .local URL onto an indented continuation row" {
+    # When the host gets an IPv4 + .local URL, the banner-stack layout
+    # prints `Access      <ip>` then `            <hostname>.local` —
+    # consistent 12-cell label column, no joined comma row.
+    printf 'feeder1\n' > "$TMP/hostname-fixture"
+    # No hostname mock available; instead override the URL functions via
+    # state files / env. Use the live `read_url_local` by setting
+    # $HOSTNAME — read_url_local falls back to `hostname` otherwise.
+    HOSTNAME=feeder1 run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    plain="$(printf '%s' "$output" | strip_ansi)"
+    # The Access label appears once with the IP, the continuation row
+    # starts with the 12-cell indent and the .local URL.
+    [[ "$plain" =~ Access[[:space:]]+http://[0-9] ]]
+    [[ "$plain" =~ $'\n'"            http://"[a-zA-Z0-9-]+\.local ]]
+}
+
+@test "snapshot: pi-health summary in the new builder is truncated to fit 80 cols" {
+    # 100-char ASCII summary; the snapshot builder must clamp it so the
+    # Hardware row is <= 80 display cells after the 12-cell label.
+    local stub long
+    stub="$TMP/pihealth-long"
+    long="$(printf 'X%.0s' {1..100})"
+    cat > "$stub" <<EOF
+#!/bin/bash
+printf 'warn\t%s\n' "$long"
+EOF
+    chmod +x "$stub"
+    PATHS_PIHEALTH_BIN="$stub" run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    plain="$(printf '%s' "$output" | strip_ansi)"
+    hw_line="$(printf '%s' "$plain" | grep -m1 '^Hardware ')"
+    [ -n "$hw_line" ]
+    (( ${#hw_line} <= 80 ))
+    # Ellipsis is the truncation signal.
+    [[ "$hw_line" == *"..."* ]]
+}
+
+@test "snapshot: missing icon degrades to box-only banner without crashing" {
+    # The icon ships at PATHS_ICON; pointing at a non-existent path
+    # exercises the load_artwork failure branch in
+    # render_snapshot_banner_stack. The box must still render and the
+    # status block must still print below.
+    PATHS_ICON="$TMP/nx-icon" run bash "$SCRIPT" --snapshot
+    [ "$status" -eq 0 ]
+    plain="$(printf '%s' "$output" | strip_ansi)"
+    [[ "$plain" == *"airplanes.live"* ]]
+    [[ "$plain" == *"┌"* ]]
+    [[ "$plain" == *"Feeder ID"* ]]
+}
+
+@test "once: clears the screen and renders the same banner-stack as --snapshot" {
+    # --once differs from --snapshot only in the leading \e[2J\e[H clear.
+    # After stripping that prefix, the content should match the snapshot.
+    snap="$(bash "$SCRIPT" --snapshot)"
+    once="$(bash "$SCRIPT" --once)"
+    # The clear is the first thing emitted; trim it.
+    once_trimmed="$(printf '%s' "$once" | sed $'s/^\\x1b\\[2J\\x1b\\[H//')"
+    [ "$snap" = "$once_trimmed" ]
 }
 
 @test "live: vertical fallback fires when cols < 135 (bats default)" {

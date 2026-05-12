@@ -52,10 +52,11 @@ else (besides sshd's own `Last login:` line, which is out of scope).
   console font.
 - `/usr/local/share/airplanes/icon.txt` — 20×11 small ASCII airplane
   badge used by the snapshot (SSH MOTD / `--once`) layout. Renders to
-  the left of a 3-line text header (airplanes.live / random tagline /
-  feed version) above the compact status panel. The text header takes
-  prime real estate from the version line, so the compact panel no
-  longer prints a standalone "Build channel=… sha=…" row.
+  the left of a Unicode-box header (title / random tagline / divider /
+  feed version) — together they form the top banner, with the
+  full-width status block printing below. The box carries the version
+  line so the snapshot status no longer prints a standalone
+  "Build channel=… sha=…" row.
 - `/etc/systemd/system/airplanes-dashboard.service` — owns `/dev/tty1`,
   `Conflicts=getty@tty1.service`, `WantedBy=multi-user.target`.
 - `/etc/systemd/system/getty@tty1.service.d/override.conf` —
@@ -88,11 +89,11 @@ available.
 The renderer picks a layout based on mode and a runtime width guard so
 under-sized terminals degrade rather than wrap:
 
-| Mode         | ≥ 135 cols                            | ≥ 74 cols                                       | ≥ 60 cols                                       | < threshold                              |
-|--------------|---------------------------------------|-------------------------------------------------|-------------------------------------------------|------------------------------------------|
-| `--live`     | wide `banner.txt` (135 cols) on top, full status below | `banner-narrow.txt` (74 cols) on top, full status below | —                                               | small `logo.txt` (40 cols) on top, full status below |
-| `--snapshot` | —                                     | —                                               | `icon.txt` (20 cols) on the left, 3-line text header + compact status panel on the right | text-only header + compact status, no icon |
-| `--once`     | same as `--snapshot`                  | same as `--snapshot`                            | same as `--snapshot`                            | same as `--snapshot`                     |
+| Mode         | ≥ 135 cols                            | ≥ 80 cols                                                                                                  | ≥ 74 cols                                                                              | ≥ 60 cols                                                                                       | < threshold                              |
+|--------------|---------------------------------------|------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|------------------------------------------|
+| `--live`     | wide `banner.txt` (135 cols) on top, full status below | —                                                                                                          | `banner-narrow.txt` (74 cols) on top, full status below                                | —                                                                                               | small `logo.txt` (40 cols) on top, full status below |
+| `--snapshot` | —                                     | `icon.txt` (20 cols) on the left + Unicode-box header (title / tagline / build) on the right form the top banner; full-width status below | —                                                                                      | `icon.txt` on the left, 3-line text header + 38-col compact status panel on the right (legacy fallback) | text-only header + compact status panel, no icon |
+| `--once`     | same as `--snapshot`                  | same as `--snapshot`                                                                                       | same as `--snapshot`                                                                   | same as `--snapshot`                                                                            | same as `--snapshot`                     |
 
 `term_cols()` reports `tput cols` when stdout is a TTY and `TERM` is
 set, else 80. The update-motd.d hook is captured by `pam_motd` (no TTY
