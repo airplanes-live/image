@@ -6,12 +6,20 @@
 #
 # Decision matrix (state, reason):
 #   UAT_INPUT == ""              → disabled, uat_disabled       (exit 64)
+#   UAT_INPUT == "127.0.0.1:30978" + peer (dump978-fa) is idle for no_hardware
+#                                → enabled, peer_no_hardware    (exec daemon, relay idle)
 #   UAT_INPUT == "127.0.0.1:30978" → enabled, ok                (exec daemon)
 #   anything else                → misconfigured, uat_input_invalid (exit 64)
 #
 # Exit 64 paired with RestartPreventExitStatus=64 in the unit file marks
 # the service failed terminal so systemd does not restart-loop on the
 # self-disable. Symmetric with airplanes-mlat.sh.
+#
+# The peer_no_hardware reason exists so the dashboard can honestly say
+# "relay is up but there's no local decoder feeding it" instead of the
+# bare "ok" tile that today is misleading on hardware without a 978 SDR.
+# Behaviour-wise we still exec the daemon (the silent_fail on the
+# net-connector means no log spam when the peer is absent).
 set -e
 
 LATITUDE="${LATITUDE:-0}"
@@ -24,6 +32,8 @@ UAT_INPUT="${UAT_INPUT-}"
 : "${AIRPLANES_978_RUNTIME_DIR:=/run/airplanes-978}"
 : "${AIRPLANES_978_BIN:=/usr/bin/airplanes-978}"
 : "${STATE_WRITER_LIB:=/usr/local/share/airplanes/lib/state-writer.sh}"
+: "${STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
+: "${DUMP978_FA_STATE_FILE:=/run/dump978-fa/state}"
 
 STATE_FILE="$AIRPLANES_978_RUNTIME_DIR/state"
 
@@ -36,6 +46,15 @@ if [[ -r "$STATE_WRITER_LIB" ]]; then
     source "$STATE_WRITER_LIB"
 else
     airplanes_write_state() { return 0; }
+fi
+
+# State reader library. Same defensive fallback as the writer — without it
+# we lose the peer_no_hardware refinement but still run correctly.
+if [[ -r "$STATE_READER_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$STATE_READER_LIB"
+else
+    airplanes_read_state() { return 1; }
 fi
 
 mkdir -p "$AIRPLANES_978_RUNTIME_DIR"
@@ -55,7 +74,25 @@ _978_classify() {
     esac
 }
 
+# Refine the reason on the enabled branch by consulting dump978-fa's state
+# file. If the peer self-disabled because the 978 SDR is absent, surface
+# that to consumers as reason=peer_no_hardware so the dashboard can render
+# an honest "idle relay" tile instead of a misleading green ok.
+_978_refine_reason() {
+    local state="$1" reason="$2"
+    [[ "$state" == "enabled" ]] || { printf '%s\n' "$reason"; return; }
+    local peer_state peer_reason
+    peer_state="$(airplanes_read_state "$DUMP978_FA_STATE_FILE" state 2>/dev/null || true)"
+    peer_reason="$(airplanes_read_state "$DUMP978_FA_STATE_FILE" reason 2>/dev/null || true)"
+    if [[ "$peer_state" == "disabled" && "$peer_reason" == "no_hardware" ]]; then
+        printf 'peer_no_hardware\n'
+        return
+    fi
+    printf '%s\n' "$reason"
+}
+
 read -r STATE REASON < <(_978_classify)
+REASON="$(_978_refine_reason "$STATE" "$REASON")"
 
 airplanes_write_state "$STATE_FILE" \
     "service=airplanes-978" \
