@@ -35,6 +35,7 @@ setup() {
     export PATHS_STATE_FILE_MLAT="$TMP/nx-mlat-state"
     export PATHS_STATE_FILE_FEED="$TMP/nx-feed-state"
     export PATHS_STATE_FILE_978="$TMP/nx-978-state"
+    export PATHS_STATE_FILE_DUMP978FA="$TMP/nx-dump978fa-state"
     export PATHS_STATE_READER_LIB="$TMP/nx-state-reader-lib"
     export PATHS_SYSFS_NET="$TMP/sysfs-net"
     export TERM=dumb  # disable color so assertions match plain text
@@ -1206,9 +1207,23 @@ write_978_state() {
     } > "$PATHS_STATE_FILE_978"
 }
 
+# Producer-side fixture: dump978-fa.sh writes /run/dump978-fa/state.
+# _978_config_state picks this path when the unit is dump978-fa.service.
+write_dump978fa_state() {
+    local decision="$1" reason="$2"
+    mkdir -p "$(dirname "$PATHS_STATE_FILE_DUMP978FA")"
+    {
+        printf 'schema_version=1\n'
+        printf 'service=dump978-fa\n'
+        printf 'state=%s\n' "$decision"
+        printf 'reason=%s\n' "$reason"
+    } > "$PATHS_STATE_FILE_DUMP978FA"
+}
+
 setup_978_state_test_env() {
     install_state_reader_stub
     PATHS_STATE_FILE_978="$TMP/run/airplanes-978/state"
+    PATHS_STATE_FILE_DUMP978FA="$TMP/run/dump978-fa/state"
 }
 
 # Stub systemctl returning chosen ActiveState/ExecMainStatus for the
@@ -1264,11 +1279,32 @@ STUB
 
 @test "_978_config_state: failed + ExecMainStatus=64 + state file absent → 'misconfigured unknown'" {
     setup_978_state_test_env
-    # Do NOT write state file — race window where dump978-fa exited 64
-    # before airplanes-978 wrote state.
+    # Do NOT write either state file — race window where the wrapper
+    # exited 64 before publishing state.
+    stub_systemctl_978 failed 64
+    run _978_config_state failed airplanes-978.service
+    [ "$output" = 'misconfigured unknown' ]
+}
+
+@test "_978_config_state: dump978-fa reads /run/dump978-fa/state (not airplanes-978's)" {
+    setup_978_state_test_env
+    # Different states in the two files; the unit-name dispatch must pick
+    # the right one so a producer-side decision doesn't mask the consumer
+    # tile (or vice versa).
+    write_978_state         enabled  ok
+    write_dump978fa_state   disabled no_hardware
     stub_systemctl_978 failed 64
     run _978_config_state failed dump978-fa.service
-    [ "$output" = 'misconfigured unknown' ]
+    [ "$output" = 'disabled no_hardware' ]
+}
+
+@test "_978_config_state: airplanes-978 reads /run/airplanes-978/state (peer_no_hardware refinement)" {
+    setup_978_state_test_env
+    write_978_state         enabled  peer_no_hardware
+    write_dump978fa_state   disabled no_hardware
+    stub_systemctl_978 active 0
+    run _978_config_state active airplanes-978.service
+    [ "$output" = 'enabled peer_no_hardware' ]
 }
 
 @test "_978_config_state: failed + ExecMainStatus=1 → 'failed exit_1'" {
@@ -1294,7 +1330,9 @@ STUB
 
 @test "unit_state_with_reason: dump978-fa active + state=disabled → 'disabled-by-config uat_disabled'" {
     setup_978_state_test_env
-    write_978_state disabled uat_disabled
+    # uat_disabled is the producer file too (UAT off in config), so write
+    # to the dump978-fa state file for unit-name correctness.
+    write_dump978fa_state disabled uat_disabled
     stub_systemctl_978 active 0
     run unit_state_with_reason dump978-fa.service
     [ "$output" = 'disabled-by-config uat_disabled' ]
@@ -1306,6 +1344,35 @@ STUB
     stub_systemctl_978 failed 64
     run unit_state_with_reason airplanes-978.service
     [ "$output" = 'misconfigured uat_input_invalid' ]
+}
+
+# ---- New wait/idle synthetic states for no-hardware paths ----------------
+
+@test "unit_state_with_reason: dump978-fa failed + exit-64 + state=disabled,reason=no_hardware → 'wait no_hardware'" {
+    setup_978_state_test_env
+    write_dump978fa_state disabled no_hardware
+    stub_systemctl_978 failed 64
+    run unit_state_with_reason dump978-fa.service
+    [ "$output" = 'wait no_hardware' ]
+}
+
+@test "unit_state_with_reason: airplanes-978 active + state=enabled,reason=peer_no_hardware → 'idle peer_no_hardware'" {
+    setup_978_state_test_env
+    write_978_state enabled peer_no_hardware
+    stub_systemctl_978 active 0
+    run unit_state_with_reason airplanes-978.service
+    [ "$output" = 'idle peer_no_hardware' ]
+}
+
+@test "svc_marker: wait token → ':wait' marker (warn colour)" {
+    # TERM=dumb in setup() disables colour, so we just assert the marker text.
+    run svc_marker dump978-fa.service wait
+    [ "$output" = 'dump978-fa:wait' ]
+}
+
+@test "svc_marker: idle token → ':idle' marker (warn colour)" {
+    run svc_marker airplanes-978.service idle
+    [ "$output" = '978:idle' ]
 }
 
 # ---- Network section: _fmt_eth_speed ---------------------------------------
