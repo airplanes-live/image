@@ -48,6 +48,9 @@ LC_ALL=C
 : "${PATHS_STATE_FILE_DUMP978FA:=/run/dump978-fa/state}"
 : "${PATHS_STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
 : "${PATHS_SYSFS_NET:=/sys/class/net}"
+# Absolute path: the MOTD wrapper deliberately strips /usr/local/bin from
+# PATH, so PATH-relative invocation would silently fail on SSH login.
+: "${PATHS_PIHEALTH_BIN:=/usr/local/bin/airplanes-webconfig}"
 
 # State reader. Defensive — if the lib is missing (mid-update transient or
 # pi-gen build older than feed PR 1+2), fall back to a stub so consumers
@@ -156,6 +159,17 @@ if _use_color; then
 else
     C_RESET="" C_DIM="" C_BOLD="" C_OK="" C_WARN="" C_FAIL="" C_HDR=""
 fi
+
+# Map a pi-health severity token to its colour. Unknown tokens (and "na")
+# fall back to dim — same treatment as an inactive/unknown service row.
+pihealth_color() {
+    case "$1" in
+        ok)   printf '%s' "$C_OK"   ;;
+        warn) printf '%s' "$C_WARN" ;;
+        err)  printf '%s' "$C_FAIL" ;;
+        *)    printf '%s' "$C_DIM"  ;;
+    esac
+}
 
 # ---- String sanitization. Strips non-printable, clamps length. -------------
 # Defends against weird hostnames / channel strings landing in our framebuffer
@@ -755,6 +769,8 @@ SD_978_NOTE=""
 SD_CPU_TEMP=""
 SD_UPTIME=""
 SD_LOAD=""
+SD_PIHEALTH_SEVERITY=""
+SD_PIHEALTH_SUMMARY=""
 declare -a SD_NETWORK_LINES=()
 
 # ---- Per-frame cache of systemd unit properties. --------------------------
@@ -962,6 +978,31 @@ collect_status_data() {
     SD_UPTIME="$(read_uptime_human)"
     SD_LOAD="$(read_load_1m)"
 
+    # Pi health: severity<TAB>summary from `airplanes-webconfig --pi-health`.
+    # Absolute binary path (MOTD strips /usr/local/bin from PATH). timeout(1)
+    # bounds wall-clock; the Go side uses a shorter 2s ctx so a wedged probe
+    # surfaces as a graceful "na" before the shell SIGTERM kicks in. An old
+    # binary lacking the flag exits 2 from flag.Parse and the row is omitted.
+    SD_PIHEALTH_SEVERITY=""
+    SD_PIHEALTH_SUMMARY=""
+    local _pihealth_raw _pihealth_sev _pihealth_sum
+    if _pihealth_raw="$(timeout 3 "$PATHS_PIHEALTH_BIN" --pi-health 2>/dev/null)"; then
+        # First line only; require a tab separator; allowlist severity tokens.
+        _pihealth_raw="${_pihealth_raw%%$'\n'*}"
+        if [[ "$_pihealth_raw" == *$'\t'* ]]; then
+            _pihealth_sev="${_pihealth_raw%%$'\t'*}"
+            _pihealth_sum="${_pihealth_raw#*$'\t'}"
+            case "$_pihealth_sev" in
+                ok|warn|err|na)
+                    SD_PIHEALTH_SEVERITY="$_pihealth_sev"
+                    # Strip control bytes as a belt-and-braces guard against
+                    # terminal-escape injection via a misbehaving probe.
+                    SD_PIHEALTH_SUMMARY="$(printf '%s' "$_pihealth_sum" | LC_ALL=C tr -d '\000-\037\177')"
+                    ;;
+            esac
+        fi
+    fi
+
     mapfile -t SD_NETWORK_LINES < <(read_network_lines)
 }
 
@@ -1165,6 +1206,15 @@ build_status_lines_full() {
             "$C_DIM" "${SD_LOAD:--}" "$C_RESET")")
     fi
 
+    # Hardware health — one row, coloured by severity. Omitted when the
+    # probe binary is missing, fails, or returns a disallowed severity.
+    if [[ -n "$SD_PIHEALTH_SEVERITY" ]]; then
+        local _ph_color
+        _ph_color="$(pihealth_color "$SD_PIHEALTH_SEVERITY")"
+        STATUS_LINES+=("$(printf '%bHardware%b    %b%s%b' \
+            "$C_BOLD" "$C_RESET" "$_ph_color" "$SD_PIHEALTH_SUMMARY" "$C_RESET")")
+    fi
+
     if [[ "$mode" != "snapshot" ]]; then
         STATUS_LINES+=("")
         STATUS_LINES+=("$(printf '%bLocal login moved to TTY2 (Alt+F2). Refreshing every 5s.%b' \
@@ -1265,6 +1315,25 @@ build_status_lines_compact() {
     else
         STATUS_LINES+=("$(printf '           load %s%s%s' \
             "$C_DIM" "${SD_LOAD:--}" "$C_RESET")")
+    fi
+
+    # Hardware health — one row, coloured by severity. ASCII-only summary
+    # from the Go side, so _compact_truncate's byte-oriented cut won't
+    # mangle multibyte characters. Indent matches the System row's label
+    # column. Truncated to STATUS_PANEL_WIDTH on the bare summary text;
+    # the colour escape sequences are added after truncation so they don't
+    # consume budget.
+    if [[ -n "$SD_PIHEALTH_SEVERITY" ]]; then
+        local _ph_color _ph_label _ph_indent _ph_avail _ph_summary
+        _ph_color="$(pihealth_color "$SD_PIHEALTH_SEVERITY")"
+        _ph_label="Hardware   "
+        _ph_avail=$(( STATUS_PANEL_WIDTH - ${#_ph_label} ))
+        _ph_summary="$SD_PIHEALTH_SUMMARY"
+        if (( ${#_ph_summary} > _ph_avail )); then
+            _ph_summary="${_ph_summary:0:$((_ph_avail - 3))}..."
+        fi
+        STATUS_LINES+=("$(printf '%b%s%b%b%s%b' \
+            "$C_BOLD" "$_ph_label" "$C_RESET" "$_ph_color" "$_ph_summary" "$C_RESET")")
     fi
 
     if [[ -n "$SD_MLAT_WARN" ]]; then
