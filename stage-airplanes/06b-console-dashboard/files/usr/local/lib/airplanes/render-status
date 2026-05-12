@@ -12,10 +12,10 @@
 #   --once       one-shot WITH a screen clear (manual `apl-status` use).
 #                Same side-by-side layout as --snapshot.
 #
-# A runtime width guard (term_cols) falls back to a vertical layout
+# A runtime width guard (term_cols) falls back to narrower layouts
 # when the terminal isn't wide enough:
-#   --live   needs >= 135 cols; otherwise prints the small logo above
-#            the full status block.
+#   --live   >= 135 cols → wide banner; >= 74 cols → narrow banner;
+#            otherwise the small 40-col logo above the full status block.
 #   --snapshot/--once need >= 80 cols; otherwise stack compact status
 #            with no logo (it would wrap at the terminal edge).
 #
@@ -40,6 +40,7 @@ LC_ALL=C
 : "${PATHS_THERMAL:=/sys/class/thermal/thermal_zone0/temp}"
 : "${PATHS_LOGO:=/usr/local/share/airplanes/logo.txt}"
 : "${PATHS_BANNER:=/usr/local/share/airplanes/banner.txt}"
+: "${PATHS_BANNER_NARROW:=/usr/local/share/airplanes/banner-narrow.txt}"
 : "${PATHS_STATE_FILE_MLAT:=/run/airplanes-mlat/state}"
 : "${PATHS_STATE_FILE_FEED:=/run/airplanes-feed/state}"
 : "${PATHS_STATE_FILE_978:=/run/airplanes-978/state}"
@@ -58,6 +59,7 @@ fi
 
 readonly LOGO_WIDTH=40
 readonly BANNER_WIDTH=135
+readonly BANNER_NARROW_WIDTH=74
 readonly SIDE_BY_SIDE_MIN_COLS=80
 readonly STATUS_PANEL_WIDTH=38
 
@@ -1126,10 +1128,28 @@ build_status_lines_compact() {
 # stdout. Choose the right layout in render_once based on mode + cols.
 
 render_banner_stack() {
-    # Banner above full status. Falls back to the small logo if the banner
-    # file is missing/malformed; ultimately to no-art if neither loads.
+    # Wide banner above full status. Falls through narrow banner → small
+    # logo → no-art if successive files are missing/malformed.
     local artwork=()
     if ! load_artwork "$PATHS_BANNER" "$BANNER_WIDTH" artwork; then
+        if ! load_artwork "$PATHS_BANNER_NARROW" "$BANNER_NARROW_WIDTH" artwork; then
+            load_artwork "$PATHS_LOGO" "$LOGO_WIDTH" artwork || artwork=()
+        fi
+    fi
+    if (( ${#artwork[@]} > 0 )); then
+        printf '%s' "$C_HDR"
+        printf '%s\n' "${artwork[@]}"
+        printf '%s\n' "$C_RESET"
+    fi
+    printf '%s\n' "${STATUS_LINES[@]}"
+}
+
+render_banner_narrow_stack() {
+    # Narrow (~74-col) banner above full status. Used by --live when the
+    # terminal is too narrow for the wide banner but wide enough for the
+    # compact one. Falls back to the small logo, then to no-art.
+    local artwork=()
+    if ! load_artwork "$PATHS_BANNER_NARROW" "$BANNER_NARROW_WIDTH" artwork; then
         load_artwork "$PATHS_LOGO" "$LOGO_WIDTH" artwork || artwork=()
     fi
     if (( ${#artwork[@]} > 0 )); then
@@ -1200,6 +1220,8 @@ render_once() {
             build_status_lines_full live
             if (( cols >= BANNER_WIDTH )); then
                 render_banner_stack
+            elif (( cols >= BANNER_NARROW_WIDTH )); then
+                render_banner_narrow_stack
             else
                 render_vertical_full_with_logo
             fi
