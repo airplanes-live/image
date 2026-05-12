@@ -38,7 +38,7 @@ CI (`.github/workflows/ci.yml`) runs on push to `main`/`dev` and on PRs:
 | `systemd-verify` | `systemd-analyze verify` against all `.service` files (with stubbed binaries and fetched upstream tar1090 / graphs1090 units) |
 | `feed-update-regression` | Checks out feed `dev`, runs `test/update-regression-smoke.sh` |
 
-Image builds run separately via `.github/workflows/build-image.yml` on `ubuntu-24.04-arm` (native arm64, no qemu) with per-channel artifact retention plus per-cell rootfs and first-run chroot smoke validation.
+Image builds run separately via `.github/workflows/build-image.yml` on `ubuntu-24.04-arm` (native arm64, no qemu) with per-channel artifact retention plus per-cell rootfs and first-run chroot smoke validation. After the build job, `boot-smoke` runs `feed/test/image-boot.sh` against the just-built artifact under QEMU and layers image-side probes (`test/boot-smoke/extra-probe.sh`) — boot-config apply state, lighttpd, webconfig HTTP via loopback, sshd — via the `AIRPLANES_BOOT_SMOKE_EXTRA_SETUP` hook on feed's boot-smoke script.
 
 Run a single bats file locally:
 
