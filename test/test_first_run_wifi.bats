@@ -10,32 +10,26 @@
 #   apply_wifi_country
 #
 # All tests run unprivileged; we redirect WIFI_KEYFILE_DIR / WIFI_KEYFILE
-# under $BATS_TMPDIR and shadow raspi-config / iw / nmcli / systemctl with
-# stub binaries on PATH. Sourcing the script picks up the env-var-honoring
-# defaults at top.
+# under $BATS_TMPDIR and intercept host-mutating commands (raspi-config,
+# hostnamectl, hostname) via the bash-function stubs in
+# test/lib/host-runtime-stubs.sh. apply_wifi_country invokes
+# `raspi-config nonint do_wifi_country "$_WIFI_COUNTRY"` and without the
+# stub would either reach a real raspi-config on a Pi devbox or fall
+# through to the script's /etc/wpa_supplicant/wpa_supplicant.conf
+# fallback write — both leak the test fixture to the host.
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06-firstboot/files/usr/local/sbin/airplanes-first-run"
     TMP="$(mktemp -d)"
     export WIFI_KEYFILE_DIR="$TMP/nm"
     export WIFI_KEYFILE="$WIFI_KEYFILE_DIR/airplanes-config-wifi.nmconnection"
-    # Stub binaries on PATH: raspi-config returns success but writes nothing
-    # so apply_wifi_country can be exercised without touching the host.
-    STUB_BIN="$TMP/bin"
-    mkdir -p "$STUB_BIN"
-    cat > "$STUB_BIN/raspi-config" <<'STUB'
-#!/bin/bash
-echo "raspi-config $*" >> "$RASPI_LOG"
-exit 0
-STUB
-    chmod +x "$STUB_BIN/raspi-config"
-    export RASPI_LOG="$TMP/raspi.log"
-    : > "$RASPI_LOG"
-    export PATH="$STUB_BIN:$PATH"
     declare -gA BOOT_CFG=()
+    # shellcheck source=lib/host-runtime-stubs.sh
+    source "$BATS_TEST_DIRNAME/lib/host-runtime-stubs.sh"
     # shellcheck source=/dev/null
     source "$SCRIPT"
     BOOT_CFG=()
+    reset_host_runtime_stubs
 }
 
 teardown() { rm -rf "$TMP"; }
@@ -231,13 +225,13 @@ teardown() { rm -rf "$TMP"; }
 @test "40: empty country -> no-op, no raspi-config call" {
     _WIFI_COUNTRY=""
     apply_wifi_country
-    [ ! -s "$RASPI_LOG" ]
+    [ "${#RASPI_CONFIG_CALLS[@]}" -eq 0 ]
 }
 
 @test "41: valid country -> raspi-config nonint do_wifi_country called" {
     _WIFI_COUNTRY="DE"
     apply_wifi_country
-    grep -q "nonint do_wifi_country DE" "$RASPI_LOG"
+    [[ " ${RASPI_CONFIG_CALLS[*]} " == *"nonint do_wifi_country DE"* ]]
 }
 
 # ---- consume_wifi_config integration ----------------------------------
