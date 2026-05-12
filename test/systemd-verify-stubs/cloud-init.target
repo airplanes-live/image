@@ -1,0 +1,11 @@
+[Unit]
+# CI stub mirroring Debian's /lib/systemd/system/cloud-init.target.
+# After=multi-user.target is the load-bearing edge: cloud-init.target
+# activates AFTER multi-user is reached, which lets airplanes-grant-sudo
+# (WantedBy=cloud-init.target) safely depend on cloud-final.service
+# without forming a Before-cycle through multi-user.target.
+Description=Cloud-init target (CI stub)
+After=multi-user.target
+
+[Install]
+WantedBy=multi-user.target
