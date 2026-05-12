@@ -75,6 +75,10 @@ const dispatch = {
     latitude: isValidLatitude,
     longitude: isValidLongitude,
     altitude: isValidAltitude,
+    wifi_ssid: isValidWifiSSID,
+    wifi_psk: isValidWifiPSK,
+    wifi_country: isValidWifiCountry,
+    wifi_priority: isValidWifiPriority,
 };
 const [,, name, value] = process.argv;
 const fn = dispatch[name];
@@ -85,19 +89,28 @@ if (!fn) {
 process.stdout.write(fn(value) ? "true" : "false");
 JS_DISPATCH
 
-# Bash dispatcher — sources configure-validators.sh once and dispatches on
-# the validator name. Run as a child process per row so a `set -e` abort
-# in one row doesn't take down the test driver.
+# Bash dispatcher — sources both feed's configure-validators.sh (lat/lon/alt)
+# and the image-side wifi-validators.sh (wifi_*). Run as a child process per
+# row so a `set -e` abort in one row doesn't take down the test driver.
+WIFI_LIB="$IMAGE_ROOT/stage-airplanes/05-install-webconfig/files/usr/local/lib/airplanes/wifi-validators.sh"
+[[ -f "$WIFI_LIB" ]] || die "$WIFI_LIB not found."
+
 BASH_DRIVER="$WORK/bash_validator.sh"
 cat > "$BASH_DRIVER" <<BASH_DRIVER_EOF
 #!/usr/bin/env bash
 set -u
 # shellcheck source=/dev/null
 source "$FEED_ROOT/scripts/lib/configure-validators.sh"
+# shellcheck source=/dev/null
+source "$WIFI_LIB"
 case "\$1" in
-    latitude)  fn=valid_latitude  ;;
-    longitude) fn=valid_longitude ;;
-    altitude)  fn=valid_altitude  ;;
+    latitude)      fn=valid_latitude          ;;
+    longitude)     fn=valid_longitude         ;;
+    altitude)      fn=valid_altitude          ;;
+    wifi_ssid)     fn=apl_wifi_valid_ssid     ;;
+    wifi_psk)      fn=apl_wifi_valid_psk      ;;
+    wifi_country)  fn=apl_wifi_valid_country  ;;
+    wifi_priority) fn=apl_wifi_valid_priority ;;
     *) echo "unknown" >&2; exit 2 ;;
 esac
 if "\$fn" "\$2"; then echo true; else echo false; fi
