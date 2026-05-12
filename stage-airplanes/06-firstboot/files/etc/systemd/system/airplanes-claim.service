@@ -1,8 +1,10 @@
 [Unit]
 Description=airplanes.live feeder claim registration
 ConditionPathExists=!/etc/airplanes/feeder-claim-secret
-After=airplanes-first-run.service network-online.target
-Wants=network-online.target
+# NM daemon ordering — not network-online. Pulling network-online would
+# stall first boot at NetworkManager-wait-online; the timer retries every
+# 5 min and the claim cmd fails fast on no-network (curl rc=6/7/28).
+After=airplanes-first-run.service NetworkManager.service
 
 [Service]
 Type=oneshot
