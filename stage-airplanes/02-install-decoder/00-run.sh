@@ -36,9 +36,11 @@ install -D -m 0755 files/usr/local/share/airplanes/dump978-fa.sh \
 	"${ROOTFS_DIR}/usr/local/share/airplanes/dump978-fa.sh"
 
 # Image-owned systemd units. readsb is enabled in 01-run-chroot.sh; the two
-# 978 units are systemctl-enabled at install time and self-disable via
-# exit 64 when UAT_INPUT is empty/invalid in /etc/airplanes/feed.env (set
-# via the webconfig UI at http://<hostname>.local/).
+# 978 units are systemctl-enabled at install time and self-disable when
+# UAT_INPUT is empty in /etc/airplanes/feed.env — wrappers write decision
+# state to /run/<svc>/state and sleep so the unit stays active. Invalid
+# UAT_INPUT exits 64 to surface as failed. Toggled via the webconfig UI
+# at http://<hostname>.local/.
 install -D -m 0644 files/etc/systemd/system/readsb.service \
 	"${ROOTFS_DIR}/etc/systemd/system/readsb.service"
 install -D -m 0644 files/etc/systemd/system/dump978-fa.service \

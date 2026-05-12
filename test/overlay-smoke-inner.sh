@@ -121,7 +121,7 @@ grep -q 'feed2.airplanes.live,64004' /usr/local/share/airplanes/airplanes-feed.s
 grep -qE '^RuntimeDirectoryPreserve=yes$' /etc/systemd/system/airplanes-feed.service \
     || fail "airplanes-feed.service missing RuntimeDirectoryPreserve=yes (consumers can't read state across restart cycles)"
 grep -qE '^RuntimeDirectoryPreserve=yes$' /etc/systemd/system/airplanes-mlat.service \
-    || fail "airplanes-mlat.service missing RuntimeDirectoryPreserve=yes (misconfig state would vanish across exit-64 fail)"
+    || fail "airplanes-mlat.service missing RuntimeDirectoryPreserve=yes (state would vanish across wrapper restarts)"
 grep -qE '^RuntimeDirectory=airplanes-feed$' /etc/systemd/system/airplanes-feed.service \
     || fail "airplanes-feed.service missing RuntimeDirectory=airplanes-feed"
 grep -qE '^RuntimeDirectory=airplanes-mlat$' /etc/systemd/system/airplanes-mlat.service \
@@ -193,25 +193,27 @@ fi
 [[ -s /etc/airplanes/.build-dump978-sha ]] || fail ".build-dump978-sha missing or empty"
 [[ ! -d /usr/local/src/airplanes-readsb-build ]] || fail "readsb build dir not cleaned up"
 [[ ! -d /usr/local/src/airplanes-dump978-build ]] || fail "dump978 build dir not cleaned up"
-# readsb + 978 units are all enabled at install. The 978 wrappers self-disable
-# via exit 64 when UAT_INPUT is empty/invalid (parallel to airplanes-mlat).
-# UAT_INPUT lands in feed.env via webconfig — the boot config no longer
-# touches operational keys.
+# readsb + 978 units are all enabled at install. The 978 wrappers
+# self-disable when UAT_INPUT is empty (sleep + exit 0 so the unit stays
+# active, parallel to airplanes-mlat); invalid UAT_INPUT exits 64 and
+# surfaces as failed. UAT_INPUT lands in feed.env via webconfig — the
+# boot config no longer touches operational keys.
 have_enable_link readsb.service || fail "readsb.service enable symlink missing"
 have_enable_link dump978-fa.service \
-    || fail "dump978-fa.service should be enabled at install (PR 4: self-disables via exit 64)"
+    || fail "dump978-fa.service should be enabled at install"
 have_enable_link airplanes-978.service \
-    || fail "airplanes-978.service should be enabled at install (PR 4: self-disables via exit 64)"
+    || fail "airplanes-978.service should be enabled at install"
 
-# 978 unit-file directives required for the self-disable pattern: exit 64
-# without RestartPreventExitStatus=64 would loop the unit, and on
-# airplanes-978 the state file must survive the failed terminal state.
+# 978 unit-file directives. RestartPreventExitStatus=64 keeps systemd from
+# restart-looping the misconfigured-input branch; RuntimeDirectoryPreserve=yes
+# keeps the state file alive across wrapper re-runs so /api/status can
+# keep reading decision=disabled.
 grep -qE '^RestartPreventExitStatus=64$' /etc/systemd/system/dump978-fa.service \
-    || fail "dump978-fa.service missing RestartPreventExitStatus=64 (would restart-loop on UAT_INPUT empty)"
+    || fail "dump978-fa.service missing RestartPreventExitStatus=64 (would restart-loop on UAT_INPUT invalid)"
 grep -qE '^RestartPreventExitStatus=64$' /etc/systemd/system/airplanes-978.service \
     || fail "airplanes-978.service missing RestartPreventExitStatus=64"
 grep -qE '^RuntimeDirectoryPreserve=yes$' /etc/systemd/system/airplanes-978.service \
-    || fail "airplanes-978.service missing RuntimeDirectoryPreserve=yes (state file would vanish across exit-64)"
+    || fail "airplanes-978.service missing RuntimeDirectoryPreserve=yes"
 
 # Stage 02 fuller-features wiring (consumed by tar1090 heatmap/coverage).
 grep -q -- '--write-json-globe-index' /usr/local/share/airplanes/readsb.sh \

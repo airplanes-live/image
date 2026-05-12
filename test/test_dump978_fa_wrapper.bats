@@ -3,15 +3,18 @@
 # Tests for dump978-fa.sh — the 978 producer wrapper. The wrapper reads
 # UAT_INPUT + DUMP978_SDR_SERIAL from the EnvironmentFile-loaded env,
 # runs a /sys/bus/usb/devices/*/serial probe to confirm an SDR with the
-# requested serial is present, and either exits 64 (self-disable, with
-# the reason published to /run/dump978-fa/state) or exec's dump978-fa.
+# requested serial is present, and either execs dump978-fa, sleeps for
+# the disabled branches (uat_disabled / no_hardware → exit 0, unit stays
+# active), or exits 64 for misconfigured UAT_INPUT.
 #
 # Test hooks consumed:
-#   DUMP978_FA_BIN                — binary stub (avoids real /usr/bin/dump978-fa)
-#   DUMP978_FA_RUNTIME_DIR        — state file directory (TMP-rooted)
-#   DUMP978_FA_USB_SERIAL_GLOB    — probe glob (TMP-rooted; tests place
-#                                   matching/missing serial files there)
-#   STATE_WRITER_LIB              — points at the inline mock below
+#   DUMP978_FA_BIN                  — binary stub (avoids real /usr/bin/dump978-fa)
+#   DUMP978_FA_RUNTIME_DIR          — state file directory (TMP-rooted)
+#   DUMP978_FA_USB_SERIAL_GLOB      — probe glob (TMP-rooted; tests place
+#                                     matching/missing serial files there)
+#   STATE_WRITER_LIB                — points at the inline mock below
+#   DUMP978_FA_DISABLED_SLEEP=0     — bypass the uat_disabled sleep
+#   DUMP978_FA_NO_HARDWARE_SLEEP=0  — bypass the no_hardware sleep
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/02-install-decoder/files/usr/local/share/airplanes/dump978-fa.sh"
@@ -59,7 +62,14 @@ exit 0
 EOF
     chmod +x "$DUMP978_FA_BIN"
 
-    export STATE_WRITER_LIB DUMP978_FA_RUNTIME_DIR DUMP978_FA_USB_SERIAL_GLOB DUMP978_FA_BIN
+    # Bypass the disabled-state sleeps so the wrapper returns promptly.
+    # Production defaults are 3600/60s; 0 is test-only (in production it
+    # would create a restart storm under Restart=always).
+    DUMP978_FA_DISABLED_SLEEP=0
+    DUMP978_FA_NO_HARDWARE_SLEEP=0
+
+    export STATE_WRITER_LIB DUMP978_FA_RUNTIME_DIR DUMP978_FA_USB_SERIAL_GLOB DUMP978_FA_BIN \
+        DUMP978_FA_DISABLED_SLEEP DUMP978_FA_NO_HARDWARE_SLEEP
 }
 
 teardown() { rm -rf "$TMP"; }
@@ -80,11 +90,11 @@ plug_sdr() {
     printf '%s' "$serial" > "$USB_ROOT/$devname/serial"
 }
 
-# ---- UAT_INPUT="" → state=disabled reason=uat_disabled, exit 64 ----------
+# ---- UAT_INPUT="" → state=disabled reason=uat_disabled, sleep + exit 0 ---
 
-@test "01: UAT_INPUT empty → state=disabled reason=uat_disabled, exit 64" {
+@test "01: UAT_INPUT empty → state=disabled reason=uat_disabled, exit 0" {
     run_wrapper ""
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     [ -f "$DUMP978_FA_RUNTIME_DIR/state" ]
     grep -Fxq 'state=disabled' "$DUMP978_FA_RUNTIME_DIR/state"
     grep -Fxq 'reason=uat_disabled' "$DUMP978_FA_RUNTIME_DIR/state"
@@ -98,18 +108,20 @@ plug_sdr() {
         DUMP978_FA_RUNTIME_DIR="$DUMP978_FA_RUNTIME_DIR" \
         DUMP978_FA_USB_SERIAL_GLOB="$DUMP978_FA_USB_SERIAL_GLOB" \
         DUMP978_FA_BIN="$DUMP978_FA_BIN" \
+        DUMP978_FA_DISABLED_SLEEP=0 \
+        DUMP978_FA_NO_HARDWARE_SLEEP=0 \
         bash "$SCRIPT"
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     grep -Fxq 'state=disabled' "$DUMP978_FA_RUNTIME_DIR/state"
     grep -Fxq 'reason=uat_disabled' "$DUMP978_FA_RUNTIME_DIR/state"
 }
 
 # ---- UAT_INPUT valid + probe MISS → state=disabled reason=no_hardware ----
 
-@test "03: UAT_INPUT valid + no SDR with matching serial → state=disabled reason=no_hardware, exit 64" {
+@test "03: UAT_INPUT valid + no SDR with matching serial → state=disabled reason=no_hardware, exit 0" {
     # USB_ROOT is empty (no */serial files). Probe miss.
     run_wrapper "127.0.0.1:30978"
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     grep -Fxq 'state=disabled' "$DUMP978_FA_RUNTIME_DIR/state"
     grep -Fxq 'reason=no_hardware' "$DUMP978_FA_RUNTIME_DIR/state"
     [ ! -e "$TMP/binary-invoked" ]
@@ -125,7 +137,7 @@ plug_sdr() {
     # report no_hardware because the requested serial is "978".
     plug_sdr "1090" "usb1-1.1"
     run_wrapper "127.0.0.1:30978"
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     grep -Fxq 'reason=no_hardware' "$DUMP978_FA_RUNTIME_DIR/state"
 }
 
@@ -178,7 +190,7 @@ plug_sdr() {
 @test "11: custom DUMP978_SDR_SERIAL with no matching device → no_hardware" {
     plug_sdr "978" "usb2-2.1"
     DUMP978_SDR_SERIAL="something-else" UAT_INPUT="127.0.0.1:30978" run bash "$SCRIPT"
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     grep -Fxq 'reason=no_hardware' "$DUMP978_FA_RUNTIME_DIR/state"
     grep -Fxq 'sdr_serial=something-else' "$DUMP978_FA_RUNTIME_DIR/state"
 }
@@ -228,10 +240,11 @@ plug_sdr() {
 # ---- Defensive: missing state-writer lib --------------------------------
 
 @test "17: missing state-writer lib → wrapper still self-disables on no_hardware" {
-    # State file won't be written (no writer) but wrapper must still exit 64
-    # so dump978-fa doesn't get exec'd into a no-SDR failure loop.
+    # State file won't be written (no writer) but wrapper must still skip
+    # the daemon exec — sleeping out the no_hardware branch is preferable
+    # to spawning dump978-fa into a no-SDR failure loop.
     STATE_WRITER_LIB="/nonexistent/state-writer.sh" run_wrapper "127.0.0.1:30978"
-    [ "$status" -eq 64 ]
+    [ "$status" -eq 0 ]
     [ ! -e "$DUMP978_FA_RUNTIME_DIR/state" ]
     [ ! -e "$TMP/binary-invoked" ]
 }
