@@ -6,11 +6,19 @@ Wants=network.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/airplanes/feed.env
+RuntimeDirectory=dump978-fa
+RuntimeDirectoryMode=0755
+# Wrapper writes /run/dump978-fa/state and exits 64 when UAT_INPUT is empty,
+# misconfigured, or when no RTL-SDR with the expected serial is present.
+# Preserve=yes keeps the state file across the resulting failed terminal
+# state so /api/status can read decision=disabled after the daemon
+# self-disabled. (Symmetric with airplanes-978.service / airplanes-mlat.service.)
+RuntimeDirectoryPreserve=yes
 ExecStart=/usr/local/share/airplanes/dump978-fa.sh
 SyslogIdentifier=dump978-fa
 Restart=always
 RestartSec=15
-# Wrapper exits 64 when UAT_INPUT is empty/invalid (parallel to airplanes-mlat).
+# Wrapper exits 64 on self-disable (parallel to airplanes-mlat / airplanes-978).
 # Without this, systemd would restart it every 15s into the same exit-64.
 RestartPreventExitStatus=64
 Nice=-5

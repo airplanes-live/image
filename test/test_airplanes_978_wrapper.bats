@@ -39,8 +39,41 @@ airplanes_write_state() {
 }
 WRITER
 
+    # State reader stub mirroring feed/scripts/lib/state-reader.sh's
+    # airplanes_read_state. Reads schema_version=1, returns the value
+    # for the requested key on stdout, rc 0 on hit / rc 1 on miss.
+    STATE_READER_LIB="$TMP/state-reader.sh"
+    cat > "$STATE_READER_LIB" <<'READER'
+airplanes_read_state() {
+    local file="$1" key="$2"
+    [[ -f "$file" && -r "$file" ]] || return 1
+    local first=1 line value
+    while IFS= read -r line; do
+        if (( first )); then
+            first=0
+            [[ "$line" == 'schema_version=1' ]] || return 1
+            continue
+        fi
+        case "$line" in
+            "${key}="*)
+                value="${line#"${key}="}"
+                printf '%s' "$value"
+                return 0
+                ;;
+        esac
+    done < "$file"
+    return 1
+}
+READER
+
     AIRPLANES_978_RUNTIME_DIR="$TMP/run-airplanes-978"
     mkdir -p "$AIRPLANES_978_RUNTIME_DIR"
+
+    # Peer state file (dump978-fa's publication). Default: non-existent
+    # so the wrapper falls through to plain reason=ok. Tests that exercise
+    # the peer_no_hardware refinement create this file with the right
+    # contents.
+    DUMP978_FA_STATE_FILE="$TMP/run-dump978-fa/state"
 
     # Stub the binary: writes its argv to a marker file and exits 0.
     AIRPLANES_978_BIN="$TMP/airplanes-978-bin"
@@ -54,6 +87,21 @@ EOF
     export AIRPLANES_978_RUNTIME_DIR
     export AIRPLANES_978_BIN
     export STATE_WRITER_LIB
+    export STATE_READER_LIB
+    export DUMP978_FA_STATE_FILE
+}
+
+# Helper: write a peer state file with the given state/reason. Used to
+# simulate dump978-fa's publication for the peer_no_hardware refinement.
+write_peer_state() {
+    local state="$1" reason="$2"
+    mkdir -p "$(dirname "$DUMP978_FA_STATE_FILE")"
+    {
+        printf 'schema_version=1\n'
+        printf 'service=dump978-fa\n'
+        printf 'state=%s\n' "$state"
+        printf 'reason=%s\n' "$reason"
+    } > "$DUMP978_FA_STATE_FILE"
 }
 
 teardown() { rm -rf "$TMP"; }
@@ -198,4 +246,64 @@ run_wrapper() {
     # correctly self-disables — degrades to systemd-only rendering, which
     # is the documented fallback.
     [ ! -e "$AIRPLANES_978_RUNTIME_DIR/state" ]
+}
+
+# ---- peer_no_hardware refinement -----------------------------------------
+
+@test "17: enabled + peer state=disabled reason=no_hardware → reason=peer_no_hardware" {
+    write_peer_state disabled no_hardware
+    run_wrapper "127.0.0.1:30978"
+    [ "$status" -eq 0 ]
+    grep -Fxq 'state=enabled' "$AIRPLANES_978_RUNTIME_DIR/state"
+    grep -Fxq 'reason=peer_no_hardware' "$AIRPLANES_978_RUNTIME_DIR/state"
+    # And the binary still runs — silent_fail on the connector is the
+    # safety net for the idle-relay case.
+    [ -e "$TMP/binary-invoked" ]
+}
+
+@test "18: enabled + peer state=enabled reason=ok → reason stays ok" {
+    write_peer_state enabled ok
+    run_wrapper "127.0.0.1:30978"
+    [ "$status" -eq 0 ]
+    grep -Fxq 'reason=ok' "$AIRPLANES_978_RUNTIME_DIR/state"
+    # peer_no_hardware should NOT appear when the peer is healthy.
+    ! grep -Fxq 'reason=peer_no_hardware' "$AIRPLANES_978_RUNTIME_DIR/state"
+}
+
+@test "19: enabled + peer state=disabled reason=uat_disabled → reason stays ok (only no_hardware refines)" {
+    # When the user disables UAT the peer also writes state=disabled but
+    # reason=uat_disabled. Our wrapper should only refine on no_hardware,
+    # not on every disabled reason.
+    write_peer_state disabled uat_disabled
+    run_wrapper "127.0.0.1:30978"
+    grep -Fxq 'reason=ok' "$AIRPLANES_978_RUNTIME_DIR/state"
+}
+
+@test "20: enabled + no peer state file → reason stays ok (no refinement)" {
+    # Defensive: the wrapper must not fail when the peer hasn't written
+    # its state file yet (cold-boot race, or pre-image-PR build).
+    rm -f "$DUMP978_FA_STATE_FILE"
+    run_wrapper "127.0.0.1:30978"
+    [ "$status" -eq 0 ]
+    grep -Fxq 'reason=ok' "$AIRPLANES_978_RUNTIME_DIR/state"
+}
+
+@test "21: enabled + state-reader lib missing → reason stays ok (defensive)" {
+    # If the state-reader.sh lib isn't installed, the wrapper falls back
+    # to a stub that always returns rc=1. peer refinement degrades to a
+    # no-op; we get the plain enabled-ok tile.
+    write_peer_state disabled no_hardware
+    STATE_READER_LIB="/nonexistent/state-reader.sh" run_wrapper "127.0.0.1:30978"
+    [ "$status" -eq 0 ]
+    grep -Fxq 'reason=ok' "$AIRPLANES_978_RUNTIME_DIR/state"
+}
+
+@test "22: disabled (UAT off) is never refined to peer_no_hardware" {
+    # The peer might write no_hardware on a UAT-off boot too (depends on
+    # systemd ordering); the consumer's reason must stay uat_disabled
+    # when its OWN classification says disabled.
+    write_peer_state disabled no_hardware
+    run_wrapper ""
+    [ "$status" -eq 64 ]
+    grep -Fxq 'reason=uat_disabled' "$AIRPLANES_978_RUNTIME_DIR/state"
 }
