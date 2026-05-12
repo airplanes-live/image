@@ -336,15 +336,18 @@ grep -Eq '^d /run/airplanes 0755 root root' /usr/lib/tmpfiles.d/airplanes-webcon
     || fail "tmpfiles.d snippet wrong shape"
 
 # Sudoers expected set: apl-feed apply --json --lock-timeout 5 + reboot
-# + systemd-run. The per-unit restart entries are gone — apl-feed apply
-# owns the restart fan-out now (one writer pinned by sudoers; service
-# restarts run as root inside that helper, not as a separate sudo grant).
-# --lock-timeout 5 makes webconfig own the wall-clock budget so a long-
-# held flock surfaces as a structured 503 before the HTTP request times
-# out.
+# + poweroff + claim-register start + systemd-run. The per-unit restart
+# entries are gone — apl-feed apply owns the restart fan-out now (one
+# writer pinned by sudoers; service restarts run as root inside that
+# helper, not as a separate sudo grant). --lock-timeout 5 makes webconfig
+# own the wall-clock budget so a long-held flock surfaces as a structured
+# 503 before the HTTP request times out. claim-register kicks
+# airplanes-claim.service from the webconfig Register-now button.
 for entry in \
     '/usr/local/bin/apl-feed apply --json --lock-timeout 5' \
     'systemctl reboot' \
+    'systemctl poweroff' \
+    'systemctl start --no-block airplanes-claim.service' \
     'systemd-run --unit=airplanes-update'
 do
     grep -F -q "$entry" /etc/sudoers.d/010_airplanes-webconfig \
