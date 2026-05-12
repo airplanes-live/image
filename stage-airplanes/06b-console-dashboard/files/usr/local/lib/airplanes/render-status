@@ -44,6 +44,7 @@ LC_ALL=C
 : "${PATHS_STATE_FILE_MLAT:=/run/airplanes-mlat/state}"
 : "${PATHS_STATE_FILE_FEED:=/run/airplanes-feed/state}"
 : "${PATHS_STATE_FILE_978:=/run/airplanes-978/state}"
+: "${PATHS_STATE_FILE_DUMP978FA:=/run/dump978-fa/state}"
 : "${PATHS_STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
 : "${PATHS_SYSFS_NET:=/sys/class/net}"
 
@@ -244,20 +245,26 @@ mlat_config_state() {
     esac
 }
 
-# Classify the airplanes-978 daemon's runtime decision. Both dump978-fa
-# and airplanes-978 share a single state file (only airplanes-978.sh
-# writes it; both apply the same UAT_INPUT classifier). Echoes
+# Classify a 978-family daemon's runtime decision. The two units have
+# separate state files (dump978-fa.sh owns /run/dump978-fa/state with the
+# producer's hardware-probe reasons; airplanes-978.sh owns the existing
+# /run/airplanes-978/state with the consumer's classifier including
+# peer_no_hardware refined from the producer file). Echoes
 # "<state> <reason>" on a single line. The failed-branch consults the
-# unit-specific ExecMainStatus so dump978-fa.service exit-64 is classified
-# as misconfigured even when only the receiver self-disabled and
-# airplanes-978 hasn't yet written state.
+# unit-specific ExecMainStatus so a self-disable (exit 64) is treated as a
+# config decision even when the state-reader couldn't open the file.
 _978_config_state() {
     local active_state="$1" unit="${2:-airplanes-978.service}"
-    local decision reason exit_code
+    local state_file decision reason exit_code
+    case "$unit" in
+        dump978-fa.service)    state_file="$PATHS_STATE_FILE_DUMP978FA" ;;
+        airplanes-978.service) state_file="$PATHS_STATE_FILE_978" ;;
+        *)                     state_file="$PATHS_STATE_FILE_978" ;;
+    esac
     case "$active_state" in
         active|activating|reloading)
-            if decision="$(airplanes_read_state "$PATHS_STATE_FILE_978" state)" \
-                && reason="$(airplanes_read_state "$PATHS_STATE_FILE_978" reason)"; then
+            if decision="$(airplanes_read_state "$state_file" state)" \
+                && reason="$(airplanes_read_state "$state_file" reason)"; then
                 printf '%s %s' "$decision" "$reason"
                 return
             fi
@@ -266,8 +273,8 @@ _978_config_state() {
         failed)
             exit_code="$(_unit_prop "$unit" ExecMainStatus)"
             if [[ "$exit_code" == "64" ]]; then
-                if decision="$(airplanes_read_state "$PATHS_STATE_FILE_978" state)" \
-                    && reason="$(airplanes_read_state "$PATHS_STATE_FILE_978" reason)"; then
+                if decision="$(airplanes_read_state "$state_file" state)" \
+                    && reason="$(airplanes_read_state "$state_file" reason)"; then
                     printf '%s %s' "$decision" "$reason"
                     return
                 fi
@@ -317,7 +324,8 @@ unit_state_with_reason() {
                 ;;
         esac
     fi
-    # 978: classify via daemon's published state file (shared by both 978 units).
+    # 978: classify via each daemon's published state file. The two units
+    # have separate decision files; _978_config_state picks the right one.
     if [[ "$unit" == 'dump978-fa.service' || "$unit" == 'airplanes-978.service' ]]; then
         active_state="$(_unit_prop "$unit" ActiveState)"
         case "$active_state" in
@@ -325,11 +333,26 @@ unit_state_with_reason() {
                 local config_state_978 config_reason_978
                 read -r config_state_978 config_reason_978 <<<"$(_978_config_state "$active_state" "$unit")"
                 case "$config_state_978" in
-                    disabled)      printf 'disabled-by-config %s' "$config_reason_978"; return ;;
+                    disabled)
+                        # no_hardware is a SDR-absent self-disable that the
+                        # user can act on (plug in the dongle); render it
+                        # as wait/warn so it doesn't blend in with the
+                        # uat_disabled grey.
+                        case "$config_reason_978" in
+                            no_hardware) printf 'wait %s' "$config_reason_978"; return ;;
+                            *)           printf 'disabled-by-config %s' "$config_reason_978"; return ;;
+                        esac ;;
                     misconfigured) printf 'misconfigured %s' "$config_reason_978"; return ;;
                     failed)        printf 'fail %s' "$config_reason_978"; return ;;
                     unknown)       printf 'unknown -'; return ;;
-                    enabled)       ;;  # fall through to plain ok
+                    enabled)
+                        # peer_no_hardware: airplanes-978 is up but the
+                        # producer reported no SDR. Render an idle tile
+                        # rather than the green :OK that would mislead.
+                        case "$config_reason_978" in
+                            peer_no_hardware) printf 'idle %s' "$config_reason_978"; return ;;
+                            *)                ;;  # fall through to plain ok
+                        esac ;;
                 esac
                 ;;
         esac
@@ -842,24 +865,32 @@ collect_status_data() {
     # need wholesale edits — both names point at the same content.
     SD_MLAT_WARN="$SD_MLAT_NOTE"
 
-    # 978 note. Driven by the daemon's published decision (PR 4). Renders
-    # only when the user needs to act — misconfigured UAT_INPUT or unknown
-    # state. Disabled is intentional and silent; enabled is its own success
-    # state shown via the service marker. No legacy fallback path: pre-PR-4
-    # images don't have this state file and SD_978_NOTE stays empty.
+    # 978 note. Driven by the daemons' published decisions. Renders only
+    # when the user needs to act — misconfigured UAT_INPUT or a no-hardware
+    # signal from the producer-side probe. Plain disabled (UAT off in
+    # config) is intentional and silent; enabled with a working SDR is its
+    # own success shown via the service markers. No legacy fallback path:
+    # older images without these state files leave SD_978_NOTE empty.
     SD_978_NOTE=""
-    local _978_active_state
-    _978_active_state="$(_unit_prop airplanes-978.service ActiveState)"
-    local _978_state _978_reason
-    read -r _978_state _978_reason <<<"$(_978_config_state "$_978_active_state" airplanes-978.service)"
-    case "$_978_state" in
-        misconfigured)
-            case "$_978_reason" in
-                uat_input_invalid) SD_978_NOTE="${C_FAIL}UAT_INPUT invalid (fix config).${C_RESET}" ;;
-                *)                 SD_978_NOTE="${C_FAIL}978 misconfigured.${C_RESET}" ;;
-            esac
-            ;;
-    esac
+    local _dump978_active_state _dump978_state _dump978_reason
+    _dump978_active_state="$(_unit_prop dump978-fa.service ActiveState)"
+    read -r _dump978_state _dump978_reason <<<"$(_978_config_state "$_dump978_active_state" dump978-fa.service)"
+    if [[ "$_dump978_state" == "disabled" && "$_dump978_reason" == "no_hardware" ]]; then
+        SD_978_NOTE="${C_WARN}No 978 SDR detected — plug in dongle or disable UAT.${C_RESET}"
+    fi
+    if [[ -z "$SD_978_NOTE" ]]; then
+        local _978_active_state _978_state _978_reason
+        _978_active_state="$(_unit_prop airplanes-978.service ActiveState)"
+        read -r _978_state _978_reason <<<"$(_978_config_state "$_978_active_state" airplanes-978.service)"
+        case "$_978_state" in
+            misconfigured)
+                case "$_978_reason" in
+                    uat_input_invalid) SD_978_NOTE="${C_FAIL}UAT_INPUT invalid (fix config).${C_RESET}" ;;
+                    *)                 SD_978_NOTE="${C_FAIL}978 misconfigured.${C_RESET}" ;;
+                esac
+                ;;
+        esac
+    fi
 
     SD_CPU_TEMP="$(read_cpu_temp_c)"
     SD_UPTIME="$(read_uptime_human)"
@@ -916,6 +947,16 @@ svc_marker() {
             ;;
         disabled|disabled-by-config)
             printf '%b%s:off%b' "$C_DIM" "$short" "$C_RESET"
+            ;;
+        wait)
+            # dump978-fa self-disabled because no 978-serial RTL-SDR is
+            # present. Distinct from "off" so the user notices.
+            printf '%b%s:wait%b' "$C_WARN" "$short" "$C_RESET"
+            ;;
+        idle)
+            # airplanes-978 is running but the producer (dump978-fa) is in
+            # the no_hardware state — the relay is alive with no input.
+            printf '%b%s:idle%b' "$C_WARN" "$short" "$C_RESET"
             ;;
         unknown)
             printf '%b%s:?%b' "$C_WARN" "$short" "$C_RESET"
