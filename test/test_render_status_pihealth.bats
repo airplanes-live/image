@@ -228,7 +228,7 @@ EOF
     ! find_hardware_row
 }
 
-# === Compact layout (SSH MOTD path) ===
+# === Compact layout (narrow-terminal fallback under <80-col SSH MOTD) ===
 
 @test "build_status_lines_compact: ok severity renders a Hardware row" {
     install_pihealth_stub $'ok\thealthy'
@@ -258,6 +258,38 @@ EOF
 @test "build_status_lines_compact: missing binary omits the Hardware row" {
     collect_status_data snapshot
     build_status_lines_compact
+    ! find_hardware_row
+}
+
+# === Snapshot builder (current SSH MOTD path under cols >= 80) ===
+
+@test "build_status_lines_snapshot: ok severity renders a Hardware row" {
+    install_pihealth_stub $'ok\thealthy'
+    collect_status_data snapshot
+    build_status_lines_snapshot
+    local row
+    row="$(find_hardware_row)"
+    [[ "$row" == *"Hardware"* ]]
+    [[ "$row" == *"healthy"* ]]
+}
+
+@test "build_status_lines_snapshot: long summary is truncated to fit 80 cols" {
+    local long_summary
+    long_summary='undervolted now * throttling now * arm freq capped now * time not synced * other-warn'
+    install_pihealth_stub $'err\t'"$long_summary"
+    collect_status_data snapshot
+    build_status_lines_snapshot
+    local row
+    row="$(find_hardware_row)"
+    # 12-cell label + truncated summary; the whole row must stay <= 80
+    # cells so the banner-stack layout doesn't wrap.
+    (( ${#row} <= 80 ))
+    [[ "$row" == *"..." ]]
+}
+
+@test "build_status_lines_snapshot: missing binary omits the Hardware row" {
+    collect_status_data snapshot
+    build_status_lines_snapshot
     ! find_hardware_row
 }
 
