@@ -50,3 +50,7 @@ setup() {
         }
     done < <(grep -E -v '^\s*(#|$)' "$SUDOERS")
 }
+
+@test "airplanes-system-upgrade entrypoint is permitted" {
+    grep -q "/usr/bin/systemd-run --unit=airplanes-system-upgrade --collect /usr/local/lib/airplanes-webconfig/system-upgrade.sh" "$SUDOERS"
+}

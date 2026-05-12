@@ -27,3 +27,4 @@ unzip
 wget
 bash-builtins
 rfkill
+update-notifier-common
