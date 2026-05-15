@@ -1,92 +1,50 @@
 #!/bin/bash -e
-# Cross-build the webconfig binary on the build host and install it plus the
-# lighttpd reverse-proxy snippet and systemd unit. User creation, ownership,
-# and lighttpd module enable happen inside the chroot in 01-run-chroot.sh.
+# Clone airplanes-live/image-webconfig at the config-pinned ref and invoke
+# its install.sh in build-mode. install.sh downloads the matching GitHub
+# Release (per-arch binary + rootfs.tar.gz + manifest.json + SHA256SUMS),
+# verifies SHA256 and that manifest.commit_sha equals the cloned HEAD, then
+# lays the binary and rootfs payload into ${ROOTFS_DIR}. No Go toolchain
+# runs in this stage — the binary is the prebuilt release asset.
+#
+# User creation, sudoers chmod/visudo, lighttpd module enable, and
+# systemctl enable still happen in 01-run-chroot.sh.
 
-# Map pi-gen's ARCH to Go's GOARCH/GOARM.
+: "${AIRPLANES_WEBCONFIG_REPO:?AIRPLANES_WEBCONFIG_REPO must be set by the active config}"
+: "${AIRPLANES_WEBCONFIG_BRANCH:?AIRPLANES_WEBCONFIG_BRANCH must be set by the active config}"
+
+# Map pi-gen's ARCH to the names install.sh expects (it accepts the same
+# arm64/armhf enum directly).
 case "${ARCH}" in
-	arm64) export GOOS=linux GOARCH=arm64 ;;
-	armhf) export GOOS=linux GOARCH=arm GOARM=7 ;;
-	*) echo "ERROR: stage-05 cross-build does not support ARCH='${ARCH:-unset}'" >&2; exit 1 ;;
+    arm64|armhf) : ;;
+    *) echo "ERROR: stage-05 build does not support ARCH='${ARCH:-unset}'" >&2; exit 1 ;;
 esac
 
-# Pure-Go module — no CGO, no cross toolchain needed. -trimpath strips
-# host-specific paths from stack traces so the binary is reproducible across
-# build hosts; -buildvcs=false keeps the binary independent of git state of
-# the pi-gen checkout (we record that separately in the build manifest).
-export CGO_ENABLED=0
+WEBCONFIG_BUILD_DIR="${ROOTFS_DIR}/usr/local/src/airplanes-webconfig-build"
 
-WEBCONFIG_SRC="${BASE_DIR}/webconfig"
-WEBCONFIG_BIN="${ROOTFS_DIR}/usr/local/bin/airplanes-webconfig"
+rm -rf "${WEBCONFIG_BUILD_DIR}"
+install -d -m 755 "${WEBCONFIG_BUILD_DIR}"
+git -C "${WEBCONFIG_BUILD_DIR}" init -q
+git -C "${WEBCONFIG_BUILD_DIR}" remote add origin "${AIRPLANES_WEBCONFIG_REPO}"
+git -C "${WEBCONFIG_BUILD_DIR}" fetch --depth 1 origin "${AIRPLANES_WEBCONFIG_BRANCH}"
+git -C "${WEBCONFIG_BUILD_DIR}" checkout -q -B "${AIRPLANES_WEBCONFIG_BRANCH}" FETCH_HEAD
 
-install -d -m 755 "${ROOTFS_DIR}/usr/local/bin"
+# Record the actual commit baked into the image so the build manifest and
+# /health (after install) agree about which release this image carries.
+install -d -m 755 "${ROOTFS_DIR}/etc/airplanes"
+git -C "${WEBCONFIG_BUILD_DIR}" rev-parse HEAD > "${ROOTFS_DIR}/etc/airplanes/.build-webconfig-sha"
 
-# Surface the pi-gen HEAD SHA inside the binary so /health (and later /api/status)
-# can answer "which build is this?" without re-reading the manifest.
-WEBCONFIG_VERSION="$(git -C "${BASE_DIR}" rev-parse --short HEAD 2>/dev/null || echo dev)"
+# Hand off to install.sh in build-mode. install.sh exports its own usage of
+# ROOTFS_DIR and ARCH and does the network fetch, checksum, manifest
+# cross-check, atomic install, and rootfs tarball extraction.
+export AIRPLANES_BUILD_MODE=1
+bash "${WEBCONFIG_BUILD_DIR}/install.sh" --build-mode
 
-( cd "${WEBCONFIG_SRC}" && go build \
-	-trimpath -buildvcs=false \
-	-ldflags "-s -w -X main.version=${WEBCONFIG_VERSION}" \
-	-o "${WEBCONFIG_BIN}" \
-	./cmd/webconfig )
-
-chmod 0755 "${WEBCONFIG_BIN}"
-
-# The feed.env writer no longer lives in webconfig — it's `apl-feed apply
-# --json`, installed by stage-airplanes/01-install-feed from the feed
-# scripts. Sudoers (files/etc/sudoers.d/010_airplanes-webconfig) pins the
-# exact argv. webconfig now shells out via that grant.
-
-# Lighttpd reverse-proxy snippet — symlinked into conf-enabled in the chroot.
+# Install the files that stay image-owned (not in image-webconfig's release
+# payload). pi-gen does not auto-copy stage files/; every stage's 00-run.sh
+# is responsible for laying them down. These two are device-wide infra
+# (lighttpd routing shared with tar1090/graphs1090, tmpfiles lock dir
+# shared with feed) and not webconfig-version-specific.
 install -D -m 0644 files/etc/lighttpd/conf-available/40-airplanes-webconfig.conf \
-	"${ROOTFS_DIR}/etc/lighttpd/conf-available/40-airplanes-webconfig.conf"
-
-# Systemd units: webconfig itself plus the root-owned reset oneshot.
-install -D -m 0644 files/etc/systemd/system/airplanes-webconfig.service \
-	"${ROOTFS_DIR}/etc/systemd/system/airplanes-webconfig.service"
-install -D -m 0644 files/etc/systemd/system/airplanes-webconfig-reset.service \
-	"${ROOTFS_DIR}/etc/systemd/system/airplanes-webconfig-reset.service"
-
-# Reset script — invoked by airplanes-webconfig-reset.service when the SD-card
-# marker /boot/firmware/airplanes-reset-password exists. Runs as root (no
-# sandbox) so it can rm under /boot/firmware, which webconfig itself can't.
-install -D -m 0755 files/usr/local/lib/airplanes-webconfig/reset \
-	"${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig/reset"
-
-# Shared Wi-Fi predicate + keyfile-writer libraries. Sourced by both
-# /usr/local/sbin/airplanes-first-run (boot-config flow, stage 06) and
-# /usr/local/bin/apl-wifi (webconfig flow). Installed at 0644 — they are
-# sourced via `.` not exec'd, and root reads them on every boot.
-install -D -m 0644 files/usr/local/lib/airplanes/wifi-validators.sh \
-	"${ROOTFS_DIR}/usr/local/lib/airplanes/wifi-validators.sh"
-install -D -m 0644 files/usr/local/lib/airplanes/wifi-keyfile.sh \
-	"${ROOTFS_DIR}/usr/local/lib/airplanes/wifi-keyfile.sh"
-
-# Privileged Wi-Fi management helper. Invoked by webconfig via the pinned
-# sudoers grants in /etc/sudoers.d/010_airplanes-webconfig. Owns all
-# NetworkManager keyfile writes and runs nmcli for activation/test.
-install -D -m 0755 files/usr/local/bin/apl-wifi \
-	"${ROOTFS_DIR}/usr/local/bin/apl-wifi"
-
-# System-package upgrade entrypoint — invoked by webconfig via systemd-run
-# inside a transient airplanes-system-upgrade.service. Argv is pinned in
-# sudoers (010_airplanes-webconfig) and in server.go's DefaultPrivilegedArgv.
-install -D -m 0755 files/usr/local/lib/airplanes-webconfig/system-upgrade.sh \
-	"${ROOTFS_DIR}/usr/local/lib/airplanes-webconfig/system-upgrade.sh"
-
-# Sudoers entries — installed at 0440 in the chroot step so visudo
-# accepts them at runtime.
-install -D -m 0644 files/etc/sudoers.d/010_airplanes-webconfig \
-	"${ROOTFS_DIR}/etc/sudoers.d/010_airplanes-webconfig"
-
-# tmpfiles.d snippet creates /run/airplanes/ at boot for the feed-env lock
-# (root-owned 0755, world-readable but writable only by root). `apl-feed
-# apply` locks /run/airplanes/feed-env.lock here.
+    "${ROOTFS_DIR}/etc/lighttpd/conf-available/40-airplanes-webconfig.conf"
 install -D -m 0644 files/usr/lib/tmpfiles.d/airplanes-webconfig.conf \
-	"${ROOTFS_DIR}/usr/lib/tmpfiles.d/airplanes-webconfig.conf"
-
-# Per-user state dir; chowned in the chroot once the airplanes-webconfig user
-# exists. Mode 0700 so only that user (and root) can read session secrets.
-install -d -m 0700 "${ROOTFS_DIR}/var/lib/airplanes-webconfig"
-install -d -m 0700 "${ROOTFS_DIR}/etc/airplanes/webconfig"
+    "${ROOTFS_DIR}/usr/lib/tmpfiles.d/airplanes-webconfig.conf"

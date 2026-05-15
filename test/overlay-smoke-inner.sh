@@ -53,14 +53,20 @@ echo "==> stage-airplanes/04-install-graphs1090/01-run-chroot.sh (run graphs1090
 echo "==> stage-airplanes/04-install-graphs1090/02-run.sh (cleanup graphs1090 git dir)"
 ( cd /image/stage-airplanes/04-install-graphs1090 && bash 02-run.sh )
 
-echo "==> stage-airplanes/05-install-webconfig/00-run.sh (cross-build webconfig)"
-( cd /image/stage-airplanes/05-install-webconfig && bash 00-run.sh )
-
-echo "==> stage-airplanes/05-install-webconfig/01-run-chroot.sh (user + lighttpd + enable)"
-( cd /image/stage-airplanes/05-install-webconfig && bash 01-run-chroot.sh )
-
-echo "==> stage-airplanes/05-install-webconfig/02-run.sh (no-op)"
-( cd /image/stage-airplanes/05-install-webconfig && bash 02-run.sh )
+echo "==> stage-airplanes/05-install-webconfig/00-run.sh (clone image-webconfig and install)"
+# Stage 05 now clones airplanes-live/image-webconfig and pulls the release
+# binary + rootfs payload. Skip if the integration env vars are not set —
+# overlay-smoke verifies feed/install.sh's image-side overlay primarily;
+# webconfig staging is a nice-to-have here, not the contract under test.
+if [ -n "${AIRPLANES_WEBCONFIG_REPO:-}" ] && [ -n "${AIRPLANES_WEBCONFIG_BRANCH:-}" ]; then
+    ( cd /image/stage-airplanes/05-install-webconfig && bash 00-run.sh )
+    echo "==> stage-airplanes/05-install-webconfig/01-run-chroot.sh (user + lighttpd + enable)"
+    ( cd /image/stage-airplanes/05-install-webconfig && bash 01-run-chroot.sh )
+    echo "==> stage-airplanes/05-install-webconfig/02-run.sh (cleanup staged clone)"
+    ( cd /image/stage-airplanes/05-install-webconfig && bash 02-run.sh )
+else
+    echo "    skipped: set AIRPLANES_WEBCONFIG_REPO + AIRPLANES_WEBCONFIG_BRANCH to exercise stage 05" >&2
+fi
 
 echo "==> stage-airplanes/06-firstboot/00-run.sh"
 # Seed NM state + saved WLAN rfkill so we can assert stage 06 wipes them.

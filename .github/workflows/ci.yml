@@ -69,6 +69,29 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Resolve image-webconfig ref from config-stable
+        id: webconfig-ref
+        # config-stable pins the production ref. Test against that so a
+        # mismatch between what the stable image will install and what the
+        # CI tests blow up here, not on a customer device.
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          . config-stable
+          set +a
+          echo "ref=$AIRPLANES_WEBCONFIG_BRANCH" >> "$GITHUB_OUTPUT"
+
+      # Several first-run bats tests source wifi-validators.sh /
+      # wifi-keyfile.sh from airplanes-live/image-webconfig (the libs moved
+      # there with the webconfig extraction). Co-locate the checkout
+      # alongside the image repo and tell bats where to find it via
+      # AIRPLANES_IMAGE_WEBCONFIG_ROOT.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/image-webconfig
+          ref: ${{ steps.webconfig-ref.outputs.ref }}
+          path: image-webconfig-sibling
+
       - name: Install bats
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats
 
@@ -93,6 +116,8 @@ jobs:
           fi
 
       - name: bats test/
+        env:
+          AIRPLANES_IMAGE_WEBCONFIG_ROOT: ${{ github.workspace }}/image-webconfig-sibling
         run: bats test/
 
       - name: Verify host state untouched (post-bats)
@@ -368,90 +393,34 @@ jobs:
       - name: Run overlay smoke
         run: bash test/overlay-smoke.sh feed
 
-  validator-parity:
-    name: validator parity (JS vs bash)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      # Pinned to airplanes-live/feed:dev intentionally — image:dev tracks
-      # feed:dev (see config-dev), so this job is the drift detector for
-      # the JS-preview vs bash-server validator contract across the two
-      # repos. A bash regex change in feed:dev that diverges from the JS
-      # validator here will fail this job on the next image PR.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: airplanes-live/feed
-          ref: dev
-          path: feed
-
-      - name: Run validator parity test
-        env:
-          AIRPLANES_FEED_ROOT: ${{ github.workspace }}/feed
-        run: bash test/test_validator_parity.sh
-
-  webconfig-test:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: webconfig/go.mod
-          cache-dependency-path: webconfig/go.sum
-
-      - name: go vet
-        working-directory: webconfig
-        run: go vet ./...
-
-      - name: go mod verify
-        working-directory: webconfig
-        run: go mod verify
-
-      - name: go test
-        working-directory: webconfig
-        run: go test ./...
-
-  webconfig-cross-build:
-    name: webconfig-cross-build-${{ matrix.arch }}
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        include:
-          - arch: arm64
-            goarch: arm64
-            goarm: ''
-          - arch: armhf
-            goarch: arm
-            goarm: '7'
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: webconfig/go.mod
-          cache-dependency-path: webconfig/go.sum
-
-      - name: cross-build webconfig for ${{ matrix.arch }}
-        working-directory: webconfig
-        env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
-        run: |
-          go build -trimpath -buildvcs=false \
-              -ldflags "-s -w -X main.version=ci" \
-              -o /tmp/airplanes-webconfig.${{ matrix.arch }} \
-              ./cmd/webconfig
-          file /tmp/airplanes-webconfig.${{ matrix.arch }}
+  # webconfig-test, webconfig-cross-build, and validator-parity used to live
+  # here. They moved to airplanes-live/image-webconfig, which owns the Go
+  # source, cross-build, sudoers parity, and JS-vs-bash validator parity now.
 
   systemd-verify:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve image-webconfig ref from config-stable
+        id: webconfig-ref
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          . config-stable
+          set +a
+          echo "ref=$AIRPLANES_WEBCONFIG_BRANCH" >> "$GITHUB_OUTPUT"
+
+      # Check out airplanes-live/image-webconfig at the config-stable ref so
+      # systemd-verify exercises the same unit files that the stable image
+      # will install. A drift between the unit file CI verifies and what the
+      # image installs would otherwise mean a syntax error blows up on
+      # device rather than in CI.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/image-webconfig
+          ref: ${{ steps.webconfig-ref.outputs.ref }}
+          path: image-webconfig
 
       - name: Load tar1090/graphs1090 SHAs from config-dev
         run: |
@@ -504,7 +473,7 @@ jobs:
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/02-install-decoder/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
-          install -m 0644 stage-airplanes/05-install-webconfig/files/etc/systemd/system/*.service \
+          install -m 0644 image-webconfig/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06c-grant-sudo/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"

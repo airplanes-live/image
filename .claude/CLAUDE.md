@@ -29,12 +29,10 @@ CI (`.github/workflows/ci.yml`) runs on push to `main`/`dev` and on PRs:
 | Job | What it does |
 |---|---|
 | `shell-lint` | shellcheck + `bash -n` over stage and test scripts |
-| `shell-tests` | `bats test/` — first-run parsing, WiFi config, hostname handling, FEED_HOST override, webconfig manifest, render-status, sudoers, systemctl stubs |
+| `shell-tests` | `bats test/` — first-run parsing, WiFi config, hostname handling, FEED_HOST override, render-status, systemctl stubs. Co-checks out `airplanes-live/image-webconfig` so first-run tests can source `wifi-validators.sh` / `wifi-keyfile.sh` from there. |
 | `first-run-systemd` | Installs `airplanes-first-run.service` on the runner and starts it via `systemctl`. Dynamic counterpart to `test_first_run_unit.bats` — catches sandbox enforcement bugs (e.g. a `ProtectSystem=` re-mount that silently locks `/etc`) that chroot tests can't see |
 | `grant-sudo-systemd` | Installs `airplanes-grant-sudo.service` on the runner with a synthetic UID-1001 user and asserts the per-user `/etc/sudoers.d/099_airplanes-sudo-<name>` grant lands and `sudo -n` actually works. Same dynamic-sandbox role as `first-run-systemd`. |
 | `feed-overlay-smoke` | Checks out `airplanes-live/feed` `dev`, mounts the built image, runs `test/overlay-smoke.sh` integration |
-| `webconfig-test` | `go vet` + `go mod verify` + unit tests for `webconfig/` |
-| `webconfig-cross-build` | `webconfig` cross-compile (matrix `webconfig-cross-build-arm64`, `webconfig-cross-build-armhf`) |
 | `systemd-verify` | `systemd-analyze verify` against all `.service` files (with stubbed binaries and fetched upstream tar1090 / graphs1090 units) |
 | `feed-update-regression` | Checks out feed `dev`, runs `test/update-regression-smoke.sh` |
 
@@ -60,7 +58,7 @@ stage-airplanes/                 ← fork-specific
   02-install-decoder             builds readsb + dump978
   03-install-tar1090             tar1090 + tar1090-db
   04-install-graphs1090          graphs1090
-  05-install-webconfig           Go webconfig (cross-compiled for arm64 + armhf)
+  05-install-webconfig           clones airplanes-live/image-webconfig at the pinned ref and runs its install.sh --build-mode to lay the prebuilt binary + rootfs payload onto the image
   06-firstboot                   airplanes-first-run script + claim service/timer + boot config template
   06b-console-dashboard          ASCII dashboard renderer + tty1 service
   06c-grant-sudo                 post-cloud-init NOPASSWD sudo grants per human user
@@ -84,11 +82,11 @@ The state machine on FAT visible to a user pulling the SD card: `airplanes-confi
 
 ### Web UI
 
-Go server in `webconfig/` (modules: `auth`, `feedenv`, `identity`, `logs`, `server`, `status`, `wifi`). Built into `/usr/local/bin/airplanes-webconfig` listening on `127.0.0.1:8080`. Reverse-proxied by lighttpd on `:80`. State source of truth is `/etc/airplanes/feed.env` plus the daemon runtime state files at `/run/<service>/state` (the daemons publish; the UI reads).
+Go server lives in `airplanes-live/image-webconfig` (modules: `auth`, `feedenv`, `identity`, `logs`, `server`, `status`, `wifi`). Stage 05 here clones that repo at the ref pinned in `config-{dev,stable}` (`AIRPLANES_WEBCONFIG_REPO` / `AIRPLANES_WEBCONFIG_BRANCH`) and runs `install.sh --build-mode`, which downloads the matching GitHub Release (per-arch binary + `rootfs.tar.gz` + `manifest.json` + `SHA256SUMS`), verifies SHA256, cross-checks `manifest.commit_sha` against the cloned source HEAD, and lays the binary + rootfs payload into the image. The deployed binary listens on `127.0.0.1:8080`; lighttpd reverse-proxies `:80`. State source of truth is `/etc/airplanes/feed.env` plus the daemon runtime state files at `/run/<service>/state`. An in-product **Update web UI** button POSTs to `/api/webconfig-update`, which kicks off a sudoers-pinned helper that re-runs the installer on the device, restarts the service, probes `/health`, and rolls the binary back on failure.
 
 ### Wi-Fi management
 
-`/api/wifi` endpoints (list / add / update / delete / test / activate / status) proxy to a sudoers-pinned `apl-wifi` helper at `/usr/local/bin/apl-wifi` (installed by stage 05). The helper owns atomic NetworkManager keyfile writes under `/etc/NetworkManager/system-connections/`, the connect-before-save test flow via `nmcli --wait`, and lock-out enforcement (`force_last` / `force_active_no_uplink` flags rechecked under flock so a stale browser cache can't race past the UI confirm). SSID/PSK/country/priority validators live at `/usr/local/lib/airplanes/wifi-validators.sh` and are sourced by both `airplanes-first-run` (boot-config flow) and `apl-wifi` (UI flow) so identical inputs are accepted on either side; JS twins in `app.js` are pinned by `test/test_validator_parity.sh`. Managed keyfiles match `airplanes-config-wifi.nmconnection` or `airplanes-wifi-*.nmconnection`; foreign keyfiles surface read-only in the UI. `airplanes-webconfig.service` adds `/etc/NetworkManager/system-connections` to `ReadWritePaths=` because the sudo child inherits the unit's mount namespace.
+`/api/wifi` endpoints (list / add / update / delete / test / activate / status) proxy to a sudoers-pinned `apl-wifi` helper at `/usr/local/bin/apl-wifi`. The helper, its libs (`wifi-validators.sh`, `wifi-keyfile.sh`), the webconfig sudoers files, and the webconfig systemd units all ship from `airplanes-live/image-webconfig`'s `rootfs.tar.gz`. The helper owns atomic NetworkManager keyfile writes under `/etc/NetworkManager/system-connections/`, the connect-before-save test flow via `nmcli --wait`, and lock-out enforcement (`force_last` / `force_active_no_uplink` flags rechecked under flock). SSID/PSK/country/priority validators live at `/usr/local/lib/airplanes/wifi-validators.sh` and are sourced by both `airplanes-first-run` (boot-config flow, in image) and `apl-wifi` (UI flow, in image-webconfig) so identical inputs are accepted on either side. Managed keyfiles match `airplanes-config-wifi.nmconnection` or `airplanes-wifi-*.nmconnection`; foreign keyfiles surface read-only in the UI. `airplanes-webconfig.service` adds `/etc/NetworkManager/system-connections` to `ReadWritePaths=` because the sudo child inherits the unit's mount namespace.
 
 ## Channels
 

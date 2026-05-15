@@ -45,6 +45,12 @@ export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-dev}"
 # feed-side resolver skips tag resolution entirely for this channel.
 export AIRPLANES_FEED_UPDATE_CHANNEL="${AIRPLANES_FEED_UPDATE_CHANNEL:-dev}"
 
+# webconfig now lives in its own repo; dev tracks the dev branch directly so
+# stage 05 fetches whatever is at the tip of airplanes-live/image-webconfig/dev
+# and consumes the matching dev-latest prerelease asset.
+export AIRPLANES_WEBCONFIG_REPO="${AIRPLANES_WEBCONFIG_REPO:-https://github.com/airplanes-live/image-webconfig.git}"
+export AIRPLANES_WEBCONFIG_BRANCH="${AIRPLANES_WEBCONFIG_BRANCH:-dev}"
+
 export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
 export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-dev}"
 

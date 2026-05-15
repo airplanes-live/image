@@ -10,15 +10,22 @@ export PATH="/usr/local/sbin:${PATH}"
 # non-interactive service account.
 adduser --system --no-create-home --group airplanes-webconfig
 
-# Per-user state dirs were created with mode 0700 in 00-run.sh; assign owner.
-chown -R airplanes-webconfig:airplanes-webconfig /var/lib/airplanes-webconfig
-chown -R airplanes-webconfig:airplanes-webconfig /etc/airplanes/webconfig
+# Per-user state dirs. image-webconfig's install.sh does not create these
+# (its rootfs.tar.gz ships only the files webconfig owns at install time),
+# so create them here at mode 0700 with the right owner.
+install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /var/lib/airplanes-webconfig
+install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /etc/airplanes/webconfig
 
-# Lock down the sudoers snippet (0440 root:root is what visudo accepts) and
-# verify the merged sudoers parses before we exit the stage.
-chmod 0440 /etc/sudoers.d/010_airplanes-webconfig
-chown root:root /etc/sudoers.d/010_airplanes-webconfig
-visudo -cf /etc/sudoers.d/010_airplanes-webconfig
+# Lock down the sudoers snippets (0440 root:root is what visudo accepts) and
+# verify each parses before the stage exits. Both files ship in the
+# image-webconfig release tarball with mode 0440 already, but the chmod
+# here is a belt-and-braces defence against a future tar pipeline writing
+# them at 0644.
+for f in 010_airplanes-webconfig 011_airplanes-webconfig-update; do
+    chmod 0440 /etc/sudoers.d/"$f"
+    chown root:root /etc/sudoers.d/"$f"
+    visudo -cf /etc/sudoers.d/"$f"
+done
 
 # /api/log/{unit} streams journalctl as the webconfig user. Adding it to
 # systemd-journal grants read access to the system journal without sudo.

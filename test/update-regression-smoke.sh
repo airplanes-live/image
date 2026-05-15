@@ -33,6 +33,8 @@ docker run --rm \
     --volume "$FEED_DIR:/feed:ro" \
     --volume "$HOST_ARTIFACT_DIR:/artifacts" \
     --env AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-dev}" \
+    --env "AIRPLANES_WEBCONFIG_REPO=${AIRPLANES_WEBCONFIG_REPO:-}" \
+    --env "AIRPLANES_WEBCONFIG_BRANCH=${AIRPLANES_WEBCONFIG_BRANCH:-}" \
     --env ARTIFACT_DIR=/artifacts \
     debian:trixie-slim \
     bash -e -o pipefail /image/test/update-regression-inner.sh
