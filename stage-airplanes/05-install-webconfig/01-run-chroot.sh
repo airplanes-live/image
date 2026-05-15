@@ -10,9 +10,11 @@ export PATH="/usr/local/sbin:${PATH}"
 # non-interactive service account.
 adduser --system --no-create-home --group airplanes-webconfig
 
-# Per-user state dirs were created with mode 0700 in 00-run.sh; assign owner.
-chown -R airplanes-webconfig:airplanes-webconfig /var/lib/airplanes-webconfig
-chown -R airplanes-webconfig:airplanes-webconfig /etc/airplanes/webconfig
+# Per-user state dirs. image-webconfig's install.sh does not create these
+# (its rootfs.tar.gz ships only the files webconfig owns at install time),
+# so create them here at mode 0700 with the right owner.
+install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /var/lib/airplanes-webconfig
+install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /etc/airplanes/webconfig
 
 # Lock down the sudoers snippets (0440 root:root is what visudo accepts) and
 # verify each parses before the stage exits. Both files ship in the

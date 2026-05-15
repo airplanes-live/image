@@ -12,7 +12,6 @@
 setup() {
     UNIT="$BATS_TEST_DIRNAME/../stage-airplanes/06-firstboot/files/etc/systemd/system/airplanes-first-run.service"
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06-firstboot/files/usr/local/sbin/airplanes-first-run"
-    WEBCONFIG_APPLY="$BATS_TEST_DIRNAME/../webconfig/cmd/apply-config/main.go"
     [ -f "$UNIT" ] || skip "unit file missing"
 }
 

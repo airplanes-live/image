@@ -69,6 +69,18 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Resolve image-webconfig ref from config-stable
+        id: webconfig-ref
+        # config-stable pins the production ref. Test against that so a
+        # mismatch between what the stable image will install and what the
+        # CI tests blow up here, not on a customer device.
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          . config-stable
+          set +a
+          echo "ref=$AIRPLANES_WEBCONFIG_BRANCH" >> "$GITHUB_OUTPUT"
+
       # Several first-run bats tests source wifi-validators.sh /
       # wifi-keyfile.sh from airplanes-live/image-webconfig (the libs moved
       # there with the webconfig extraction). Co-locate the checkout
@@ -77,7 +89,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: airplanes-live/image-webconfig
-          ref: dev
+          ref: ${{ steps.webconfig-ref.outputs.ref }}
           path: image-webconfig-sibling
 
       - name: Install bats
@@ -390,15 +402,24 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Check out airplanes-live/image-webconfig as a sibling so the staging
-      # step below can copy the webconfig systemd units from their canonical
-      # home. dev tracks dev; stable images install whatever release-tag
-      # config-stable pins, but for syntactic systemd verification the dev
-      # branch's units are representative enough.
+      - name: Resolve image-webconfig ref from config-stable
+        id: webconfig-ref
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          . config-stable
+          set +a
+          echo "ref=$AIRPLANES_WEBCONFIG_BRANCH" >> "$GITHUB_OUTPUT"
+
+      # Check out airplanes-live/image-webconfig at the config-stable ref so
+      # systemd-verify exercises the same unit files that the stable image
+      # will install. A drift between the unit file CI verifies and what the
+      # image installs would otherwise mean a syntax error blows up on
+      # device rather than in CI.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: airplanes-live/image-webconfig
-          ref: dev
+          ref: ${{ steps.webconfig-ref.outputs.ref }}
           path: image-webconfig
 
       - name: Load tar1090/graphs1090 SHAs from config-dev
