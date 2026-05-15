@@ -38,3 +38,13 @@ git -C "${WEBCONFIG_BUILD_DIR}" rev-parse HEAD > "${ROOTFS_DIR}/etc/airplanes/.b
 # cross-check, atomic install, and rootfs tarball extraction.
 export AIRPLANES_BUILD_MODE=1
 bash "${WEBCONFIG_BUILD_DIR}/install.sh" --build-mode
+
+# Install the files that stay image-owned (not in image-webconfig's release
+# payload). pi-gen does not auto-copy stage files/; every stage's 00-run.sh
+# is responsible for laying them down. These two are device-wide infra
+# (lighttpd routing shared with tar1090/graphs1090, tmpfiles lock dir
+# shared with feed) and not webconfig-version-specific.
+install -D -m 0644 files/etc/lighttpd/conf-available/40-airplanes-webconfig.conf \
+    "${ROOTFS_DIR}/etc/lighttpd/conf-available/40-airplanes-webconfig.conf"
+install -D -m 0644 files/usr/lib/tmpfiles.d/airplanes-webconfig.conf \
+    "${ROOTFS_DIR}/usr/lib/tmpfiles.d/airplanes-webconfig.conf"
