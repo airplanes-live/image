@@ -57,7 +57,7 @@ export AIRPLANES_FEED_UPDATE_CHANNEL="${AIRPLANES_FEED_UPDATE_CHANNEL:-stable}"
 # config-stable this is a concrete release tag — bump it via the same procedure
 # as the other component pins above.
 export AIRPLANES_WEBCONFIG_REPO="${AIRPLANES_WEBCONFIG_REPO:-https://github.com/airplanes-live/image-webconfig.git}"
-export AIRPLANES_WEBCONFIG_BRANCH="${AIRPLANES_WEBCONFIG_BRANCH:-v0.1.0}"
+export AIRPLANES_WEBCONFIG_BRANCH="${AIRPLANES_WEBCONFIG_BRANCH:-v0.1.1}"
 
 export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
 export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-4d6c614d7940ce0117db61b1fa91c81fd9e67988}"
