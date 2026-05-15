@@ -10,7 +10,7 @@
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06-firstboot/files/usr/local/sbin/airplanes-first-run"
-    export APL_WIFI_LIB_DIR="$BATS_TEST_DIRNAME/../stage-airplanes/05-install-webconfig/files/usr/local/lib/airplanes"
+    export APL_WIFI_LIB_DIR="${AIRPLANES_IMAGE_WEBCONFIG_ROOT:-$BATS_TEST_DIRNAME/../../image-webconfig}/files/usr/local/lib/airplanes"
     TMP="$(mktemp -d)"
     export HOSTNAME_FILE="$TMP/hostname"
     export HOSTS_FILE="$TMP/hosts"

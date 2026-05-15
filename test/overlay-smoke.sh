@@ -30,5 +30,7 @@ docker run --rm \
     --volume "$REPO_ROOT:/image:ro" \
     --volume "$FEED_DIR:/feed:ro" \
     --env AIRPLANES_FEED_BRANCH=dev \
+    --env "AIRPLANES_WEBCONFIG_REPO=${AIRPLANES_WEBCONFIG_REPO:-}" \
+    --env "AIRPLANES_WEBCONFIG_BRANCH=${AIRPLANES_WEBCONFIG_BRANCH:-}" \
     debian:trixie-slim \
     bash -e -o pipefail /image/test/overlay-smoke-inner.sh

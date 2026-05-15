@@ -45,14 +45,21 @@ echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (install.sh --build-m
 echo "==> stage-airplanes/01-install-feed/02-run.sh (cleanup staged feed)"
 ( cd /image/stage-airplanes/01-install-feed && bash 02-run.sh )
 
-echo "==> stage-airplanes/05-install-webconfig/00-run.sh (cross-build webconfig)"
-( cd /image/stage-airplanes/05-install-webconfig && bash 00-run.sh )
-
-echo "==> stage-airplanes/05-install-webconfig/01-run-chroot.sh (user + lighttpd + enable)"
-( cd /image/stage-airplanes/05-install-webconfig && bash 01-run-chroot.sh )
-
-echo "==> stage-airplanes/05-install-webconfig/02-run.sh (no-op)"
-( cd /image/stage-airplanes/05-install-webconfig && bash 02-run.sh )
+echo "==> stage-airplanes/05-install-webconfig/00-run.sh (clone image-webconfig and install)"
+# stage-05 now clones airplanes-live/image-webconfig and downloads the
+# release asset. Skip if the integration env vars are not set (or if no
+# release exists yet for the configured branch) — the regression test is
+# about feed/update.sh drift over webconfig artifacts, and the fingerprint
+# step further down can use a previously-staged rootfs from a prior run.
+if [ -n "${AIRPLANES_WEBCONFIG_REPO:-}" ] && [ -n "${AIRPLANES_WEBCONFIG_BRANCH:-}" ]; then
+    ( cd /image/stage-airplanes/05-install-webconfig && bash 00-run.sh )
+    echo "==> stage-airplanes/05-install-webconfig/01-run-chroot.sh (user + lighttpd + enable)"
+    ( cd /image/stage-airplanes/05-install-webconfig && bash 01-run-chroot.sh )
+    echo "==> stage-airplanes/05-install-webconfig/02-run.sh (cleanup staged clone)"
+    ( cd /image/stage-airplanes/05-install-webconfig && bash 02-run.sh )
+else
+    echo "    skipped: set AIRPLANES_WEBCONFIG_REPO + AIRPLANES_WEBCONFIG_BRANCH to exercise stage 05" >&2
+fi
 
 echo "==> stage-airplanes/06-firstboot/00-run.sh"
 ( cd /image/stage-airplanes/06-firstboot && bash 00-run.sh )
