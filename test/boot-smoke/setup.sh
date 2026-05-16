@@ -31,3 +31,17 @@ cat > "$BOOT_MNT/airplanes-config.txt" <<'EOF'
 HOSTNAME=boot-smoke-host
 FEED_HOST=boot-smoke-feed.local
 EOF
+
+# Webconfig upgrade variant: opt-in via env var. The CI job for
+# webconfig-upgrade-qemu sets both AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE
+# and AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE (path to a writable
+# image-webconfig checkout that carries scripts/lib/build-release.sh).
+if [[ "${AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE:-}" = "1" ]]; then
+    : "${AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE:?webconfig-upgrade variant requires AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE}"
+    : "${AIRPLANES_IMAGE_CHANNEL:?webconfig-upgrade variant requires AIRPLANES_IMAGE_CHANNEL}"
+    # shellcheck source=lib/webconfig-upgrade-helpers.sh
+    . "$script_dir/lib/webconfig-upgrade-helpers.sh"
+    stage_webconfig_upgrade_test "$ROOT_MNT" \
+        "$AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE" \
+        "$AIRPLANES_IMAGE_CHANNEL"
+fi
