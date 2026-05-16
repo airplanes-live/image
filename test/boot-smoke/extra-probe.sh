@@ -10,6 +10,184 @@
 #   - lighttpd + webconfig + sshd reach active.
 #   - webconfig HTTP responds over loopback via the lighttpd reverse proxy.
 
+# ---------------------------------------------------------------------------
+# Webconfig upgrade test functions — see usage below the SSE probe.
+# ---------------------------------------------------------------------------
+
+# Channel-aware expected version after a successful Phase A upgrade.
+_wcu_good_version() {
+    case "$1" in
+        stable) printf '%s' v9.9.99 ;;
+        dev)    printf '%s' dev-latest ;;
+        *)      fail "_wcu_good_version: unknown channel '$1'" ;;
+    esac
+}
+
+# Channel-aware expected version after Phase B's broken-release upload (the
+# version the manifest carries before rollback). For dev mode this matches
+# the good version since dev-latest is the same string in both directions.
+_wcu_broken_version() {
+    case "$1" in
+        stable) printf '%s' v9.9.100 ;;
+        dev)    printf '%s' dev-latest ;;
+        *)      fail "_wcu_broken_version: unknown channel '$1'" ;;
+    esac
+}
+
+_wcu_manifest_version() {
+    jq -r .version /etc/airplanes/webconfig-release.json 2>/dev/null
+}
+
+_wcu_poll_manifest_version() {
+    local want="$1" deadline=$(( SECONDS + ${2:-60} ))
+    local got
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        got="$(_wcu_manifest_version)"
+        [[ "$got" == "$want" ]] && return 0
+        sleep 2
+    done
+    got="$(_wcu_manifest_version)"
+    echo "  manifest=$got want=$want" >&2
+    return 1
+}
+
+# Posts /api/webconfig-update with the same Origin + Content-Type + cookie
+# jar the SSE probe captured. Returns the HTTP code in stdout.
+_wcu_post_update() {
+    local cookiejar="$1"
+    curl --silent --show-error --output /dev/null \
+        --write-out '%{http_code}' --max-time 30 \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        -H 'Origin: http://127.0.0.1' \
+        -b "$cookiejar" \
+        --data '{}' \
+        http://127.0.0.1/api/webconfig-update
+}
+
+_wcu_health_200() {
+    local code
+    code="$(curl --silent --show-error --output /dev/null \
+        --write-out '%{http_code}' --max-time 5 http://127.0.0.1/health || echo 000)"
+    [[ "$code" == "200" ]]
+}
+
+_wcu_run_phase_a_and_b() {
+    local channel="$1" cookiejar="$2"
+    local good_version
+    good_version="$(_wcu_good_version "$channel")"
+    # _wcu_broken_version is informational — we don't compare against it
+    # directly post-rollback because rollback restores the pre-attempt
+    # manifest. For dev channel it would also be 'dev-latest' anyway.
+
+    # Phase A — happy upgrade to the good release.
+    echo "image-probe:   Phase A: POST /api/webconfig-update (→ $good_version)"
+    local code
+    code="$(_wcu_post_update "$cookiejar")"
+    [[ "$code" == "202" || "$code" == "200" ]] \
+        || fail "image-probe: Phase A: /api/webconfig-update returned $code (want 200/202)"
+
+    _wcu_poll_manifest_version "$good_version" 60 \
+        || fail "image-probe: Phase A: manifest never reached $good_version"
+
+    [[ ! -f /usr/local/bin/airplanes-webconfig.prev ]] \
+        || fail "image-probe: Phase A: binary .prev not cleaned"
+    [[ ! -f /etc/systemd/system/airplanes-webconfig.service.prev ]] \
+        || fail "image-probe: Phase A: unit .prev not cleaned"
+    [[ ! -f /etc/airplanes/webconfig-release.json.prev ]] \
+        || fail "image-probe: Phase A: manifest .prev not cleaned"
+
+    assert_service_healthy airplanes-webconfig.service
+    _wcu_health_200 || fail "image-probe: Phase A: /health did not return 200 after upgrade"
+    /usr/local/bin/airplanes-webconfig --validate-sudoers \
+        || fail "image-probe: Phase A: validate-sudoers failed (cross-version parity broken)"
+
+    # Phase B — broken release, expect rollback.
+    echo "image-probe:   Phase B: pushing broken-release tag, POST /api/webconfig-update"
+    sudo -n /usr/local/lib/airplanes-boot-smoke/push-broken-tag.sh "$channel" \
+        || fail "image-probe: Phase B: push-broken-tag.sh failed"
+
+    # Phase A succeeded so manifest is already $good_version going into
+    # Phase B. The polling check below only verifies post-Phase-B state, so
+    # we MUST wait for the transient unit (airplanes-webconfig-update.service)
+    # to actually finish before reading the manifest — otherwise the poll
+    # reads the pre-Phase-B value and the assertion succeeds trivially.
+    local phase_b_start
+    phase_b_start=$(date +%s)
+
+    code="$(_wcu_post_update "$cookiejar")"
+    [[ "$code" == "202" || "$code" == "200" ]] \
+        || fail "image-probe: Phase B: /api/webconfig-update returned $code (want 200/202)"
+
+    # Wait for the transient unit to exit (helper ran install.sh, restart,
+    # /health probe loop, rollback). Default helper timing: ~10s health
+    # probe + restart + journal flush; budget 120s plus slack.
+    local unit=airplanes-webconfig-update.service
+    local wait_deadline=$(( SECONDS + 180 ))
+    while [ "$SECONDS" -lt "$wait_deadline" ]; do
+        # is-active returns 0 while running, non-zero (inactive / failed /
+        # not-found-after-collect) when done. The transient unit has
+        # --collect, so a clean exit garbage-collects the unit entirely.
+        if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+            break
+        fi
+        sleep 2
+    done
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+        fail "image-probe: Phase B: $unit still active after 180s"
+    fi
+    # Let the journal flush.
+    sleep 2
+
+    # Convergence: rollback restored the manifest to the pre-attempt good
+    # version. (For dev channel both versions are 'dev-latest' so the
+    # version-equality check above is satisfied trivially; the binary
+    # rollback is the real signal there. Cover it below.)
+    local manifest_after
+    manifest_after="$(_wcu_manifest_version)"
+    [[ "$manifest_after" == "$good_version" ]] \
+        || fail "image-probe: Phase B: manifest=$manifest_after expected rollback to $good_version"
+
+    assert_service_healthy airplanes-webconfig.service
+    _wcu_health_200 || fail "image-probe: Phase B: /health did not return 200 after rollback"
+
+    # Journal evidence that the rollback code path actually ran. Restrict to
+    # entries since the POST so a successful Phase A's journal noise can't
+    # match. Without this the happy-path-only case (binary somehow served
+    # /health) could pass.
+    if ! journalctl -u "$unit" --no-pager --since "@$phase_b_start" 2>&1 \
+            | grep -qE 'health probe exhausted|rolling back'; then
+        fail "image-probe: Phase B: journal missing 'health probe exhausted' / 'rolling back'"
+    fi
+}
+
+_wcu_verify_persistence() {
+    local channel="$1"
+    local expected
+    expected="$(_wcu_good_version "$channel")"
+
+    local got
+    got="$(_wcu_manifest_version)"
+    [[ "$got" == "$expected" ]] \
+        || fail "image-probe: persistence: manifest=$got expected=$expected"
+
+    assert_service_healthy airplanes-webconfig.service
+    _wcu_health_200 \
+        || fail "image-probe: persistence: /health did not return 200 after reboot"
+
+    /usr/local/bin/airplanes-webconfig --validate-sudoers \
+        || fail "image-probe: persistence: validate-sudoers failed after reboot"
+
+    [[ ! -f /usr/local/bin/airplanes-webconfig.prev ]] \
+        || fail "image-probe: persistence: binary .prev leaked across reboot"
+    [[ ! -f /etc/systemd/system/airplanes-webconfig.service.prev ]] \
+        || fail "image-probe: persistence: unit .prev leaked across reboot"
+    [[ ! -f /etc/airplanes/webconfig-release.json.prev ]] \
+        || fail "image-probe: persistence: manifest .prev leaked across reboot"
+}
+
+# ---------------------------------------------------------------------------
+
 echo "image-probe: starting image-side assertions"
 
 # Boot-config apply state.
@@ -85,6 +263,43 @@ grep -q '^data: ' "$sse_stream_out" \
     || fail "SSE probe: output missing 'data: ' prefix; head: $(head -c 500 "$sse_stream_out")"
 
 echo "image-probe: SSE stream end-to-end passed ($(wc -l < "$sse_stream_out") lines)"
-rm -f "$sse_cookiejar" "$sse_state_out" "$sse_stream_out"
+rm -f "$sse_state_out" "$sse_stream_out"
+
+# Webconfig-upgrade variant — gated on the marker file the boot-smoke pre-boot
+# setup writes when AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE=1. The marker
+# contains the resolver channel (`stable` or `dev`), matching what stage 06
+# baked into /etc/airplanes/release-channel. Reuses the SSE probe's
+# authenticated cookie jar.
+if [[ -s /var/lib/airplanes-boot-smoke/webconfig-upgrade-channel ]]; then
+    _wcu_channel="$(cat /var/lib/airplanes-boot-smoke/webconfig-upgrade-channel)"
+    _wcu_phase_file=/var/lib/airplanes-boot-smoke/webconfig-upgrade-phase
+    _wcu_phase="$(cat "$_wcu_phase_file" 2>/dev/null || true)"
+
+    case "$_wcu_phase" in
+        '')
+            echo "image-probe: webconfig-upgrade phase A+B (channel=$_wcu_channel)"
+            _wcu_run_phase_a_and_b "$_wcu_channel" "$sse_cookiejar"
+            printf '%s' phases-done > "$_wcu_phase_file"
+            sync
+            echo "image-probe: webconfig-upgrade rebooting to verify reboot persistence"
+            systemctl reboot
+            # systemctl reboot returns immediately; sleep so the journal flushes
+            # before the kernel cuts power. The harness's case statement on the
+            # next boot will re-enter the `updated` phase and re-source us.
+            sleep 60
+            fail "image-probe: webconfig-upgrade: systemctl reboot did not take effect within 60s"
+            ;;
+        phases-done)
+            echo "image-probe: webconfig-upgrade reboot persistence (channel=$_wcu_channel)"
+            _wcu_verify_persistence "$_wcu_channel"
+            rm -f "$_wcu_phase_file"
+            ;;
+        *)
+            fail "image-probe: webconfig-upgrade: unexpected phase '$_wcu_phase'"
+            ;;
+    esac
+fi
+
+rm -f "$sse_cookiejar"
 
 echo "image-probe: passed"
