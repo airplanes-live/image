@@ -1,31 +1,25 @@
 #!/usr/bin/env bash
 # Host-side helpers for the webconfig-upgrade variant of the image boot smoke.
-# Sourced from test/boot-smoke/setup.sh when
-# AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE=1 is set.
 #
-# Stages a synthetic "good" release and a synthetic "broken" release at file://
-# URLs on the rootfs, swaps the production update.sh for a test wrapper that
-# injects those URLs, and lays a tiny privileged helper plus matching sudoers
-# grant so the in-VM probe can flip the resolver target between phases.
-#
-# Channel-aware: the resolver runs different code for `stable` vs `dev`. For
-# stable the test seeds the bare repo with a v9.9.99 semver tag only and adds
-# v9.9.100 between phases. For dev the test seeds the bare repo with a single
-# `dev-latest` moving tag and force-pushes it between phases; the on-disk
-# `dev-latest` payload dir is rotated to match.
+# Split in two:
+#   - build_synthetic_releases_prebuild: runs OUTSIDE the sudo harness on the
+#     CI runner. setup-go put `go` in the runner-user PATH; sudo's secure_path
+#     strips that. Building synthetic releases pre-sudo, then handing the
+#     output dir into the sudo harness, avoids the PATH-in-sudo footgun.
+#   - install_synthetic_releases: runs INSIDE the sudo harness from
+#     test/boot-smoke/setup.sh. Copies the prebuilt releases onto $ROOT_MNT,
+#     wires the test wrapper update.sh, bare git repo, push-tag helper, and
+#     sudoers test grant.
 
-# stage_webconfig_upgrade_test ROOT WEBCONFIG_SRC CHANNEL
+# build_synthetic_releases_prebuild WEBCONFIG_SRC OUT_DIR CHANNEL
 #
-# ROOT             rw-mounted rootfs of the to-be-booted image
-# WEBCONFIG_SRC    local writable image-webconfig checkout (for build-release.sh)
-# CHANNEL          stable | dev — must match what stage 06 baked into
-#                  $ROOT/etc/airplanes/release-channel
-stage_webconfig_upgrade_test() {
-    local root="$1"
-    local webconfig_src="$2"
+# Produces $OUT_DIR/{good,broken} with the synthetic release payloads. Runs
+# pre-sudo on the CI runner. Needs Go on PATH.
+build_synthetic_releases_prebuild() {
+    local webconfig_src="$1"
+    local out_dir="$2"
     local channel="$3"
 
-    [[ -d "$root" ]] || { echo "ERROR: rootfs $root missing" >&2; return 1; }
     [[ -d "$webconfig_src" ]] || { echo "ERROR: image-webconfig source $webconfig_src missing" >&2; return 1; }
     [[ -x "$webconfig_src/scripts/lib/build-release.sh" ]] || {
         echo "ERROR: $webconfig_src has no scripts/lib/build-release.sh" >&2; return 1; }
@@ -33,91 +27,98 @@ stage_webconfig_upgrade_test() {
         stable|dev) ;;
         *) echo "ERROR: unknown channel '$channel' (expected stable or dev)" >&2; return 1 ;;
     esac
+    command -v go >/dev/null || { echo "ERROR: go not on PATH (need setup-go in the workflow)" >&2; return 1; }
+
+    rm -rf "$out_dir"
+    install -d -m 0755 "$out_dir"
+
+    local good_tag broken_tag
+    case "$channel" in
+        stable) good_tag=v9.9.99;    broken_tag=v9.9.100 ;;
+        dev)    good_tag=dev-latest; broken_tag=dev-latest ;;
+    esac
+
+    echo "webconfig-upgrade-helpers: building synthetic releases (channel=$channel) → $out_dir"
+
+    bash "$webconfig_src/scripts/lib/build-release.sh" \
+        --version "$good_tag" \
+        --kind "$channel" \
+        --source "$webconfig_src" \
+        --output "$out_dir/good" \
+        --arch arm64 \
+        --build-date 2024-01-01T00:00:00Z
+
+    bash "$webconfig_src/scripts/lib/build-release.sh" \
+        --version "$broken_tag" \
+        --kind "$channel" \
+        --source "$webconfig_src" \
+        --output "$out_dir/broken" \
+        --arch arm64 \
+        --build-date 2024-01-01T00:00:00Z
+
+    # Replace broken's binary with a shell script that starts under systemd
+    # but never binds :8080. Helper's /health probe exhausts in 10s and the
+    # rollback fires. Zero-byte binaries fail at `systemctl restart` instead,
+    # exercising the wrong branch.
+    cat > "$out_dir/broken/airplanes-webconfig-arm64" <<'BROKEN'
+#!/bin/sh
+trap 'exit 0' TERM
+while :; do
+    sleep 30
+done
+BROKEN
+    chmod 0755 "$out_dir/broken/airplanes-webconfig-arm64"
+    # Re-checksum only the assets actually present (build-release.sh wrote
+    # arm64 only since we passed --arch arm64).
+    (
+        cd "$out_dir/broken" || exit 1
+        : > SHA256SUMS
+        for f in airplanes-webconfig-* rootfs.tar.gz manifest.json; do
+            sha256sum "$f"
+        done > SHA256SUMS
+    )
+
+    # Repack rootfs tarballs so the test wrapper update.sh is laid down by
+    # any in-test upgrade — without this, an upgrade extracts the production
+    # update.sh and any subsequent upgrade tries to reach github.com.
+    _wcu_repack_release_with_wrapper "$out_dir/good"
+    _wcu_repack_release_with_wrapper "$out_dir/broken"
+}
+
+# install_synthetic_releases ROOT PREBUILT_DIR CHANNEL
+#
+# Runs INSIDE the sudo harness. Copies prebuilt releases onto $ROOT and
+# wires the rest of the test plumbing.
+install_synthetic_releases() {
+    local root="$1"
+    local prebuilt="$2"
+    local channel="$3"
+
+    [[ -d "$root" ]] || { echo "ERROR: rootfs $root missing" >&2; return 1; }
+    [[ -d "$prebuilt/good" && -d "$prebuilt/broken" ]] || {
+        echo "ERROR: prebuilt dir $prebuilt missing good/ or broken/" >&2; return 1; }
+    case "$channel" in
+        stable|dev) ;;
+        *) echo "ERROR: unknown channel '$channel'" >&2; return 1 ;;
+    esac
 
     local staged_in_image=/opt/airplanes-webconfig-test-releases
     local staged_host="$root$staged_in_image"
     rm -rf "$staged_host"
     install -d -m 0755 "$staged_host"
 
-    # Channel-specific tag the resolver returns. Both "good" and "broken"
-    # releases carry this same string in manifest.version so the version
-    # cross-check inside install.sh passes regardless of which payload the
-    # bare-git tag currently resolves to.
-    local good_tag
-    local broken_tag
+    # Place GOOD payload at the channel-specific download path so the
+    # resolver's $DOWNLOAD_BASE/$tag/ URL resolves on Phase A. BROKEN stays
+    # at a separate path; push-broken-tag.sh rotates it into the resolver's
+    # path between phases.
     case "$channel" in
         stable)
-            good_tag=v9.9.99
-            broken_tag=v9.9.100
+            cp -a "$prebuilt/good"   "$staged_host/v9.9.99"
+            cp -a "$prebuilt/broken" "$staged_host/v9.9.100"
             ;;
         dev)
-            good_tag=dev-latest
-            broken_tag=dev-latest
-            ;;
-    esac
-
-    echo "webconfig-upgrade-helpers: building synthetic releases (channel=$channel)"
-
-    # GOOD release — same source as production, just a distinct version label.
-    bash "$webconfig_src/scripts/lib/build-release.sh" \
-        --version "$good_tag" \
-        --kind "$channel" \
-        --source "$webconfig_src" \
-        --output "$staged_host/.good" \
-        --arch arm64 \
-        --build-date 2024-01-01T00:00:00Z
-
-    # BROKEN release — same source, then the binary is replaced with a tiny
-    # shell that starts cleanly under systemd but never binds :8080. The
-    # helper's /health probe exhausts in ~10s and the rollback path fires.
-    # Zero-byte binaries fail at `systemctl restart` instead, exercising the
-    # wrong branch.
-    bash "$webconfig_src/scripts/lib/build-release.sh" \
-        --version "$broken_tag" \
-        --kind "$channel" \
-        --source "$webconfig_src" \
-        --output "$staged_host/.broken" \
-        --arch arm64 \
-        --build-date 2024-01-01T00:00:00Z
-    cat > "$staged_host/.broken/airplanes-webconfig-arm64" <<'BROKEN'
-#!/bin/sh
-# Boot-smoke "broken release" binary. Starts cleanly, never binds
-# 127.0.0.1:8080. The self-update helper's /health probe exhausts in 10s
-# and the rollback path fires. Trap SIGTERM so systemctl restart on
-# rollback doesn't hang waiting for graceful shutdown.
-trap 'exit 0' TERM
-while :; do
-    sleep 30
-done
-BROKEN
-    chmod 0755 "$staged_host/.broken/airplanes-webconfig-arm64"
-    (
-        cd "$staged_host/.broken" || exit 1
-        sha256sum \
-            airplanes-webconfig-arm64 \
-            airplanes-webconfig-armhf \
-            rootfs.tar.gz \
-            manifest.json \
-            > SHA256SUMS
-    )
-
-    # Repack both rootfs tarballs so the test wrapper update.sh is laid down
-    # by any in-test upgrade — without this, an upgrade extracts the
-    # production update.sh and the next upgrade tries to reach github.com.
-    _wcu_repack_release_with_wrapper "$staged_host/.good"
-    _wcu_repack_release_with_wrapper "$staged_host/.broken"
-
-    # Place the GOOD payload at the channel-specific download path so the
-    # resolver's $DOWNLOAD_BASE/$tag/ URL resolves on Phase A.
-    case "$channel" in
-        stable)
-            mv "$staged_host/.good" "$staged_host/v9.9.99"
-            mv "$staged_host/.broken" "$staged_host/v9.9.100"
-            ;;
-        dev)
-            mv "$staged_host/.good" "$staged_host/dev-latest"
-            # .broken stays in place; push-broken-tag.sh rotates it into
-            # dev-latest's slot between phases.
+            cp -a "$prebuilt/good"   "$staged_host/dev-latest"
+            cp -a "$prebuilt/broken" "$staged_host/.broken"
             ;;
     esac
 
@@ -189,9 +190,14 @@ case "\$1" in
         rm -rf "\$SEED"
         ;;
     dev)
-        # Force-move dev-latest in the bare repo so the resolver still
-        # succeeds, then rotate the on-disk payload dir to the broken
-        # release content.
+        # Atomic rotation: stage .broken contents in a sibling dir first,
+        # then mv -T over the live dev-latest dir, then update the bare
+        # repo's dev-latest tag. Doing dir rotation before the tag move
+        # means the dev resolver's tag-check + download window never sees
+        # a partial state.
+        rm -rf "\$STAGED/dev-latest.new"
+        cp -a "\$STAGED/.broken" "\$STAGED/dev-latest.new"
+        mv -T "\$STAGED/dev-latest.new" "\$STAGED/dev-latest"
         SEED=\$(mktemp -d)
         git init -q "\$SEED"
         (
@@ -204,8 +210,6 @@ case "\$1" in
             git push -qf origin refs/tags/dev-latest
         )
         rm -rf "\$SEED"
-        rm -rf "\$STAGED/dev-latest"
-        cp -a "\$STAGED/.broken" "\$STAGED/dev-latest"
         ;;
     *) echo "ERROR: channel must be stable or dev (got '\$1')" >&2; exit 2 ;;
 esac
@@ -269,14 +273,15 @@ _wcu_repack_release_with_wrapper() {
         --mtime='2024-01-01 00:00:00 UTC' \
         --sort=name \
         -czf "$release_dir/rootfs.tar.gz" .
+    # Glob the arch binaries — build-release.sh was called with --arch arm64
+    # so only the arm64 file exists; hardcoding both arches here would make
+    # sha256sum fail on the missing armhf file.
     (
         cd "$release_dir" || exit 1
-        sha256sum \
-            airplanes-webconfig-arm64 \
-            airplanes-webconfig-armhf \
-            rootfs.tar.gz \
-            manifest.json \
-            > SHA256SUMS
+        : > SHA256SUMS
+        for f in airplanes-webconfig-* rootfs.tar.gz manifest.json; do
+            sha256sum "$f"
+        done > SHA256SUMS
     )
     rm -rf "$tmp"
 }

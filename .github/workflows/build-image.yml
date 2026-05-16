@@ -248,6 +248,20 @@ jobs:
         with:
           go-version-file: image-webconfig/go.mod
 
+      - name: Pre-build synthetic release payloads (good + broken)
+        # Build the synthetic releases here, on the runner user where setup-go
+        # put `go` on PATH. The boot-smoke step below runs under sudo, and
+        # sudo's secure_path strips $PATH, so `go build` is not reachable
+        # from inside setup.sh. setup.sh copies the prebuilt dir into the
+        # rootfs.
+        env:
+          PREBUILT_DIR: ${{ runner.temp }}/webconfig-prebuilt
+          WEBCONFIG_SRC: ${{ github.workspace }}/image-webconfig
+        run: |
+          # shellcheck source=test/boot-smoke/lib/webconfig-upgrade-helpers.sh
+          . test/boot-smoke/lib/webconfig-upgrade-helpers.sh
+          build_synthetic_releases_prebuild "$WEBCONFIG_SRC" "$PREBUILT_DIR" "$CHANNEL"
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
@@ -287,9 +301,14 @@ jobs:
           AIRPLANES_BOOT_SMOKE_WORK_DIR: ${{ runner.temp }}/airplanes-image-boot-upgrade
           AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR: '1'
           AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE: '1'
-          AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE: ${{ github.workspace }}/image-webconfig
+          AIRPLANES_BOOT_SMOKE_PREBUILT_RELEASES: ${{ runner.temp }}/webconfig-prebuilt
+          # Probe phase model: initial boot runs feed update + reboot;
+          # 'updated' boot runs phase A+B then reboots; third boot runs
+          # the reboot-persistence check then poweroffs. image-boot.sh
+          # defaults to 2 host-side boot attempts; bump to 3 for this job.
+          AIRPLANES_BOOT_SMOKE_MAX_BOOT_ATTEMPTS: '3'
         run: |
-          sudo --preserve-env=GH_TOKEN,AIRPLANES_IMAGE_PATH,AIRPLANES_IMAGE_CONTRACT,AIRPLANES_IMAGE_CHANNEL,AIRPLANES_IMAGE_ARCH,AIRPLANES_BOOT_SMOKE_EXTRA_SETUP,AIRPLANES_BOOT_SMOKE_WORK_DIR,AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR,AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE,AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE \
+          sudo --preserve-env=GH_TOKEN,AIRPLANES_IMAGE_PATH,AIRPLANES_IMAGE_CONTRACT,AIRPLANES_IMAGE_CHANNEL,AIRPLANES_IMAGE_ARCH,AIRPLANES_BOOT_SMOKE_EXTRA_SETUP,AIRPLANES_BOOT_SMOKE_WORK_DIR,AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR,AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE,AIRPLANES_BOOT_SMOKE_PREBUILT_RELEASES,AIRPLANES_BOOT_SMOKE_MAX_BOOT_ATTEMPTS \
             bash feed/test/image-boot.sh
 
       - name: Upload QEMU logs on failure

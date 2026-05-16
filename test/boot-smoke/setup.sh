@@ -33,15 +33,17 @@ FEED_HOST=boot-smoke-feed.local
 EOF
 
 # Webconfig upgrade variant: opt-in via env var. The CI job for
-# webconfig-upgrade-qemu sets both AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE
-# and AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE (path to a writable
-# image-webconfig checkout that carries scripts/lib/build-release.sh).
+# webconfig-upgrade-qemu builds the synthetic releases pre-sudo (Go must be
+# on PATH for that — sudo's secure_path strips PATH so it cannot run from
+# here), then passes the prebuilt dir into this hook via
+# AIRPLANES_BOOT_SMOKE_PREBUILT_RELEASES. setup.sh just copies the
+# pre-built releases onto the rootfs.
 if [[ "${AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE:-}" = "1" ]]; then
-    : "${AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE:?webconfig-upgrade variant requires AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE}"
+    : "${AIRPLANES_BOOT_SMOKE_PREBUILT_RELEASES:?webconfig-upgrade variant requires AIRPLANES_BOOT_SMOKE_PREBUILT_RELEASES (path to dir holding good/ and broken/ release payloads)}"
     : "${AIRPLANES_IMAGE_CHANNEL:?webconfig-upgrade variant requires AIRPLANES_IMAGE_CHANNEL}"
     # shellcheck source=lib/webconfig-upgrade-helpers.sh
     . "$script_dir/lib/webconfig-upgrade-helpers.sh"
-    stage_webconfig_upgrade_test "$ROOT_MNT" \
-        "$AIRPLANES_BOOT_SMOKE_WEBCONFIG_SOURCE" \
+    install_synthetic_releases "$ROOT_MNT" \
+        "$AIRPLANES_BOOT_SMOKE_PREBUILT_RELEASES" \
         "$AIRPLANES_IMAGE_CHANNEL"
 fi

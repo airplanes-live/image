@@ -74,9 +74,11 @@ _wcu_health_200() {
 
 _wcu_run_phase_a_and_b() {
     local channel="$1" cookiejar="$2"
-    local good_version broken_version
+    local good_version
     good_version="$(_wcu_good_version "$channel")"
-    broken_version="$(_wcu_broken_version "$channel")"
+    # _wcu_broken_version is informational — we don't compare against it
+    # directly post-rollback because rollback restores the pre-attempt
+    # manifest. For dev channel it would also be 'dev-latest' anyway.
 
     # Phase A — happy upgrade to the good release.
     echo "image-probe:   Phase A: POST /api/webconfig-update (→ $good_version)"
@@ -105,31 +107,55 @@ _wcu_run_phase_a_and_b() {
     sudo -n /usr/local/lib/airplanes-boot-smoke/push-broken-tag.sh "$channel" \
         || fail "image-probe: Phase B: push-broken-tag.sh failed"
 
+    # Phase A succeeded so manifest is already $good_version going into
+    # Phase B. The polling check below only verifies post-Phase-B state, so
+    # we MUST wait for the transient unit (airplanes-webconfig-update.service)
+    # to actually finish before reading the manifest — otherwise the poll
+    # reads the pre-Phase-B value and the assertion succeeds trivially.
+    local phase_b_start
+    phase_b_start=$(date +%s)
+
     code="$(_wcu_post_update "$cookiejar")"
     [[ "$code" == "202" || "$code" == "200" ]] \
         || fail "image-probe: Phase B: /api/webconfig-update returned $code (want 200/202)"
 
-    # Allow up to ~90s for: install + restart + 10× health probe + restart + journal flush.
-    # We expect convergence back to the GOOD release (rollback restored the
-    # manifest to its pre-attempt value).
-    if ! _wcu_poll_manifest_version "$good_version" 120; then
-        # If we landed on the broken version, surface that as a distinct
-        # failure mode — rollback didn't restore the manifest.
-        local got
-        got="$(_wcu_manifest_version)"
-        if [[ "$got" == "$broken_version" && "$broken_version" != "$good_version" ]]; then
-            fail "image-probe: Phase B: manifest=$broken_version but expected rollback to $good_version"
+    # Wait for the transient unit to exit (helper ran install.sh, restart,
+    # /health probe loop, rollback). Default helper timing: ~10s health
+    # probe + restart + journal flush; budget 120s plus slack.
+    local unit=airplanes-webconfig-update.service
+    local wait_deadline=$(( SECONDS + 180 ))
+    while [ "$SECONDS" -lt "$wait_deadline" ]; do
+        # is-active returns 0 while running, non-zero (inactive / failed /
+        # not-found-after-collect) when done. The transient unit has
+        # --collect, so a clean exit garbage-collects the unit entirely.
+        if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+            break
         fi
-        fail "image-probe: Phase B: rollback did not converge to $good_version (manifest=$got)"
+        sleep 2
+    done
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+        fail "image-probe: Phase B: $unit still active after 180s"
     fi
+    # Let the journal flush.
+    sleep 2
+
+    # Convergence: rollback restored the manifest to the pre-attempt good
+    # version. (For dev channel both versions are 'dev-latest' so the
+    # version-equality check above is satisfied trivially; the binary
+    # rollback is the real signal there. Cover it below.)
+    local manifest_after
+    manifest_after="$(_wcu_manifest_version)"
+    [[ "$manifest_after" == "$good_version" ]] \
+        || fail "image-probe: Phase B: manifest=$manifest_after expected rollback to $good_version"
 
     assert_service_healthy airplanes-webconfig.service
     _wcu_health_200 || fail "image-probe: Phase B: /health did not return 200 after rollback"
 
-    # Journal evidence that the rollback code path actually ran. Without this
-    # a happy-path-only test could pass even if Phase B silently succeeded
-    # (e.g. the broken binary somehow served /health).
-    if ! journalctl -u airplanes-webconfig-update.service --no-pager 2>&1 \
+    # Journal evidence that the rollback code path actually ran. Restrict to
+    # entries since the POST so a successful Phase A's journal noise can't
+    # match. Without this the happy-path-only case (binary somehow served
+    # /health) could pass.
+    if ! journalctl -u "$unit" --no-pager --since "@$phase_b_start" 2>&1 \
             | grep -qE 'health probe exhausted|rolling back'; then
         fail "image-probe: Phase B: journal missing 'health probe exhausted' / 'rolling back'"
     fi
