@@ -611,32 +611,23 @@ jobs:
           path: ${{ runner.temp }}/update-regression
 
   webconfig-upgrade-smoke:
-    # Filesystem-level smoke for the on-device webconfig upgrade. Builds a
-    # baseline rootfs against the config-stable webconfig release, assembles
-    # a synthetic newer release from the sibling image-webconfig checkout,
-    # runs install.sh --runtime to upgrade, and asserts binary swap + .prev
-    # preservation + cross-version sudoers parity. The QEMU end-to-end with
-    # real /api/webconfig-update + helper + /health + rollback lives in
-    # build-image.yml. Runs on arm64 so the container is arm64 and the
-    # consumed webconfig binary is exec'd for --validate-sudoers.
+    # Filesystem-level smoke for the on-device webconfig upgrade. Stage 05
+    # inside the container clones the config-stable webconfig branch from
+    # github (the BAKED release). The sibling checkout below is the BUILDER
+    # of the synthetic newer release — it needs scripts/lib/build-release.sh,
+    # which lives on image-webconfig's dev branch, not on a stable tag from
+    # before the packager was extracted. So we pin the sibling at dev.
+    # The QEMU end-to-end (build-image.yml's webconfig-upgrade-qemu) covers
+    # the real /api/webconfig-update + helper + /health + rollback paths.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Resolve image-webconfig ref from config-stable
-        id: webconfig-ref
-        run: |
-          set -a
-          # shellcheck disable=SC1091
-          . config-stable
-          set +a
-          echo "ref=$AIRPLANES_WEBCONFIG_BRANCH" >> "$GITHUB_OUTPUT"
-
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: airplanes-live/image-webconfig
-          ref: ${{ steps.webconfig-ref.outputs.ref }}
+          ref: dev
           path: image-webconfig
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
