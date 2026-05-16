@@ -190,14 +190,13 @@ case "\$1" in
         rm -rf "\$SEED"
         ;;
     dev)
-        # Atomic rotation: stage .broken contents in a sibling dir first,
-        # then mv -T over the live dev-latest dir, then update the bare
-        # repo's dev-latest tag. Doing dir rotation before the tag move
-        # means the dev resolver's tag-check + download window never sees
-        # a partial state.
-        rm -rf "\$STAGED/dev-latest.new"
-        cp -a "\$STAGED/.broken" "\$STAGED/dev-latest.new"
-        mv -T "\$STAGED/dev-latest.new" "\$STAGED/dev-latest"
+        # Rotate the on-disk payload to the broken release. extra-probe runs
+        # serially (Phase A's install.sh has already completed before we
+        # touch this), so concurrent-resolver atomicity is not a concern
+        # here — a simple rm + cp is reliable. GNU mv -T refuses to overwrite
+        # a non-empty target directory.
+        rm -rf "\$STAGED/dev-latest"
+        cp -a "\$STAGED/.broken" "\$STAGED/dev-latest"
         SEED=\$(mktemp -d)
         git init -q "\$SEED"
         (
