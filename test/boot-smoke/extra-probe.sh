@@ -237,32 +237,39 @@ sse_stream_out="$(mktemp)"
 
 curl --silent --show-error --max-time 5 \
     http://127.0.0.1/api/state > "$sse_state_out" || true
-grep -q '"state":"uninitialized"' "$sse_state_out" \
-    || fail "SSE probe: expected /api/state == uninitialized; got: $(cat "$sse_state_out")"
 
-# /api/setup auto-logs-in on success — capture the session cookie for the
-# follow-up SSE GET. Origin == Host satisfies the POST-mutation origin guard.
-sse_setup_code="$(curl --silent --show-error --output /dev/null \
-    --write-out '%{http_code}' --max-time 10 \
-    -X POST -H 'Content-Type: application/json' -H 'Origin: http://127.0.0.1' \
-    --data "$sse_body" -c "$sse_cookiejar" \
-    http://127.0.0.1/api/setup)"
-[[ "$sse_setup_code" == "200" ]] \
-    || fail "SSE probe: /api/setup returned $sse_setup_code (want 200)"
+# Re-entrant: the webconfig-upgrade-qemu variant reboots from inside this
+# probe and re-sources us afterwards; by then /api/setup has already moved
+# the device to "initialized" and the SSE password-setup+stream path is no
+# longer applicable. Skip it cleanly — the persistence path below probes
+# /health and the running service, which is what matters for a second pass.
+if grep -q '"state":"uninitialized"' "$sse_state_out"; then
+    # /api/setup auto-logs-in on success — capture the session cookie for the
+    # follow-up SSE GET. Origin == Host satisfies the POST-mutation origin guard.
+    sse_setup_code="$(curl --silent --show-error --output /dev/null \
+        --write-out '%{http_code}' --max-time 10 \
+        -X POST -H 'Content-Type: application/json' -H 'Origin: http://127.0.0.1' \
+        --data "$sse_body" -c "$sse_cookiejar" \
+        http://127.0.0.1/api/setup)"
+    [[ "$sse_setup_code" == "200" ]] \
+        || fail "SSE probe: /api/setup returned $sse_setup_code (want 200)"
 
-# Open the SSE stream for 5s. `--max-time 5` ends curl with exit 28; we
-# accept that and inspect the captured bytes. webconfig.service is the
-# unit we stream — guaranteed to have journal entries since it's running.
-curl --silent --show-error --no-buffer --max-time 5 \
-    -b "$sse_cookiejar" \
-    http://127.0.0.1/api/log/webconfig > "$sse_stream_out" || true
+    # Open the SSE stream for 5s. `--max-time 5` ends curl with exit 28; we
+    # accept that and inspect the captured bytes. webconfig.service is the
+    # unit we stream — guaranteed to have journal entries since it's running.
+    curl --silent --show-error --no-buffer --max-time 5 \
+        -b "$sse_cookiejar" \
+        http://127.0.0.1/api/log/webconfig > "$sse_stream_out" || true
 
-[[ -s "$sse_stream_out" ]] \
-    || fail "SSE probe: stream emitted no data within 5s — proxy buffering or upstream WriteTimeout regression?"
-grep -q '^data: ' "$sse_stream_out" \
-    || fail "SSE probe: output missing 'data: ' prefix; head: $(head -c 500 "$sse_stream_out")"
+    [[ -s "$sse_stream_out" ]] \
+        || fail "SSE probe: stream emitted no data within 5s — proxy buffering or upstream WriteTimeout regression?"
+    grep -q '^data: ' "$sse_stream_out" \
+        || fail "SSE probe: output missing 'data: ' prefix; head: $(head -c 500 "$sse_stream_out")"
 
-echo "image-probe: SSE stream end-to-end passed ($(wc -l < "$sse_stream_out") lines)"
+    echo "image-probe: SSE stream end-to-end passed ($(wc -l < "$sse_stream_out") lines)"
+else
+    echo "image-probe: SSE probe skipped (state=$(cat "$sse_state_out")) — already initialized, second pass"
+fi
 rm -f "$sse_state_out" "$sse_stream_out"
 
 # Webconfig-upgrade variant — gated on the marker file the boot-smoke pre-boot
