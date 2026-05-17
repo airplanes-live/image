@@ -25,6 +25,7 @@ Download the latest stable `.img.xz` from the [Releases](https://github.com/airp
 - `HOSTNAME` — set this if you run more than one Pi on your network (otherwise they'll all collide on `raspberrypi.local`). E.g. `HOSTNAME=airplanes-feeder` makes the Pi reachable at `airplanes-feeder.local`.
 - `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY` — only if you're not on Ethernet.
 - `FEED_HOST` — leave commented out for production. Only set this if you're pointing at a non-production backend.
+- `WEBSITE_URL` — leave commented out for production. Independent of `FEED_HOST`; points the feeder's claim / diagnostics / remote-config-sync POSTs at a non-production website.
 
 Eject, insert into the Pi, connect SDR + antenna, power on. After ~2 minutes the feeder is online — browse to `http://<hostname>.local/` (or `http://raspberrypi.local/` if you didn't set `HOSTNAME`). **Set your receiver location (latitude / longitude / altitude) and MLAT display name in the web UI** — that's where they live now.
 

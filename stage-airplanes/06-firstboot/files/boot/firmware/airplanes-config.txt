@@ -52,3 +52,12 @@
 # advanced topologies (bracketed IPv6, non-default beast port, multi-host
 # fan-out), SSH in after first boot and edit /etc/airplanes/feed.env directly.
 #FEED_HOST=mybackend.local
+
+# Point this feeder at a non-production website (homelab, staging) instead of
+# https://airplanes.live for claim, diagnostics, and remote-config-sync POSTs.
+# This is independent of FEED_HOST — FEED_HOST controls where ADS-B + MLAT
+# traffic goes, WEBSITE_URL controls where the feeder talks to the website
+# API. Full URL with scheme (http:// or https://), optional :PORT, optional
+# /path. No userinfo, query, or fragment. For development only — production
+# feeders should leave this commented out.
+#WEBSITE_URL=https://mywebsite.airplanes.test

@@ -394,6 +394,161 @@ EOF
     [ "$TARGET" = "--net-connector test.local,30004,beast_reduce_plus_out" ]
 }
 
+# ---- WEBSITE_URL parser capture --------------------------------------------
+
+@test "100: WEBSITE_URL=https://homelab.airplanes.test captured" {
+    echo "WEBSITE_URL=https://homelab.airplanes.test" > "$FIXTURE"
+    parse_boot_config "$FIXTURE"
+    [ "${BOOT_CFG[WEBSITE_URL]}" = "https://homelab.airplanes.test" ]
+    [ "${#BOOT_CFG_ERRORS[@]}" -eq 0 ]
+}
+
+@test "101: WEBSITE_URL=\"http://host:8080/api\" strips surrounding quotes" {
+    echo 'WEBSITE_URL="http://host:8080/api"' > "$FIXTURE"
+    parse_boot_config "$FIXTURE"
+    [ "${BOOT_CFG[WEBSITE_URL]}" = "http://host:8080/api" ]
+}
+
+# ---- _website_url_is_valid -------------------------------------------------
+
+@test "110: _website_url_is_valid: http://host accepts" {
+    _website_url_is_valid "http://homelab.airplanes.test"
+}
+
+@test "111: _website_url_is_valid: https://host accepts" {
+    _website_url_is_valid "https://homelab.airplanes.test"
+}
+
+@test "112: _website_url_is_valid: http://host:8080 accepts" {
+    _website_url_is_valid "http://homelab.airplanes.test:8080"
+}
+
+@test "113: _website_url_is_valid: http://host/path accepts" {
+    _website_url_is_valid "http://homelab.airplanes.test/api/v1"
+}
+
+@test "114: _website_url_is_valid: http://192.168.1.10:18080 accepts" {
+    _website_url_is_valid "http://192.168.1.10:18080"
+}
+
+@test "115: _website_url_is_valid: single-label host accepts" {
+    _website_url_is_valid "http://homelab"
+}
+
+@test "120: _website_url_is_valid: missing scheme rejected" {
+    ! _website_url_is_valid "homelab.airplanes.test"
+}
+
+@test "121: _website_url_is_valid: ftp:// rejected" {
+    ! _website_url_is_valid "ftp://homelab.airplanes.test"
+}
+
+@test "122: _website_url_is_valid: file:// rejected" {
+    ! _website_url_is_valid "file:///etc/passwd"
+}
+
+@test "123: _website_url_is_valid: userinfo rejected" {
+    ! _website_url_is_valid "http://user:pass@homelab.airplanes.test"
+}
+
+@test "124: _website_url_is_valid: query string rejected" {
+    ! _website_url_is_valid "http://homelab.airplanes.test/?foo=bar"
+}
+
+@test "125: _website_url_is_valid: fragment rejected" {
+    ! _website_url_is_valid "http://homelab.airplanes.test/api#top"
+}
+
+@test "126: _website_url_is_valid: port 0 rejected" {
+    ! _website_url_is_valid "http://homelab:0"
+}
+
+@test "127: _website_url_is_valid: port 65536 rejected" {
+    ! _website_url_is_valid "http://homelab:65536"
+}
+
+@test "128: _website_url_is_valid: invalid IPv4 octet rejected" {
+    ! _website_url_is_valid "http://10.0.0.256"
+}
+
+@test "129: _website_url_is_valid: too-many IPv4 octets rejected" {
+    ! _website_url_is_valid "http://1.2.3.4.5"
+}
+
+@test "130: _website_url_is_valid: empty after scheme rejected" {
+    ! _website_url_is_valid "http://"
+}
+
+@test "131: _website_url_is_valid: space in host rejected" {
+    ! _website_url_is_valid "http://bad host"
+}
+
+@test "132: _website_url_is_valid: shell metachar in path rejected" {
+    ! _website_url_is_valid 'http://host/$(rm)'
+}
+
+# ---- expand_website_url ----------------------------------------------------
+
+@test "140: expand_website_url: writes APL_FEED_WEBSITE_URL, strips source key" {
+    BOOT_CFG=([WEBSITE_URL]="http://homelab.airplanes.test")
+    expand_website_url
+    [ "${BOOT_CFG[APL_FEED_WEBSITE_URL]}" = "http://homelab.airplanes.test" ]
+    [ -z "${BOOT_CFG[WEBSITE_URL]+set}" ]
+    [ "${#BOOT_CFG_ERRORS[@]}" -eq 0 ]
+}
+
+@test "141: expand_website_url: trailing slash on bare authority normalised" {
+    BOOT_CFG=([WEBSITE_URL]="http://homelab.airplanes.test/")
+    expand_website_url
+    [ "${BOOT_CFG[APL_FEED_WEBSITE_URL]}" = "http://homelab.airplanes.test" ]
+}
+
+@test "142: expand_website_url: invalid value records error and strips key" {
+    BOOT_CFG=([WEBSITE_URL]="not-a-url")
+    expand_website_url
+    [ -z "${BOOT_CFG[APL_FEED_WEBSITE_URL]+set}" ]
+    [ -z "${BOOT_CFG[WEBSITE_URL]+set}" ]
+    [ "${#BOOT_CFG_ERRORS[@]}" -eq 1 ]
+    [[ "${BOOT_CFG_ERRORS[0]}" == *"WEBSITE_URL"* ]]
+    [[ "${BOOT_CFG_ERRORS[0]}" == *"invalid value"* ]]
+}
+
+@test "143: expand_website_url: unset key is a no-op" {
+    BOOT_CFG=()
+    expand_website_url
+    [ "${#BOOT_CFG[@]}" -eq 0 ]
+    [ "${#BOOT_CFG_ERRORS[@]}" -eq 0 ]
+}
+
+# ---- merge_feed_env: mode preservation -------------------------------------
+# chown --reference needs root, so bats only validates the chmod side. The
+# unit-file CI job (first-run-systemd) covers the chown half end-to-end.
+
+@test "150: merge_feed_env preserves feed.env file mode across rewrite" {
+    FEED_ENV="$TMP/feed.env"
+    LOCK_FILE="$TMP/lock"
+    : > "$FEED_ENV"
+    chmod 0644 "$FEED_ENV"
+    BOOT_CFG=([APL_FEED_WEBSITE_URL]="http://homelab.airplanes.test")
+    merge_feed_env
+    local mode
+    mode="$(stat -c '%a' "$FEED_ENV")"
+    [ "$mode" = "644" ]
+    grep -q '^APL_FEED_WEBSITE_URL="http://homelab.airplanes.test"$' "$FEED_ENV"
+}
+
+@test "151: merge_feed_env: missing feed.env results in 0644 default" {
+    FEED_ENV="$TMP/feed.env"
+    LOCK_FILE="$TMP/lock"
+    rm -f "$FEED_ENV"
+    BOOT_CFG=([APL_FEED_WEBSITE_URL]="http://homelab.airplanes.test")
+    merge_feed_env
+    [ -f "$FEED_ENV" ]
+    local mode
+    mode="$(stat -c '%a' "$FEED_ENV")"
+    [ "$mode" = "644" ]
+}
+
 # ---- retired-function regression guards ------------------------------------
 
 @test "90: toggle_978_services is no longer defined" {
