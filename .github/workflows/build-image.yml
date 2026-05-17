@@ -331,7 +331,12 @@ jobs:
     # 90-day artifact retention window is no longer a coverage concern.
     name: Update rolling dev-latest prerelease
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && success()
+    if: |
+      github.ref == 'refs/heads/dev'
+      && (github.event_name == 'push'
+          || (github.event_name == 'workflow_dispatch'
+              && github.event.inputs.channel == 'dev'))
+      && success()
     runs-on: ubuntu-24.04
     permissions:
       # Scoped to this job only — the `build` job stays at the workflow-level
@@ -500,10 +505,18 @@ jobs:
   cleanup-dev-artifacts:
     # Keep only the newest image-dev-arm64 artifact. Without this, every dev
     # push leaves a ~700MB artifact behind for the default 90-day retention,
-    # piling up to hundreds of GB. Gated to canonical dev pushes so manual
-    # workflow_dispatch runs (even with channel=dev) can't delete the latest.
+    # piling up to hundreds of GB. Gated to the dev branch + dev channel:
+    # manual workflow_dispatch runs from the dev branch with channel=dev
+    # (the default) participate; runs from feature branches, or with
+    # channel=stable, do not — so feature-branch experiments cannot prune
+    # the canonical artifact.
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && success()
+    if: |
+      github.ref == 'refs/heads/dev'
+      && (github.event_name == 'push'
+          || (github.event_name == 'workflow_dispatch'
+              && github.event.inputs.channel == 'dev'))
+      && success()
     runs-on: ubuntu-24.04
     permissions:
       actions: write
