@@ -70,16 +70,19 @@ record_error() {
 	log "$1"
 }
 
-# The five keys airplanes-config.txt accepts. Operational config (location,
+# The six keys airplanes-config.txt accepts. Operational config (location,
 # MLAT name, MLAT on/off, gain, UAT toggling) lives in the webconfig UI;
 # feed.env-only knobs (MLATSERVER, TARGET, INPUT, SDR pinning, etc.) are
 # edited directly on the booted feeder. reject_unknown_boot_key emits a
 # category-specific error so airplanes-config.error.txt tells the user where
-# the setting actually lives.
+# the setting actually lives. WEBSITE_URL is the non-prod backend pointer
+# (claim + diagnostics + remote config sync); FEED_HOST is the ingest /
+# MLAT endpoint — independent keys, both bootstrap-only.
 declare -gA BOOT_CFG_ALLOWLIST=(
 	[WIFI_SSID]=1 [WIFI_PASS]=1 [WIFI_COUNTRY]=1
 	[HOSTNAME]=1
 	[FEED_HOST]=1
+	[WEBSITE_URL]=1
 )
 
 # Keys webconfig writes via POST /api/config (mirror of configspec.go
@@ -512,6 +515,132 @@ _feed_host_is_valid() {
 	return 0
 }
 
+# Synthesize APL_FEED_WEBSITE_URL from a user-friendly WEBSITE_URL shorthand.
+# WEBSITE_URL is the non-prod backend pointer (claim + diagnostics + remote
+# config sync); apl-feed reads APL_FEED_WEBSITE_URL out of feed.env via its
+# resolver. The boot-config key name itself must not leak into feed.env, so
+# we strip it from BOOT_CFG after expansion (parallel to FEED_HOST's
+# MLATSERVER+TARGET synthesis).
+#
+# Normalises trailing-slash so "http://host/" doesn't produce double-slashes
+# in downstream "$WEBSITE_URL/api/..." concatenations.
+expand_website_url() {
+	local raw="${BOOT_CFG[WEBSITE_URL]:-}"
+	[[ -n "$raw" ]] || return 0
+
+	if ! _website_url_is_valid "$raw"; then
+		record_error "WEBSITE_URL: invalid value '$raw' (need http://host or https://host, optionally :port (1-65535) and /path; no userinfo, query, or fragment)"
+		unset 'BOOT_CFG[WEBSITE_URL]'
+		return 0
+	fi
+
+	# Strip a single trailing slash on the path portion. Leave bare-scheme
+	# "http://" pathological cases to _website_url_is_valid (rejected).
+	if [[ "$raw" == */ && "$raw" != *://*/*/ ]]; then
+		# raw matches "http(s)://host[/]"; the only trailing slash is the
+		# one right after the authority. Strip it so concatenation lands
+		# cleanly.
+		raw="${raw%/}"
+	elif [[ "$raw" == */ ]]; then
+		# Path with extra trailing slash: "http://host/api/" -> drop one.
+		raw="${raw%/}"
+	fi
+
+	BOOT_CFG[APL_FEED_WEBSITE_URL]="$raw"
+	unset 'BOOT_CFG[WEBSITE_URL]'
+}
+
+# Returns 0 if the argument is an acceptable WEBSITE_URL value. Tighter than
+# FEED_HOST's validator because the URL ends up shell-sourced from feed.env
+# AND re-scanned by apl-feed's feed-env-apply universal-reject — bytes the
+# parser admits here that the universal-reject would later trip on would
+# block every future config-sync rewrite. Explicitly rejected: userinfo
+# (user@), query strings (?), fragments (#), shell metacharacters
+# ($, `, \, "), and whitespace.
+_website_url_is_valid() {
+	local raw="$1" rest scheme hostport host port path
+	(( ${#raw} <= 2048 )) || return 1
+
+	# Scheme.
+	if [[ "$raw" == https://* ]]; then
+		scheme="https"
+		rest="${raw#https://}"
+	elif [[ "$raw" == http://* ]]; then
+		scheme="http"
+		rest="${raw#http://}"
+	else
+		return 1
+	fi
+	[[ -n "$rest" ]] || return 1
+	# scheme is validated above; silence shellcheck.
+	: "$scheme"
+
+	# No userinfo, query, or fragment. The feed-env-apply universal-reject
+	# treats some of these (esp. #) as forbidden bytes anyway.
+	[[ "$rest" == *@* ]] && return 1
+	[[ "$rest" == *\?* ]] && return 1
+	[[ "$rest" == *#* ]] && return 1
+
+	# Authority before first slash; path after (optional).
+	if [[ "$rest" == */* ]]; then
+		hostport="${rest%%/*}"
+		path="/${rest#*/}"
+	else
+		hostport="$rest"
+		path=""
+	fi
+	[[ -n "$hostport" ]] || return 1
+
+	# Split host:port. We treat the LAST `:` as the port separator. Bracketed
+	# IPv6 literals are not supported here — same posture as FEED_HOST.
+	if [[ "$hostport" == *:* ]]; then
+		host="${hostport%:*}"
+		port="${hostport##*:}"
+	else
+		host="$hostport"
+		port=""
+	fi
+	[[ -n "$host" ]] || return 1
+	(( ${#host} <= 253 )) || return 1
+
+	# Host: dotted-IPv4 or hostname-shaped (RFC 1123 letters/digits/dot/dash).
+	# Loose enough to admit single-label LAN names like `homelab` and
+	# IPv4 like `192.168.1.10`; strict on shell-safety.
+	[[ "$host" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+	if [[ "$host" =~ ^[0-9.]+$ ]]; then
+		# Looks like an IPv4 candidate — validate octets.
+		local IFS=.
+		# shellcheck disable=SC2206  # intentional word-split on dots
+		local octets=( $host )
+		(( ${#octets[@]} == 4 )) || return 1
+		local o
+		for o in "${octets[@]}"; do
+			[[ "$o" =~ ^[0-9]+$ ]] || return 1
+			# Strip leading zeros to dodge octal-interpretation.
+			o="${o#"${o%%[!0]*}"}"
+			[[ -z "$o" ]] && o=0
+			(( o >= 0 && o <= 255 )) || return 1
+		done
+	fi
+
+	# Port: 1..65535 if present.
+	if [[ -n "$port" ]]; then
+		[[ "$port" =~ ^[0-9]+$ ]] || return 1
+		port="${port#"${port%%[!0]*}"}"
+		[[ -z "$port" ]] && port=0
+		(( port >= 1 && port <= 65535 )) || return 1
+	fi
+
+	# Path (optional): conservative allowlist that survives both the shell
+	# source in apl-feed/airplanes-feed.sh and feed-env-apply's universal-
+	# reject. % accepts percent-encoded bytes.
+	if [[ -n "$path" ]]; then
+		[[ "$path" =~ ^[A-Za-z0-9._~%/-]*$ ]] || return 1
+	fi
+
+	return 0
+}
+
 # Atomic merge under flock: write a tmp file in the target directory, fsync
 # it, rename onto feed.env, then sync the parent directory. The flock matches
 # webconfig's apply-config (/run/airplanes/feed-env.lock) so a concurrent
@@ -552,6 +681,18 @@ merge_feed_env() {
 				fi
 			fi
 		done
+
+		# Preserve mode/owner from the existing feed.env so the
+		# airplanes-feed user can still source it after the rename. mktemp
+		# defaults to 0600 root:root, which silently breaks `User=airplanes-feed`
+		# units on the next read. Same pattern feed-env-apply uses for
+		# config-sync rewrites.
+		if [[ -f "$FEED_ENV" ]]; then
+			chmod --reference="$FEED_ENV" "$tmp_env" 2>/dev/null || chmod 0644 "$tmp_env" || true
+			chown --reference="$FEED_ENV" "$tmp_env" 2>/dev/null || true
+		else
+			chmod 0644 "$tmp_env" 2>/dev/null || true
+		fi
 
 		sync -d "$tmp_env" 2>/dev/null || sync
 		if ! mv "$tmp_env" "$FEED_ENV"; then
@@ -641,6 +782,7 @@ main() {
 	apply_wifi_country || record_error "failed to apply WiFi country code"
 	apply_hostname || record_error "failed to apply hostname"
 	expand_feed_host
+	expand_website_url
 
 	local merge_ok=1
 	if (( ${#BOOT_CFG[@]} > 0 )); then

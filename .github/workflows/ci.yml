@@ -252,6 +252,59 @@ jobs:
           sudo grep -q '^MLATSERVER="ci-failure-backend.local:31090"$' /etc/airplanes/feed.env \
             || { echo "MLATSERVER not merged from partial-error file"; sudo cat /etc/airplanes/feed.env; exit 1; }
 
+      - name: WEBSITE_URL path — expand_website_url writes APL_FEED_WEBSITE_URL; key does not leak
+        run: |
+          # WEBSITE_URL is the non-prod website pointer (claim + diagnostics +
+          # config-sync). expand_website_url renames the key to
+          # APL_FEED_WEBSITE_URL on the way into feed.env; the source name
+          # itself must never leak.
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          HOSTNAME=airplanes-ci-website
+          WEBSITE_URL=http://ci-website.local
+          CFG
+          sudo systemctl restart airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ ! -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source not consumed"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.applied.txt ]] \
+            || { echo "applied.txt missing"; exit 1; }
+          [[ ! -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "unexpected error.txt"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          sudo grep -q '^APL_FEED_WEBSITE_URL="http://ci-website.local"$' /etc/airplanes/feed.env \
+            || { echo "APL_FEED_WEBSITE_URL not derived from WEBSITE_URL"; sudo cat /etc/airplanes/feed.env; exit 1; }
+          # WEBSITE_URL is a synthetic key — must never reach feed.env.
+          ! sudo grep -qE '^WEBSITE_URL=' /etc/airplanes/feed.env \
+            || { echo "WEBSITE_URL leaked into feed.env"; exit 1; }
+
+      - name: WEBSITE_URL rejection — invalid value blocks rename, writes .error.txt
+        run: |
+          # No scheme → reject. expand_website_url records the error; the
+          # rename to .applied.txt is gated on BOOT_CFG_ERRORS being empty.
+          # The preceding "WEBSITE_URL path" step left a valid APL_FEED_WEBSITE_URL
+          # in feed.env; this step must NOT overwrite it from a rejected input.
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          HOSTNAME=airplanes-ci-website-bad
+          WEBSITE_URL=not-a-url
+          CFG
+          sudo systemctl restart airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source missing after invalid-URL rejection"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "error.txt missing"; exit 1; }
+          sudo grep -q 'WEBSITE_URL' /boot/firmware/airplanes-config.error.txt \
+            || { echo "error.txt does not mention WEBSITE_URL"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          ! sudo grep -qE '^WEBSITE_URL=' /etc/airplanes/feed.env \
+            || { echo "WEBSITE_URL leaked into feed.env despite rejection"; exit 1; }
+          # Prior valid value (set by the previous step) must persist — the
+          # rejected input must not bake "not-a-url" into APL_FEED_WEBSITE_URL.
+          sudo grep -q '^APL_FEED_WEBSITE_URL="http://ci-website.local"$' /etc/airplanes/feed.env \
+            || { echo "prior APL_FEED_WEBSITE_URL clobbered by rejected input"; sudo cat /etc/airplanes/feed.env; exit 1; }
+          ! sudo grep -qE 'not-a-url' /etc/airplanes/feed.env \
+            || { echo "rejected WEBSITE_URL value reached feed.env"; sudo cat /etc/airplanes/feed.env; exit 1; }
+
       - name: Allowlist path — non-bootstrap key is rejected with category-specific message
         run: |
           # LATITUDE is webconfig-writable; the parser must reject it at parse
