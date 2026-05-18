@@ -998,7 +998,7 @@ claim_color() {
         secret-saved|rotation-pending|registration-pending)
             printf '%b%s%b' "$C_WARN" "$1" "$C_RESET" ;;
         *)
-            printf '%b%s%b — sudo apl-feed claim register' \
+            printf '%b%s%b — apl-feed claim register' \
                 "$C_WARN" "$1" "$C_RESET" ;;
     esac
 }
@@ -1260,7 +1260,7 @@ build_status_lines_compact() {
     STATUS_LINES+=("$(printf '%bFeeder ID%b  %s' "$C_BOLD" "$C_RESET" "$id_short")")
 
     # Claim — colored value on its own row. The MOTD intentionally drops
-    # the `sudo apl-feed claim register` action hint that used to live on
+    # the `apl-feed claim register` action hint that used to live on
     # the next line; first-boot users see the hint plenty of times via
     # the webconfig + claim QR flow and don't need it on every SSH login.
     STATUS_LINES+=("$(printf '%bClaim%b      %s' "$C_BOLD" "$C_RESET" "$(claim_color_compact "$SD_CLAIM")")")
@@ -1334,7 +1334,7 @@ build_status_lines_compact() {
 # Snapshot/once full-width status — used under the banner-stack layout
 # when cols >= 80. Mockup ordering: Feeder ID → Claim → Access → Network →
 # Services → Feed → System → Hardware → notes. Full UUID feeder ID. No
-# `sudo apl-feed claim register` hint (first-boot users see the hint via
+# `apl-feed claim register` hint (first-boot users see the hint via
 # webconfig + claim QR flow; the MOTD/once path drops it). Pi-health
 # summary truncated to fit the 80-col budget. URLs and network interfaces
 # spill onto indented continuation rows so the label column is consistent.

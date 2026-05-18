@@ -7,9 +7,9 @@
 # the image identifies as the `debian` cloud-init Distro (this image flips
 # from raspberry-pi-os to dodge the userconf-pi race — see
 # stage-airplanes/00-prep/files/etc/cloud/cloud.cfg.d/99-airplanes-distro-debian.cfg).
-# Without this oneshot, fresh flashes have no sudo at all, the dashboard's
-# `sudo apl-feed claim register` hint doesn't work, and operators can't
-# read journalctl.
+# Without this oneshot, fresh flashes have no sudo at all, the
+# /usr/local/sbin/apl-feed wrapper (which auto-elevates privileged
+# subcommands) can't reach root, and operators can't read journalctl.
 #
 # Why per-user drop-ins (not %sudo + usermod -aG sudo):
 #   - No /etc/group mutation → smaller sandbox-tripping surface (the unit
