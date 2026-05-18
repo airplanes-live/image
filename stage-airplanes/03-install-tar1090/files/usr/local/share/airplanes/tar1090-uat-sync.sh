@@ -30,28 +30,56 @@ set -eu
 : "${AIRPLANES_978_STATE_PATH:=/run/airplanes-978/state}"
 : "${DUMP978_FA_STATE_PATH:=/run/dump978-fa/state}"
 : "${AIRPLANES_TAR1090_SYNC_RESTART_CMD:=systemctl try-restart tar1090.service}"
-: "${STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
 
-# State reader library. Defensive fallback: a missing lib means we can't
-# read the state files, which we treat the same as "absent" → desired=no.
-if [[ -r "$STATE_READER_LIB" ]]; then
-    # shellcheck source=/dev/null
-    source "$STATE_READER_LIB"
-else
-    airplanes_read_state() { return 1; }
-fi
+# State file parser is inline rather than sourced from
+# /usr/local/share/airplanes/lib/state-reader.sh: that library ships from
+# airplanes-live/feed, and (a) the reconcile only needs two fields, (b)
+# we need to read each file as a single snapshot to avoid mixing fields
+# from different atomic-rename generations, and (c) keeping zero runtime
+# deps lets the script work on pre-feed-state-lib images too.
+read_field_from() {
+    # Extract a key=value field from a state-file snapshot held in a string.
+    # Mirrors airplanes_read_state's contract but operates on captured
+    # content rather than re-reading the file (which would let the atomic-
+    # rename writer swap files between successive reads and let us mix
+    # values from different generations).
+    local snapshot="$1" key="$2"
+    [[ -n "$snapshot" ]] || return 1
+    local first=1 line
+    while IFS= read -r line; do
+        if (( first )); then
+            first=0
+            [[ "$line" == 'schema_version=1' ]] || return 1
+            continue
+        fi
+        case "$line" in
+            "${key}="*)
+                printf '%s' "${line#"${key}="}"
+                return 0
+                ;;
+        esac
+    done <<<"$snapshot"
+    return 1
+}
 
-read_field() {
-    local file="$1" key="$2"
+read_snapshot() {
+    # Read the named state file once into stdout. A subsequent atomic rename
+    # by the wrapper does not affect what we already captured. Empty stdout
+    # is the correct "absent or unreadable" signal — the field extractor
+    # treats that as "no value".
+    local file="$1"
     [[ -r "$file" ]] || return 0
-    airplanes_read_state "$file" "$key" 2>/dev/null || true
+    cat -- "$file" 2>/dev/null || true
 }
 
 compute_desired() {
+    local consumer_snapshot producer_snapshot
     local consumer_state producer_state producer_reason
-    consumer_state="$(read_field "$AIRPLANES_978_STATE_PATH" state)"
-    producer_state="$(read_field "$DUMP978_FA_STATE_PATH" state)"
-    producer_reason="$(read_field "$DUMP978_FA_STATE_PATH" reason)"
+    consumer_snapshot="$(read_snapshot "$AIRPLANES_978_STATE_PATH")"
+    producer_snapshot="$(read_snapshot "$DUMP978_FA_STATE_PATH")"
+    consumer_state="$(read_field_from "$consumer_snapshot" state || true)"
+    producer_state="$(read_field_from "$producer_snapshot" state || true)"
+    producer_reason="$(read_field_from "$producer_snapshot" reason || true)"
     if [[ "$consumer_state" == "enabled" \
         && "$producer_state" == "enabled" \
         && "$producer_reason" == "ok" ]]; then
@@ -62,10 +90,12 @@ compute_desired() {
 }
 
 current_enable_978() {
-    # Match the first uncommented ENABLE_978= line. If none, return empty so
-    # the awk rewrite below knows to append rather than substitute.
+    # Match the first uncommented ENABLE_978= line. The regex is anchored at
+    # column 0 (no leading-whitespace tolerance) to stay symmetric with the
+    # rewriter — an indented assignment would otherwise be read here but
+    # ignored by the rewrite, leaving the two views out of sync.
     [[ -r "$AIRPLANES_TAR1090_DEFAULTS_PATH" ]] || return 0
-    awk -F= '/^[[:space:]]*ENABLE_978=/ { sub(/^[[:space:]]*ENABLE_978=/, "", $0); print; exit }' \
+    awk -F= '/^ENABLE_978=/ { sub(/^ENABLE_978=/, "", $0); print; exit }' \
         "$AIRPLANES_TAR1090_DEFAULTS_PATH"
 }
 
@@ -73,16 +103,19 @@ rewrite_enable_978() {
     local desired="$1" src dst
     src="$AIRPLANES_TAR1090_DEFAULTS_PATH"
     dst="${src}.tar1090-uat-sync.tmp.$$"
-    # Substitute the first ENABLE_978= line in place; append one if none
-    # exists. Anchored to ^ so commented-out forms (#ENABLE_978=...) are
-    # left untouched.
+    # Replace EVERY uncommented ENABLE_978= line with the canonical value.
+    # If sourced as a shell file the last assignment wins, so a stray
+    # duplicate left behind would override our reconciled value. Append a
+    # single assignment at EOF when no occurrences existed. Commented forms
+    # (#ENABLE_978=...) are anchored out and left untouched.
     awk -v val="$desired" '
-        BEGIN { done = 0 }
-        /^ENABLE_978=/ && !done { print "ENABLE_978=" val; done = 1; next }
+        BEGIN { seen = 0 }
+        /^ENABLE_978=/ { print "ENABLE_978=" val; seen = 1; next }
         { print }
-        END { if (!done) print "ENABLE_978=" val }
+        END { if (!seen) print "ENABLE_978=" val }
     ' "$src" > "$dst"
-    # Preserve mode + owner from the original file.
+    # Preserve mode + owner from the original file. GNU coreutils only;
+    # Debian trixie (this image's base) is GNU.
     chmod --reference="$src" "$dst"
     chown --reference="$src" "$dst" 2>/dev/null || true
     mv -f "$dst" "$src"
@@ -99,8 +132,11 @@ main() {
     # Use try-restart so this script is safe to run before tar1090 has
     # been started for the first time (oneshot service runs at boot, may
     # fire before multi-user.target.wants/tar1090.service is active).
+    # `|| true` because a masked or broken tar1090 unit shouldn't propagate
+    # under set -e and mark this reconcile service failed — the config
+    # change is the load-bearing effect; the restart is a convenience.
     # shellcheck disable=SC2086
-    $AIRPLANES_TAR1090_SYNC_RESTART_CMD
+    $AIRPLANES_TAR1090_SYNC_RESTART_CMD || true
 }
 
 main "$@"
