@@ -72,6 +72,30 @@ _wcu_health_200() {
     [[ "$code" == "200" ]]
 }
 
+# Re-authenticate against /api/auth/login and refresh the cookie jar in
+# place. Used between phases because Phase A's actual upgrade restarts the
+# webconfig service, which invalidates the in-memory session token captured
+# in the SSE probe's /api/setup call. Hard-codes the same probe password
+# the SSE setup uses (see sse_body below) — these must stay in sync.
+# Echoes the HTTP code to stderr on failure so a 409/429/locked-out path
+# distinguishes itself from a genuine 401 in the CI log.
+_wcu_relogin() {
+    local cookiejar="$1"
+    local code
+    code="$(curl --silent --show-error --output /dev/null \
+        --write-out '%{http_code}' --max-time 10 \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        -H 'Origin: http://127.0.0.1' \
+        --data '{"password":"ProbePw1234XX"}' \
+        -c "$cookiejar" \
+        http://127.0.0.1/api/auth/login)"
+    if [[ "$code" != "200" ]]; then
+        echo "  /api/auth/login returned $code" >&2
+        return 1
+    fi
+}
+
 # _wcu_wait_for_unit_inactive UNIT PHASE_LABEL [DEADLINE_SECS]
 #
 # Waits up to DEADLINE_SECS (default 180) for the transient
@@ -145,6 +169,14 @@ _wcu_run_phase_a_and_b() {
             | grep -q 'health OK after restart'; then
         fail "image-probe: Phase A: journal missing '/health OK after restart' (helper did not complete the upgrade)"
     fi
+
+    # Phase A actually restarted airplanes-webconfig.service via the helper's
+    # `systemctl restart` (post-flock-fix this is no longer a no-op), which
+    # cleared the in-memory session map. The cookie jar we inherited from
+    # the SSE probe's /api/setup call now points at a session the new
+    # process has never heard of — re-login or Phase B's POST returns 401.
+    _wcu_relogin "$cookiejar" \
+        || fail "image-probe: Phase B: re-login via /api/auth/login failed after Phase A service restart"
 
     # Phase B — broken release, expect rollback.
     echo "image-probe:   Phase B: pushing broken-release tag, POST /api/webconfig-update"
