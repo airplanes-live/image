@@ -722,6 +722,22 @@ if grep -q 'feeder-claim-secret' "$SNAP_OUT"; then
 fi
 rm -f "$SNAP_OUT"
 
+echo "==> stage-airplanes/06d-cli-ergonomics/00-run.sh (apl-feed sudo wrapper)"
+( cd /image/stage-airplanes/06d-cli-ergonomics && bash 00-run.sh )
+
+echo "==> 06d post-install assertions"
+[[ -x /usr/local/sbin/apl-feed ]] || fail "/usr/local/sbin/apl-feed missing or not executable"
+[[ "$(stat -c %a /usr/local/sbin/apl-feed)" == "755" ]] \
+    || fail "/usr/local/sbin/apl-feed mode != 0755"
+head -1 /usr/local/sbin/apl-feed | grep -qE '^#!/bin/sh' \
+    || fail "/usr/local/sbin/apl-feed shebang is not /bin/sh"
+# The wrapper shadows the binary via PATH (stage2's 05-path.diff puts
+# /usr/local/sbin ahead of /usr/local/bin); the canonical binary installed
+# by stage 01 must still be present and intact — 06d must never touch it.
+[[ -x /usr/local/bin/apl-feed ]] || fail "/usr/local/bin/apl-feed missing (06d shouldn't touch it)"
+[[ "$(realpath /usr/local/sbin/apl-feed)" != "$(realpath /usr/local/bin/apl-feed)" ]] \
+    || fail "/usr/local/sbin/apl-feed and /usr/local/bin/apl-feed resolve to the same file"
+
 echo "==> stage-airplanes/07-finalize/00-run.sh (stub-check + manifest + cleanup)"
 ( cd /image/stage-airplanes/07-finalize && bash 00-run.sh )
 
