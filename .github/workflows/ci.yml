@@ -526,6 +526,9 @@ jobs:
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/02-install-decoder/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
+          install -m 0644 stage-airplanes/03-install-tar1090/files/etc/systemd/system/*.service \
+              stage-airplanes/03-install-tar1090/files/etc/systemd/system/*.path \
+              "$ROOT/etc/systemd/system/"
           install -m 0644 image-webconfig/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06c-grant-sudo/files/etc/systemd/system/*.service \
@@ -545,6 +548,7 @@ jobs:
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/readsb.sh"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/airplanes-978.sh"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/dump978-fa.sh"
+          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/tar1090-uat-sync.sh"
           # tar1090 + graphs1090 ExecStart targets (placeholder shell scripts the
           # upstream installers normally drop in)
           install -m 0755 /dev/null "$ROOT/usr/local/share/tar1090/tar1090.sh"
@@ -577,6 +581,8 @@ jobs:
               dump978-fa.service \
               airplanes-978.service \
               tar1090.service \
+              airplanes-tar1090-uat-sync.service \
+              airplanes-tar1090-uat-sync.path \
               graphs1090.service \
               airplanes-webconfig.service \
               airplanes-webconfig-reset.service

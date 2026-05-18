@@ -241,10 +241,20 @@ grep -q -- '--write-json-every ' /usr/local/share/airplanes/readsb.sh \
 [[ -f /usr/local/share/tar1090/html/index.html ]] || fail "tar1090 html/index.html missing"
 [[ -f /lib/systemd/system/tar1090.service ]] || fail "tar1090.service missing"
 [[ -f /etc/default/tar1090 ]] || fail "/etc/default/tar1090 missing"
-grep -q '^ENABLE_978=yes' /etc/default/tar1090 \
-    || fail "/etc/default/tar1090 ENABLE_978 not patched to yes"
+grep -q '^ENABLE_978=no' /etc/default/tar1090 \
+    || fail "/etc/default/tar1090 ENABLE_978 should default to no (toggled at runtime by airplanes-tar1090-uat-sync)"
 [[ -L /etc/lighttpd/conf-enabled/89-airplanes-978.conf ]] \
     || fail "89-airplanes-978.conf not enabled"
+[[ -x /usr/local/share/airplanes/tar1090-uat-sync.sh ]] \
+    || fail "tar1090-uat-sync.sh missing or not executable"
+[[ -f /etc/systemd/system/airplanes-tar1090-uat-sync.service ]] \
+    || fail "airplanes-tar1090-uat-sync.service missing"
+[[ -f /etc/systemd/system/airplanes-tar1090-uat-sync.path ]] \
+    || fail "airplanes-tar1090-uat-sync.path missing"
+have_enable_link airplanes-tar1090-uat-sync.service \
+    || fail "airplanes-tar1090-uat-sync.service enable symlink missing"
+have_enable_link airplanes-tar1090-uat-sync.path \
+    || fail "airplanes-tar1090-uat-sync.path enable symlink missing"
 [[ ! -L /etc/lighttpd/conf-enabled/95-tar1090-otherport.conf ]] \
     || fail "tar1090 otherport listener should be removed"
 [[ -s /etc/airplanes/.build-tar1090-sha ]] || fail ".build-tar1090-sha missing or empty"
