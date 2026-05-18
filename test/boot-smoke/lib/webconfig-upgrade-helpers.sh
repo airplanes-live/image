@@ -154,10 +154,10 @@ install_synthetic_releases() {
     )
     rm -rf "$seed"
 
-    # Test wrapper update.sh — replaces the production update.sh installed
-    # by stage 05's real release. Mirrors production: flock around install.sh
-    # so the concurrency guard still works, then export file:// URLs the
-    # helper's env -i would otherwise scrub.
+    # Test wrapper update.sh — replaces the on-device update.sh installed
+    # by stage 05's real release. Exports the file:// URLs the helper's
+    # env -i would otherwise scrub and exec's install.sh --runtime. The
+    # wrapper takes no flock of its own; see _wcu_write_test_wrapper_to.
     _wcu_write_test_wrapper_to "$root/usr/local/share/airplanes-webconfig/update.sh"
 
     # In-VM helper that flips the resolver target between phases. Sudoers-
@@ -232,25 +232,27 @@ SUDOERS
 }
 
 # _wcu_write_test_wrapper_to PATH — writes the test wrapper update.sh that
-# exports file:// URLs into PATH (production update.sh minus the exports).
+# replaces /usr/local/share/airplanes-webconfig/update.sh on the test image
+# and points the on-device installer at file:// URLs instead of github.com.
 _wcu_write_test_wrapper_to() {
     local target="$1"
     install -d -m 0755 "$(dirname "$target")"
     cat > "$target" <<'WRAPPER'
 #!/bin/bash
 # Boot-smoke test wrapper for /usr/local/share/airplanes-webconfig/update.sh.
-# Production update.sh is the same minus the exports below; the wrapper is
-# staged by the boot-smoke pre-boot setup so the unprivileged self-update
-# path resolves to file:// URLs on the rootfs.
+# The self-update helper (webconfig-self-update.sh, post image-webconfig
+# 539fc37) holds /run/airplanes/webconfig-update.lock for the whole protocol,
+# so this wrapper must NOT take a flock of its own — `flock -n` on a fresh
+# OFD self-contends with the parent-held lock, the wrapper exits 75, and
+# the helper short-circuits onto the EX_TEMPFAIL branch without exercising
+# the upgrade path the boot-smoke is meant to cover.
+#
+# Concurrency note for stable-pin builds whose baked self-update helper
+# predates 539fc37 (helper doesn't take the flock, update.sh did): removing
+# the wrapper's flock means the test scenario runs unserialised. Safe here
+# because the boot-smoke is single-runner with one update at a time; we
+# accept the test-only drift rather than emit two wrapper variants.
 set -euo pipefail
-LOCK_DIR="${AIRPLANES_WEBCONFIG_LOCK_DIR:-/run/airplanes}"
-LOCK_FILE="$LOCK_DIR/webconfig-update.lock"
-install -d -m 0755 "$LOCK_DIR"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    echo "ERROR: another webconfig update is in progress (lock held: $LOCK_FILE)" >&2
-    exit 75
-fi
 export AIRPLANES_WEBCONFIG_REPO="file:///opt/airplanes-webconfig-test-releases/image-webconfig.git"
 export AIRPLANES_WEBCONFIG_DOWNLOAD_BASE="file:///opt/airplanes-webconfig-test-releases"
 exec bash /usr/local/share/airplanes-webconfig/install.sh --runtime

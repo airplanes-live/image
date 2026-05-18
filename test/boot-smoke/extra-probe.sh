@@ -72,6 +72,27 @@ _wcu_health_200() {
     [[ "$code" == "200" ]]
 }
 
+# _wcu_wait_for_unit_inactive UNIT PHASE_LABEL [DEADLINE_SECS]
+#
+# Waits up to DEADLINE_SECS (default 180) for the transient
+# airplanes-webconfig-update.service unit to exit. systemctl is-active
+# returns 0 while running, non-zero (inactive / failed / not-found-after-
+# collect) when done. The unit has --collect, so a clean exit garbage-
+# collects it entirely.
+_wcu_wait_for_unit_inactive() {
+    local unit="$1" label="$2" deadline_secs="${3:-180}"
+    local deadline=$(( SECONDS + deadline_secs ))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+            return 0
+        fi
+        sleep 2
+    done
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+        fail "image-probe: $label: $unit still active after ${deadline_secs}s"
+    fi
+}
+
 _wcu_run_phase_a_and_b() {
     local channel="$1" cookiejar="$2"
     local good_version
@@ -79,13 +100,26 @@ _wcu_run_phase_a_and_b() {
     # _wcu_broken_version is informational — we don't compare against it
     # directly post-rollback because rollback restores the pre-attempt
     # manifest. For dev channel it would also be 'dev-latest' anyway.
+    local unit=airplanes-webconfig-update.service
 
-    # Phase A — happy upgrade to the good release.
+    # Phase A — happy upgrade to the good release. Capture the unix time
+    # BEFORE the POST so the journal-since filter below excludes anything
+    # the helper logged on prior unrelated runs.
     echo "image-probe:   Phase A: POST /api/webconfig-update (→ $good_version)"
+    local phase_a_start
+    phase_a_start=$(date +%s)
     local code
     code="$(_wcu_post_update "$cookiejar")"
     [[ "$code" == "202" || "$code" == "200" ]] \
         || fail "image-probe: Phase A: /api/webconfig-update returned $code (want 200/202)"
+
+    # Wait for the transient unit to finish before checking on-disk state —
+    # on the dev channel good_version equals broken_version equals
+    # 'dev-latest', so the manifest poll alone would succeed trivially even
+    # if the helper short-circuited. The Phase B wait below has the same
+    # rationale.
+    _wcu_wait_for_unit_inactive "$unit" "Phase A"
+    sleep 2  # let the journal flush
 
     _wcu_poll_manifest_version "$good_version" 60 \
         || fail "image-probe: Phase A: manifest never reached $good_version"
@@ -102,6 +136,16 @@ _wcu_run_phase_a_and_b() {
     /usr/local/bin/airplanes-webconfig --validate-sudoers \
         || fail "image-probe: Phase A: validate-sudoers failed (cross-version parity broken)"
 
+    # Positive journal signal that the helper actually completed the upgrade.
+    # Without this, a future bug that short-circuits the helper (POST returns
+    # 202 but the helper exits before binary swap — e.g. a wrapper-level
+    # flock collision returning EX_TEMPFAIL) would still pass every assertion
+    # above on the dev channel where good_version is unchanged byte-for-byte.
+    if ! journalctl -u "$unit" --no-pager --since "@$phase_a_start" 2>&1 \
+            | grep -q 'health OK after restart'; then
+        fail "image-probe: Phase A: journal missing '/health OK after restart' (helper did not complete the upgrade)"
+    fi
+
     # Phase B — broken release, expect rollback.
     echo "image-probe:   Phase B: pushing broken-release tag, POST /api/webconfig-update"
     sudo -n /usr/local/lib/airplanes-boot-smoke/push-broken-tag.sh "$channel" \
@@ -109,9 +153,9 @@ _wcu_run_phase_a_and_b() {
 
     # Phase A succeeded so manifest is already $good_version going into
     # Phase B. The polling check below only verifies post-Phase-B state, so
-    # we MUST wait for the transient unit (airplanes-webconfig-update.service)
-    # to actually finish before reading the manifest — otherwise the poll
-    # reads the pre-Phase-B value and the assertion succeeds trivially.
+    # we MUST wait for the transient unit to actually finish before reading
+    # the manifest — otherwise the poll reads the pre-Phase-B value and the
+    # assertion succeeds trivially.
     local phase_b_start
     phase_b_start=$(date +%s)
 
@@ -119,25 +163,10 @@ _wcu_run_phase_a_and_b() {
     [[ "$code" == "202" || "$code" == "200" ]] \
         || fail "image-probe: Phase B: /api/webconfig-update returned $code (want 200/202)"
 
-    # Wait for the transient unit to exit (helper ran install.sh, restart,
-    # /health probe loop, rollback). Default helper timing: ~10s health
-    # probe + restart + journal flush; budget 120s plus slack.
-    local unit=airplanes-webconfig-update.service
-    local wait_deadline=$(( SECONDS + 180 ))
-    while [ "$SECONDS" -lt "$wait_deadline" ]; do
-        # is-active returns 0 while running, non-zero (inactive / failed /
-        # not-found-after-collect) when done. The transient unit has
-        # --collect, so a clean exit garbage-collects the unit entirely.
-        if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
-            break
-        fi
-        sleep 2
-    done
-    if systemctl is-active --quiet "$unit" 2>/dev/null; then
-        fail "image-probe: Phase B: $unit still active after 180s"
-    fi
-    # Let the journal flush.
-    sleep 2
+    # Default helper timing: ~10s health probe + restart + journal flush;
+    # budget 120s plus slack via the helper's default 180s.
+    _wcu_wait_for_unit_inactive "$unit" "Phase B"
+    sleep 2  # let the journal flush
 
     # Convergence: rollback restored the manifest to the pre-attempt good
     # version. (For dev channel both versions are 'dev-latest' so the
