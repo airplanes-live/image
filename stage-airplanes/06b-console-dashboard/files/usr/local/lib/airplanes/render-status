@@ -35,7 +35,6 @@ LC_ALL=C
 : "${PATHS_FEEDER_ID:=/etc/airplanes/feeder-id}"
 : "${PATHS_RELEASE_CHANNEL:=/etc/airplanes/release-channel}"
 : "${PATHS_MANIFEST:=/etc/airplanes/build-manifest.json}"
-: "${PATHS_FEED_ENV:=/etc/airplanes/feed.env}"
 : "${PATHS_CLAIM_SECRET:=/etc/airplanes/feeder-claim-secret}"
 : "${PATHS_CLAIM_PENDING:=/etc/airplanes/feeder-claim-secret.pending}"
 : "${PATHS_CLAIM_VERSION:=/etc/airplanes/feeder-claim-secret.version}"
@@ -214,38 +213,6 @@ read_build_short_sha() {
     printf '%s' "${sha:0:7}"
 }
 
-# Mirror the canonical parser in webconfig/internal/feedenv/feedenv.go:
-# match `^\s*KEY=(?:"value"|unquoted)\s*$`, never `source` the file.
-# Last-wins on duplicate keys (matches the Go parser's loop, which keeps
-# overwriting `out[key]`). Whitelist callers; here only LATITUDE / LONGITUDE
-# / MLAT_USER / MLAT_ENABLED are needed (legacy USER stays in the whitelist
-# until airplanes-update is archived; the legacy fallback in
-# mlat_disabled_by_config reads it to handle a feed.env from before the
-# schema split).
-read_feed_env_var() {
-    local key="$1" line val have=0
-    [[ -r "$PATHS_FEED_ENV" ]] || return 0
-    case "$key" in
-        LATITUDE|LONGITUDE|MLAT_USER|MLAT_ENABLED|USER) ;;
-        *) return 0 ;;  # whitelist
-    esac
-    val=""
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^[[:space:]]*${key}=\"([^\"]*)\"[[:space:]]*$ ]]; then
-            val="${BASH_REMATCH[1]}"
-            have=1
-            continue
-        fi
-        if [[ "$line" =~ ^[[:space:]]*${key}=([^[:space:]]*)[[:space:]]*$ ]]; then
-            val="${BASH_REMATCH[1]}"
-            have=1
-        fi
-    done < "$PATHS_FEED_ENV"
-    if (( have )); then
-        printf '%s' "$val"
-    fi
-}
-
 # Claim state. NEVER reads secret contents; existence-check only. Mirrors
 # the file lifecycle in feed/scripts/apl-feed/claim.sh: register writes
 # .pending then mv's it to the final secret on success, so .pending without
@@ -370,6 +337,47 @@ _978_config_state() {
             ;;
         *)
             printf 'inactive -'
+            ;;
+    esac
+}
+
+# Compute SD_MLAT_NOTE from the airplanes-mlat daemon's published state.
+# Caller passes the unit's ActiveState (typically from _unit_prop). Reads
+# only the daemon-owned /run/airplanes-mlat/state — never feed.env. Empty
+# note means no message to display (e.g. enabled-ok, or daemon never ran).
+# On a fresh image MLAT_ENABLED defaults to false AND geo is unset; the
+# daemon's classifier reports reason=mlat_enabled_false (MLAT_ENABLED wins
+# over geo), so we cross-check geo_configured from the same state file
+# and surface the location call-to-action when geo is also unset. That
+# way the operator sees what to do first rather than a passive
+# "disabled in config."
+_compute_mlat_note() {
+    local active_state="$1"
+    local mlat_state mlat_reason
+    read -r mlat_state mlat_reason <<<"$(mlat_config_state "$active_state")"
+    SD_MLAT_NOTE=""
+    case "$mlat_state" in
+        disabled)
+            case "$mlat_reason" in
+                mlat_enabled_false)
+                    local geo_configured
+                    geo_configured="$(airplanes_read_state "$PATHS_STATE_FILE_MLAT" geo_configured)" || geo_configured=""
+                    if [[ "$geo_configured" == "true" ]]; then
+                        SD_MLAT_NOTE="${C_DIM}MLAT disabled in config.${C_RESET}"
+                    else
+                        SD_MLAT_NOTE="${C_WARN}Set lat/lon/alt to enable MLAT.${C_RESET}"
+                    fi
+                    ;;
+                geo_not_configured) SD_MLAT_NOTE="${C_WARN}Set lat/lon/alt to enable MLAT.${C_RESET}" ;;
+                latitude_zero)      SD_MLAT_NOTE="${C_WARN}Set lat to enable MLAT.${C_RESET}" ;;
+                longitude_zero)     SD_MLAT_NOTE="${C_WARN}Set lon to enable MLAT.${C_RESET}" ;;
+            esac
+            ;;
+        misconfigured)
+            SD_MLAT_NOTE="${C_FAIL}MLAT misconfigured.${C_RESET}"
+            ;;
+        unknown)
+            SD_MLAT_NOTE="${C_WARN}MLAT state unknown.${C_RESET}"
             ;;
     esac
 }
@@ -771,6 +779,7 @@ SD_URL_IP=""
 SD_URL_LOCAL=""
 SD_AIRCRAFT_CNT=""
 SD_MPS="-"
+SD_MLAT_NOTE=""
 SD_MLAT_WARN=""
 SD_978_NOTE=""
 SD_CPU_TEMP=""
@@ -915,43 +924,11 @@ collect_status_data() {
     PREV_MSGS="$msgs"
     PREV_TS="$now"
 
-    # MLAT note. Replaces the old config-derived "Set lat/lon to enable MLAT"
-    # with text driven by the daemon's published decision (PR 1+2 contract).
-    # Falls back to the legacy text only if the state file isn't readable
-    # (e.g. image built off a feed snapshot older than PR 1).
-    SD_MLAT_NOTE=""
-    local mlat_active_state
-    mlat_active_state="$(_unit_prop airplanes-mlat.service ActiveState)"
-    local mlat_state mlat_reason
-    read -r mlat_state mlat_reason <<<"$(mlat_config_state "$mlat_active_state")"
-    case "$mlat_state" in
-        disabled)
-            case "$mlat_reason" in
-                mlat_enabled_false) SD_MLAT_NOTE="${C_DIM}MLAT disabled in config.${C_RESET}" ;;
-                geo_not_configured) SD_MLAT_NOTE="${C_WARN}Set lat/lon/alt to enable MLAT.${C_RESET}" ;;
-                latitude_zero)      SD_MLAT_NOTE="${C_WARN}Set lat to enable MLAT.${C_RESET}" ;;
-                longitude_zero)     SD_MLAT_NOTE="${C_WARN}Set lon to enable MLAT.${C_RESET}" ;;
-            esac
-            ;;
-        misconfigured)
-            SD_MLAT_NOTE="${C_FAIL}MLAT misconfigured.${C_RESET}"
-            ;;
-        unknown)
-            SD_MLAT_NOTE="${C_WARN}MLAT state unknown.${C_RESET}"
-            ;;
-    esac
-    # Legacy fallback when the daemon has never written a state file
-    # (image built off feed pre-PR-1, or daemon never ran).
-    if [[ -z "$SD_MLAT_NOTE" && "$mlat_state" == 'inactive' ]]; then
-        local lat lon
-        lat="$(read_feed_env_var LATITUDE)"
-        lon="$(read_feed_env_var LONGITUDE)"
-        if [[ "${lat:-0}" == "0" || "${lon:-0}" == "0" ]]; then
-            SD_MLAT_NOTE="${C_WARN}Set lat/lon to enable MLAT.${C_RESET}"
-        fi
-    fi
-    # Maintain the SD_MLAT_WARN alias so the panel renderers below don't
-    # need wholesale edits — both names point at the same content.
+    # MLAT note. Set by _compute_mlat_note from the daemon's published
+    # decision in /run/airplanes-mlat/state — no feed.env reads.
+    _compute_mlat_note "$(_unit_prop airplanes-mlat.service ActiveState)"
+    # SD_MLAT_WARN aliases SD_MLAT_NOTE so the panel renderers below
+    # don't need wholesale edits — both names point at the same content.
     SD_MLAT_WARN="$SD_MLAT_NOTE"
 
     # 978 note. Driven by the daemons' published decisions. Renders only

@@ -21,7 +21,6 @@ setup() {
     export PATHS_FEEDER_ID="$TMP/nx-feeder-id"
     export PATHS_RELEASE_CHANNEL="$TMP/nx-channel"
     export PATHS_MANIFEST="$TMP/nx-manifest"
-    export PATHS_FEED_ENV="$TMP/nx-feed-env"
     export PATHS_CLAIM_SECRET="$TMP/nx-claim-secret"
     export PATHS_CLAIM_PENDING="$TMP/nx-claim-pending"
     export PATHS_CLAIM_VERSION="$TMP/nx-claim-version"
