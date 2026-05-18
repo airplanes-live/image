@@ -24,7 +24,6 @@ setup() {
     export PATHS_FEEDER_ID="$TMP/nx-feeder-id"
     export PATHS_RELEASE_CHANNEL="$TMP/nx-channel"
     export PATHS_MANIFEST="$TMP/nx-manifest"
-    export PATHS_FEED_ENV="$TMP/nx-feed-env"
     export PATHS_CLAIM_SECRET="$TMP/nx-claim-secret"
     export PATHS_CLAIM_PENDING="$TMP/nx-claim-pending"
     export PATHS_CLAIM_VERSION="$TMP/nx-claim-version"
@@ -154,46 +153,6 @@ max_display_width() {
     [ "$out" = "abc12345-1234-1234-1234-1234567890ab" ]
 }
 
-# ---- read_feed_env_var -----------------------------------------------------
-
-@test "read_feed_env_var: LATITUDE unquoted" {
-    printf 'LATITUDE=48.123\n' > "$PATHS_FEED_ENV"
-    [ "$(read_feed_env_var LATITUDE)" = "48.123" ]
-}
-
-@test "read_feed_env_var: LATITUDE quoted" {
-    printf 'LATITUDE="48.123"\n' > "$PATHS_FEED_ENV"
-    [ "$(read_feed_env_var LATITUDE)" = "48.123" ]
-}
-
-@test "read_feed_env_var: LATITUDE=0 returns 0" {
-    printf 'LATITUDE=0\n' > "$PATHS_FEED_ENV"
-    [ "$(read_feed_env_var LATITUDE)" = "0" ]
-}
-
-@test "read_feed_env_var: empty value returns empty" {
-    printf 'LATITUDE=\n' > "$PATHS_FEED_ENV"
-    [ -z "$(read_feed_env_var LATITUDE)" ]
-}
-
-@test "read_feed_env_var: unwhitelisted key returns empty" {
-    printf 'TARGET=foo\n' > "$PATHS_FEED_ENV"
-    [ -z "$(read_feed_env_var TARGET)" ]
-}
-
-@test "read_feed_env_var: USER=changeme is captured" {
-    printf 'USER=changeme\n' > "$PATHS_FEED_ENV"
-    [ "$(read_feed_env_var USER)" = "changeme" ]
-}
-
-@test "read_feed_env_var: duplicate keys -> last wins (matches Go feedenv)" {
-    cat > "$PATHS_FEED_ENV" <<'EOF'
-LATITUDE=0
-LATITUDE=48.5
-EOF
-    [ "$(read_feed_env_var LATITUDE)" = "48.5" ]
-}
-
 # ---- claim_state -----------------------------------------------------------
 
 @test "claim_state: no files -> unclaimed" {
@@ -237,14 +196,19 @@ EOF
 
 # Helper: write a fixture state file under the test root.
 write_mlat_state() {
-    # write_mlat_state <decision> <reason>
+    # write_mlat_state <decision> <reason> [extra=value ...]
     local decision="$1" reason="$2"
+    shift 2
     mkdir -p "$(dirname "$PATHS_STATE_FILE_MLAT")"
     {
         printf 'schema_version=1\n'
         printf 'service=airplanes-mlat\n'
         printf 'state=%s\n' "$decision"
         printf 'reason=%s\n' "$reason"
+        local kv
+        for kv in "$@"; do
+            printf '%s\n' "$kv"
+        done
     } > "$PATHS_STATE_FILE_MLAT"
 }
 
@@ -385,6 +349,56 @@ setup_mlat_state_test_env() {
     setup_mlat_state_test_env
     run mlat_config_state ''
     [ "$output" = 'inactive -' ]
+}
+
+# ---- _compute_mlat_note (drives SD_MLAT_NOTE from daemon state) ------------
+
+@test "_compute_mlat_note: mlat_enabled_false + geo_configured=false -> location call-to-action" {
+    setup_mlat_state_test_env
+    write_mlat_state disabled mlat_enabled_false geo_configured=false
+    _compute_mlat_note active
+    [ "$SD_MLAT_NOTE" = "Set lat/lon/alt to enable MLAT." ]
+}
+
+@test "_compute_mlat_note: mlat_enabled_false + geo_configured=true -> passive disabled note" {
+    setup_mlat_state_test_env
+    write_mlat_state disabled mlat_enabled_false geo_configured=true
+    _compute_mlat_note active
+    [ "$SD_MLAT_NOTE" = "MLAT disabled in config." ]
+}
+
+@test "_compute_mlat_note: mlat_enabled_false + geo_configured missing -> location call-to-action" {
+    setup_mlat_state_test_env
+    write_mlat_state disabled mlat_enabled_false
+    _compute_mlat_note active
+    [ "$SD_MLAT_NOTE" = "Set lat/lon/alt to enable MLAT." ]
+}
+
+@test "_compute_mlat_note: geo_not_configured -> location call-to-action" {
+    setup_mlat_state_test_env
+    write_mlat_state disabled geo_not_configured
+    _compute_mlat_note active
+    [ "$SD_MLAT_NOTE" = "Set lat/lon/alt to enable MLAT." ]
+}
+
+@test "_compute_mlat_note: enabled -> empty note" {
+    setup_mlat_state_test_env
+    write_mlat_state enabled ok
+    _compute_mlat_note active
+    [ -z "$SD_MLAT_NOTE" ]
+}
+
+@test "_compute_mlat_note: misconfigured -> error note" {
+    setup_mlat_state_test_env
+    write_mlat_state misconfigured mlat_private_invalid
+    _compute_mlat_note active
+    [ "$SD_MLAT_NOTE" = "MLAT misconfigured." ]
+}
+
+@test "_compute_mlat_note: inactive (no state file) -> empty note (no feed.env fallback)" {
+    setup_mlat_state_test_env
+    _compute_mlat_note inactive
+    [ -z "$SD_MLAT_NOTE" ]
 }
 
 # ---- read_aircraft_snapshot -----------------------------------------------
