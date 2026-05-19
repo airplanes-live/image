@@ -138,13 +138,13 @@ curl -L -o /tmp/aplogo.png \
 # logo doesn't need the wordmark).
 chafa --symbols=block --bg=none --size=40x22 \
     /tmp/aplogo.png \
-    > files/usr/local/share/airplanes/logo.txt
+    > ../../runtime-overlay/src/share/airplanes/logo.txt
 
 # banner.txt — 135 cols × 20 rows, badge + wordmark (the HDMI dashboard
 # has the headroom; it's the user's first impression on boot).
 chafa --symbols=block --bg=none --size=135x20 \
     /tmp/aplogo.png \
-    > files/usr/local/share/airplanes/banner.txt
+    > ../../runtime-overlay/src/share/airplanes/banner.txt
 
 # banner-narrow.txt — 74 cols × 11 rows, badge + wordmark sized to fit
 # any ≥720p HDMI output at the default 8×16 kernel console font.
