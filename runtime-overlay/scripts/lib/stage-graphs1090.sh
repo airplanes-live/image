@@ -131,6 +131,7 @@ install -d -m 0755 \
     "$SYSROOT/etc/lighttpd/conf-enabled" \
     "$SYSROOT/etc/default" \
     "$SYSROOT/etc/cron.d" \
+    "$SYSROOT/etc/systemd/system" \
     "$SYSROOT/etc/systemd/system/collectd.service.d" \
     "$SYSROOT/lib/systemd/system" \
     "$SYSROOT/var/lib/graphs1090" \
@@ -178,7 +179,7 @@ bwrap \
     --bind "$SYSROOT/etc/lighttpd"                         /etc/lighttpd \
     --bind "$SYSROOT/etc/default"                          /etc/default \
     --bind "$SYSROOT/etc/cron.d"                           /etc/cron.d \
-    --bind "$SYSROOT/etc/systemd/system/collectd.service.d" /etc/systemd/system/collectd.service.d \
+    --bind "$SYSROOT/etc/systemd/system"                   /etc/systemd/system \
     --bind "$SYSROOT/lib/systemd/system"                   /lib/systemd/system \
     --bind "$SYSROOT/var/lib/graphs1090"                   /var/lib/graphs1090 \
     --bind "$SYSROOT/var/lib/collectd"                     /var/lib/collectd \
