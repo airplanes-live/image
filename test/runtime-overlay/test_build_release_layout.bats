@@ -24,9 +24,19 @@ setup() {
     # manifest references. The .gitkeep placeholders only exist to make
     # empty fixture subdirs survive git; remove them before invoking the
     # build so the produced release tree doesn't ship them as payload.
+    #
+    # The destination dirs for the rehydrated overlay sources are also
+    # created here rather than committed as empty dirs — git wouldn't
+    # preserve them anyway, and `cp -a SRC/. DEST/` requires DEST to exist.
     INPUT_DIR="$BATS_TEST_TMPDIR/input"
     cp -a "$FIXTURE_SRC" "$INPUT_DIR"
     find "$INPUT_DIR" -name '.gitkeep' -type f -delete
+
+    mkdir -p "$INPUT_DIR/share/airplanes" \
+             "$INPUT_DIR/systemd" \
+             "$INPUT_DIR/lib/airplanes" \
+             "$INPUT_DIR/etc/lighttpd/conf-available" \
+             "$INPUT_DIR/etc/update-motd.d"
 
     cp -a "$REPO_ROOT/runtime-overlay/src/share/airplanes/." \
           "$INPUT_DIR/share/airplanes/"
