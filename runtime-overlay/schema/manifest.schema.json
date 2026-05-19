@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://airplanes.live/schema/runtime-overlay/manifest.schema.json",
+  "title": "Runtime overlay release manifest",
+  "description": "Schema for /opt/airplanes-runtime/releases/v<X>/manifest.json — declares what a single runtime overlay release is, what it installs, and how it installs.",
+  "type": "object",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "description": "Stable channel forbids the dev suffix; dev channel requires it.",
+      "if": { "properties": { "channel": { "const": "stable" } }, "required": ["channel"] },
+      "then": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-dev-[0-9]{8}-[0-9a-f]{7,40}$"
+          }
+        }
+      }
+    }
+  ],
+  "required": [
+    "version",
+    "channel",
+    "commit_sha",
+    "build_date",
+    "arches",
+    "components",
+    "managed_paths",
+    "mutable_paths",
+    "systemd",
+    "migrations"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Release version. Stable: dotted-triple (1.4.0). Dev: dotted-triple + '-dev-<YYYYMMDD>-<short-sha>'. The channel/version pairing is enforced by the top-level allOf.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-dev-[0-9]{8}-[0-9a-f]{7,40})?$"
+    },
+    "channel": {
+      "type": "string",
+      "enum": ["stable", "dev"]
+    },
+    "commit_sha": {
+      "type": "string",
+      "description": "Full 40-hex SHA of the runtime-overlay source commit this release was built from.",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "build_date": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 build timestamp."
+    },
+    "arches": {
+      "type": "array",
+      "description": "CPU architectures this release ships binaries for.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": ["arm64", "armhf"]
+      }
+    },
+    "compat": {
+      "type": "object",
+      "description": "Optional compatibility constraints. Each value is a semver-range string consumed by the on-device self-updater preflight.",
+      "additionalProperties": false,
+      "properties": {
+        "requires_webconfig": { "$ref": "#/$defs/semverRange" },
+        "requires_feed_contract": { "$ref": "#/$defs/semverRange" },
+        "min_image_base": { "$ref": "#/$defs/semverRange" }
+      }
+    },
+    "components": {
+      "type": "object",
+      "description": "Per-component upstream pins. Known keys are listed; additional keys are allowed for forward compatibility.",
+      "minProperties": 1,
+      "properties": {
+        "readsb_wiedehopf": { "$ref": "#/$defs/componentSha" },
+        "dump978_fa": { "$ref": "#/$defs/componentSha" },
+        "tar1090": { "$ref": "#/$defs/componentSha" },
+        "tar1090_db": { "$ref": "#/$defs/componentSha" },
+        "graphs1090": { "$ref": "#/$defs/componentSha" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/componentSha" }
+    },
+    "managed_paths": {
+      "type": "array",
+      "description": "FHS paths this release owns. Each entry is either a symlink into current/ or a copy out of the release dir.",
+      "items": {
+        "type": "object",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "required": ["link", "target", "mode"],
+            "properties": {
+              "mode": { "const": "symlink" },
+              "link": { "$ref": "#/$defs/absPath" },
+              "target": { "$ref": "#/$defs/absPath" }
+            }
+          },
+          {
+            "additionalProperties": false,
+            "required": ["path", "from", "mode", "owner", "perm"],
+            "properties": {
+              "mode": { "const": "copy" },
+              "path": { "$ref": "#/$defs/absPath" },
+              "from": { "$ref": "#/$defs/relPath" },
+              "owner": {
+                "type": "string",
+                "description": "user:group, both POSIX-valid names or numeric ids.",
+                "pattern": "^[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+$"
+              },
+              "perm": {
+                "type": "string",
+                "description": "Octal mode, e.g. '0644'.",
+                "pattern": "^0[0-7]{3,4}$"
+              },
+              "post_install": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/$defs/argvString" }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "mutable_paths": {
+      "type": "array",
+      "description": "Absolute paths the runtime overlay creates but does NOT overwrite on update — user/operator-owned state.",
+      "items": { "$ref": "#/$defs/absPath" }
+    },
+    "systemd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enable", "daemon_reload"],
+      "properties": {
+        "enable": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "disable": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "daemon_reload": { "type": "boolean" }
+      }
+    },
+    "migrations": {
+      "type": "array",
+      "description": "Idempotent migrations applied after files are laid down and before service restart. Ordered. Ids unique within a release (uniqueness enforced post-schema by the validator script).",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]*$"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "group_membership",
+              "config_kv",
+              "shell",
+              "udev_reload",
+              "sysctl_reload",
+              "nmcli_reload"
+            ]
+          },
+          "run_when": {
+            "type": "string",
+            "enum": ["every_install", "first_install_of_version"],
+            "default": "every_install"
+          }
+        },
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "required": ["id", "type", "user", "groups"],
+            "properties": {
+              "id": true,
+              "type": { "const": "group_membership" },
+              "run_when": true,
+              "user": { "type": "string", "minLength": 1 },
+              "groups": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          {
+            "additionalProperties": false,
+            "required": ["id", "type", "file", "set"],
+            "properties": {
+              "id": true,
+              "type": { "const": "config_kv" },
+              "run_when": true,
+              "file": { "$ref": "#/$defs/absPath" },
+              "set": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": { "type": "string" }
+              },
+              "if_key_unset": { "type": "boolean" }
+            }
+          },
+          {
+            "additionalProperties": false,
+            "required": ["id", "type", "script", "rollback_script"],
+            "properties": {
+              "id": true,
+              "type": { "const": "shell" },
+              "run_when": true,
+              "script": { "$ref": "#/$defs/relPath" },
+              "rollback_script": { "$ref": "#/$defs/relPath" }
+            }
+          },
+          {
+            "additionalProperties": false,
+            "required": ["id", "type"],
+            "properties": {
+              "id": true,
+              "type": { "const": "udev_reload" },
+              "run_when": true
+            }
+          },
+          {
+            "additionalProperties": false,
+            "required": ["id", "type"],
+            "properties": {
+              "id": true,
+              "type": { "const": "sysctl_reload" },
+              "run_when": true
+            }
+          },
+          {
+            "additionalProperties": false,
+            "required": ["id", "type"],
+            "properties": {
+              "id": true,
+              "type": { "const": "nmcli_reload" },
+              "run_when": true
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "absPath": {
+      "type": "string",
+      "description": "Absolute filesystem path. Rejects embedded NUL / CR / LF.",
+      "pattern": "^(?![\\s\\S]*[\\n\\r])/[^\\x00]*$"
+    },
+    "relPath": {
+      "type": "string",
+      "description": "Path relative to the release directory. Rejects leading '/', '..' segments, and embedded NUL / CR / LF.",
+      "pattern": "^(?![\\s\\S]*[\\n\\r])(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00]+$"
+    },
+    "argvString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "componentSha": {
+      "type": "string",
+      "description": "Upstream component git SHA (short or full hex).",
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "semverRange": {
+      "type": "string",
+      "description": "Semver-range expression, e.g. '>=2.1.0,<2.3.0' or '>=14'. Validated lexically here; full semver-range parsing happens in the self-updater preflight.",
+      "pattern": "^[0-9A-Za-z.+,<>=!~^ *-]+$",
+      "minLength": 1
+    }
+  }
+}

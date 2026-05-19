@@ -93,8 +93,8 @@ jobs:
           ref: ${{ steps.webconfig-ref.outputs.ref }}
           path: image-webconfig-sibling
 
-      - name: Install bats
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats
+      - name: Install bats and manifest-validator deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats jq python3-jsonschema
 
       # Snapshot host state so the post-bats step can fail loudly if the
       # tests mutated the runner. The historical instance was apply_hostname
