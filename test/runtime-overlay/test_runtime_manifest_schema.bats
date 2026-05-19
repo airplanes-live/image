@@ -106,3 +106,40 @@ mutate_golden() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"duplicate migration ids"* ]]
 }
+
+@test "rejects channel=stable paired with a dev-shaped version" {
+    local mutated
+    mutated="$(mutate_golden '.channel = "stable" | .version = "1.4.0-dev-20260519-abcdef0"')"
+    run "$VALIDATOR" "$mutated"
+    [ "$status" -ne 0 ]
+}
+
+@test "rejects channel=dev paired with a stable-shaped version" {
+    local mutated
+    mutated="$(mutate_golden '.channel = "dev" | .version = "1.4.0"')"
+    run "$VALIDATOR" "$mutated"
+    [ "$status" -ne 0 ]
+}
+
+@test "accepts a well-formed dev-channel manifest" {
+    local mutated
+    mutated="$(mutate_golden '.channel = "dev" | .version = "1.4.0-dev-20260519-abcdef0"')"
+    run "$VALIDATOR" "$mutated"
+    [ "$status" -eq 0 ]
+}
+
+@test "rejects relPath containing a .. segment" {
+    # The schema's relPath def forbids '..' in any segment, so a shell
+    # migration whose script tries to escape the release dir must fail.
+    local mutated
+    mutated="$(mutate_golden '
+        (.migrations
+         | map(if .type == "shell"
+               then .script = "../etc/passwd"
+               else .
+               end)) as $m
+        | .migrations = $m
+    ')"
+    run "$VALIDATOR" "$mutated"
+    [ "$status" -ne 0 ]
+}

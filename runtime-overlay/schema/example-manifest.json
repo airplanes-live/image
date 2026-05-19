@@ -58,8 +58,28 @@
     },
     {
       "mode": "symlink",
-      "link": "/usr/local/share/airplanes/render-status",
+      "link": "/usr/local/lib/airplanes/render-status",
       "target": "/opt/airplanes-runtime/current/lib/airplanes/render-status"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/readsb.sh",
+      "target": "/opt/airplanes-runtime/current/share/airplanes/readsb.sh"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/airplanes-978.sh",
+      "target": "/opt/airplanes-runtime/current/share/airplanes/airplanes-978.sh"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/dump978-fa.sh",
+      "target": "/opt/airplanes-runtime/current/share/airplanes/dump978-fa.sh"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/tar1090-uat-sync.sh",
+      "target": "/opt/airplanes-runtime/current/share/airplanes/tar1090-uat-sync.sh"
     },
     {
       "mode": "copy",

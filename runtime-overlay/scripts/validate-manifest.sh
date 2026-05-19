@@ -17,6 +17,10 @@
 #
 # The script intentionally avoids dependency on a network-fetched meta-schema:
 # Draft 2020-12 vocabularies are built into jsonschema >= 4.0.0.
+#
+# The script reads the manifest into memory exactly once and runs every gate
+# against that snapshot, so a concurrent rewrite of the manifest file mid-run
+# cannot produce a false positive.
 
 set -euo pipefail
 
@@ -44,21 +48,34 @@ if [[ ! -f "$schema_path" ]]; then
     exit 2
 fi
 
-# 1. JSON-parseability gate — catches malformed JSON early with a clearer
-#    message than jsonschema's stacktrace.
-if ! jq -e . "$manifest_path" >/dev/null 2>&1; then
+# Snapshot the manifest into a temp file under the user's runtime dir so all
+# subsequent checks operate on the same bytes. mktemp + trap ensures cleanup
+# on every exit path including signals.
+snapshot="$(mktemp)"
+trap 'rm -f "$snapshot"' EXIT
+cp -- "$manifest_path" "$snapshot"
+
+# 1. JSON-parseability gate. We need to distinguish "missing jq" (exit 2 from
+#    bash's `command -v` flow if it ran) from "jq returned non-zero", but in
+#    practice jq is a hard dependency declared in the header — a missing-jq
+#    runtime is a packaging bug, not user input. Be explicit anyway.
+if ! command -v jq >/dev/null 2>&1; then
+    echo "validate-manifest: required dependency 'jq' not found on PATH" >&2
+    exit 2
+fi
+
+if ! jq -e . "$snapshot" >/dev/null 2>&1; then
     echo "validate-manifest: manifest is not valid JSON: $manifest_path" >&2
     exit 1
 fi
 
 # 2. Schema validation. Run as a child Python process so syntax errors in the
 #    inline script surface as a script error, not a bash quoting trap.
-if ! python3 - "$schema_path" "$manifest_path" <<'PY'
+if ! python3 - "$schema_path" "$snapshot" <<'PY'
 import json
 import sys
 
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import ValidationError
 
 schema_path, doc_path = sys.argv[1], sys.argv[2]
 
@@ -89,21 +106,14 @@ fi
 # 3. Cross-field gate: migration ids must be unique within a release.
 #    JSON Schema's uniqueItems compares whole objects, not a projection;
 #    enforcing this in jq is more portable than a custom validator keyword.
-dup_count="$(jq -r '
+dup_ids="$(jq -r '
     [.migrations[].id]
-    | (length) as $n
-    | unique
-    | length as $u
-    | $n - $u
-' "$manifest_path")"
+    | group_by(.)
+    | map(select(length > 1) | .[0])
+    | join(",")
+' "$snapshot")"
 
-if [[ "$dup_count" -gt 0 ]]; then
-    dup_ids="$(jq -r '
-        [.migrations[].id]
-        | group_by(.)
-        | map(select(length > 1) | .[0])
-        | join(",")
-    ' "$manifest_path")"
+if [[ -n "$dup_ids" ]]; then
     echo "validate-manifest: duplicate migration ids: ${dup_ids}" >&2
     exit 1
 fi

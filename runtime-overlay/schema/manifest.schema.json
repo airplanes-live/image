@@ -5,6 +5,28 @@
   "description": "Schema for /opt/airplanes-runtime/releases/v<X>/manifest.json — declares what a single runtime overlay release is, what it installs, and how it installs.",
   "type": "object",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "description": "Stable channel forbids the dev suffix; dev channel requires it.",
+      "if": { "properties": { "channel": { "const": "stable" } }, "required": ["channel"] },
+      "then": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-dev-[0-9]{8}-[0-9a-f]{7,40}$"
+          }
+        }
+      }
+    }
+  ],
   "required": [
     "version",
     "channel",
@@ -20,8 +42,8 @@
   "properties": {
     "version": {
       "type": "string",
-      "description": "Release version. Stable: dotted-triple (1.4.0). Dev: dotted-triple + '-dev-<YYYYMMDD>-<short-sha>'.",
-      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-(dev-[0-9]{8}-[0-9a-f]{7,40}|[0-9a-z.-]+))?$"
+      "description": "Release version. Stable: dotted-triple (1.4.0). Dev: dotted-triple + '-dev-<YYYYMMDD>-<short-sha>'. The channel/version pairing is enforced by the top-level allOf.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-dev-[0-9]{8}-[0-9a-f]{7,40})?$"
     },
     "channel": {
       "type": "string",
@@ -135,7 +157,7 @@
     },
     "migrations": {
       "type": "array",
-      "description": "Idempotent migrations applied after files are laid down and before service restart. Ordered. Ids unique within a release.",
+      "description": "Idempotent migrations applied after files are laid down and before service restart. Ordered. Ids unique within a release (uniqueness enforced post-schema by the validator script).",
       "items": {
         "type": "object",
         "required": ["id", "type"],
@@ -238,13 +260,13 @@
   "$defs": {
     "absPath": {
       "type": "string",
-      "description": "Absolute filesystem path.",
-      "pattern": "^/[^\\x00]*$"
+      "description": "Absolute filesystem path. Rejects embedded NUL / CR / LF.",
+      "pattern": "^(?![\\s\\S]*[\\n\\r])/[^\\x00]*$"
     },
     "relPath": {
       "type": "string",
-      "description": "Path relative to the release directory; must not start with '/' or contain '..' segments.",
-      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\x00]+$"
+      "description": "Path relative to the release directory. Rejects leading '/', '..' segments, and embedded NUL / CR / LF.",
+      "pattern": "^(?![\\s\\S]*[\\n\\r])(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00]+$"
     },
     "argvString": {
       "type": "string",
