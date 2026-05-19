@@ -233,6 +233,13 @@ grep -q -- '--write-json-every ' /usr/local/share/airplanes/readsb.sh \
     || fail "readsb.sh missing --write-json-every"
 ! grep -q -- '--aircraft-update-interval' /usr/local/share/airplanes/readsb.sh \
     || fail "readsb.sh has --aircraft-update-interval (unsupported by wiedehopf/readsb)"
+# MLAT input port — mlat-client routes Beast results to 127.0.0.1:30104 so
+# tar1090/graphs1090 show MLAT planes locally. Anchor the grep at line
+# start + literal variable name so a trailing comment line can't satisfy
+# this check. The Bats test_readsb_wrapper.bats pins the runtime argv
+# shape; this smoke check just guards the deployed source.
+grep -Eq -- '^READSB_NET_OPTIONS=.*--net-bi-port 30004,30104' /usr/local/share/airplanes/readsb.sh \
+    || fail "readsb.sh missing default --net-bi-port 30004,30104 listener"
 [[ -d /var/globe_history ]] || fail "/var/globe_history not created"
 [[ "$(stat -c %U /var/globe_history)" == "readsb" ]] || fail "/var/globe_history not owned by readsb"
 
