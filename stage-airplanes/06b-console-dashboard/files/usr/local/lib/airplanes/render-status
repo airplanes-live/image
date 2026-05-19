@@ -962,7 +962,7 @@ collect_status_data() {
     SD_UPTIME="$(read_uptime_human)"
     SD_LOAD="$(read_load_1m)"
 
-    # Pi health: severity<TAB>summary from `airplanes-webconfig --pi-health`.
+    # Hardware health: severity<TAB>summary from `airplanes-webconfig --hardware`.
     # Absolute binary path (MOTD strips /usr/local/bin from PATH). timeout(1)
     # bounds wall-clock; the Go side uses a shorter 2s ctx so a wedged probe
     # surfaces as a graceful "na" before the shell SIGTERM kicks in. An old
@@ -970,7 +970,7 @@ collect_status_data() {
     SD_PIHEALTH_SEVERITY=""
     SD_PIHEALTH_SUMMARY=""
     local _pihealth_raw _pihealth_sev _pihealth_sum
-    if _pihealth_raw="$(timeout 3 "$PATHS_PIHEALTH_BIN" --pi-health 2>/dev/null)"; then
+    if _pihealth_raw="$(timeout 3 "$PATHS_PIHEALTH_BIN" --hardware 2>/dev/null)"; then
         # First line only; require a tab separator; allowlist severity tokens.
         _pihealth_raw="${_pihealth_raw%%$'\n'*}"
         if [[ "$_pihealth_raw" == *$'\t'* ]]; then
