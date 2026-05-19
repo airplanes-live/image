@@ -28,11 +28,11 @@ git -C "$DUMP978_DIR" rev-parse HEAD > "${ROOTFS_DIR}/etc/airplanes/.build-dump9
 
 # Wrapper scripts under /usr/local/share/airplanes/ — image-owned argv shapers,
 # sourced from /etc/airplanes/feed.env via systemd EnvironmentFile=.
-install -D -m 0755 files/usr/local/share/airplanes/readsb.sh \
+install -D -m 0755 "${BASE_DIR:-.}/runtime-overlay/src/share/airplanes/readsb.sh" \
 	"${ROOTFS_DIR}/usr/local/share/airplanes/readsb.sh"
-install -D -m 0755 files/usr/local/share/airplanes/airplanes-978.sh \
+install -D -m 0755 "${BASE_DIR:-.}/runtime-overlay/src/share/airplanes/airplanes-978.sh" \
 	"${ROOTFS_DIR}/usr/local/share/airplanes/airplanes-978.sh"
-install -D -m 0755 files/usr/local/share/airplanes/dump978-fa.sh \
+install -D -m 0755 "${BASE_DIR:-.}/runtime-overlay/src/share/airplanes/dump978-fa.sh" \
 	"${ROOTFS_DIR}/usr/local/share/airplanes/dump978-fa.sh"
 
 # Image-owned systemd units. readsb is enabled in 01-run-chroot.sh; the two
@@ -41,9 +41,9 @@ install -D -m 0755 files/usr/local/share/airplanes/dump978-fa.sh \
 # state to /run/<svc>/state and sleep so the unit stays active. Invalid
 # UAT_INPUT exits 64 to surface as failed. Toggled via the webconfig UI
 # at http://<hostname>.local/.
-install -D -m 0644 files/etc/systemd/system/readsb.service \
+install -D -m 0644 "${BASE_DIR:-.}/runtime-overlay/src/systemd/readsb.service" \
 	"${ROOTFS_DIR}/etc/systemd/system/readsb.service"
-install -D -m 0644 files/etc/systemd/system/dump978-fa.service \
+install -D -m 0644 "${BASE_DIR:-.}/runtime-overlay/src/systemd/dump978-fa.service" \
 	"${ROOTFS_DIR}/etc/systemd/system/dump978-fa.service"
-install -D -m 0644 files/etc/systemd/system/airplanes-978.service \
+install -D -m 0644 "${BASE_DIR:-.}/runtime-overlay/src/systemd/airplanes-978.service" \
 	"${ROOTFS_DIR}/etc/systemd/system/airplanes-978.service"

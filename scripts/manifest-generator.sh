@@ -23,14 +23,34 @@ ROOTFS_DIR="${1:?ROOTFS_DIR required}"
 
 SENTINEL_DIR="${ROOTFS_DIR}/etc/airplanes"
 
+validate_sha_value() {
+	local key="$1" source="$2" value="$3"
+	[[ "$value" =~ ^[0-9a-f]{40}$ ]] || {
+		echo "ERROR: $key content not a 40-char lowercase SHA: $source -> '$value'" >&2
+		exit 1
+	}
+}
+
 read_sha_sentinel() {
 	local key="$1" path="$2" v
 	[[ -s "$path" ]] || { echo "ERROR: $key sentinel missing or empty: $path" >&2; exit 1; }
 	v="$(cat "$path")"
-	[[ "$v" =~ ^[0-9a-f]{40}$ ]] || {
-		echo "ERROR: $key sentinel content not a 40-char lowercase SHA: $path -> '$v'" >&2
+	validate_sha_value "$key sentinel" "$path" "$v"
+	printf '%s' "$v"
+}
+
+read_runtime_manifest_sha() {
+	local key="$1" component="$2" path="$3" v
+	[[ -s "$path" ]] || { echo "ERROR: runtime manifest missing or empty: $path" >&2; exit 1; }
+	v="$(jq -er --arg component "$component" '
+		.components[$component]
+		| if type == "object" then .commit_sha else . end
+		| strings
+	' "$path")" || {
+		echo "ERROR: $key component missing in runtime manifest: $component ($path)" >&2
 		exit 1
 	}
+	validate_sha_value "$key runtime manifest component" "$path:$component" "$v"
 	printf '%s' "$v"
 }
 
@@ -63,11 +83,21 @@ parse_fingerprint() {
 PI_GEN="$(read_pigen_sentinel "${SENTINEL_DIR}/.build-pi-gen-sha")"
 FEED_SHA="$(read_sha_sentinel airplanes-feed "${SENTINEL_DIR}/.build-feed-sha")"
 READSB_SHA="$(read_sha_sentinel airplanes-readsb "${SENTINEL_DIR}/.build-airplanes-readsb-sha")"
-DECODER_SHA="$(read_sha_sentinel wiedehopf-readsb "${SENTINEL_DIR}/.build-readsb-decoder-sha")"
-DUMP978_SHA="$(read_sha_sentinel flightaware-dump978 "${SENTINEL_DIR}/.build-dump978-sha")"
-TAR1090_SHA="$(read_sha_sentinel wiedehopf-tar1090 "${SENTINEL_DIR}/.build-tar1090-sha")"
-TAR1090_DB_SHA="$(read_sha_sentinel wiedehopf-tar1090-db "${SENTINEL_DIR}/.build-tar1090-db-sha")"
-GRAPHS_SHA="$(read_sha_sentinel wiedehopf-graphs1090 "${SENTINEL_DIR}/.build-graphs1090-sha")"
+
+RUNTIME_MANIFEST="${SENTINEL_DIR}/runtime-manifest.json"
+if [[ -e "$RUNTIME_MANIFEST" ]]; then
+	DECODER_SHA="$(read_runtime_manifest_sha wiedehopf-readsb readsb_wiedehopf "$RUNTIME_MANIFEST")"
+	DUMP978_SHA="$(read_runtime_manifest_sha flightaware-dump978 dump978_fa "$RUNTIME_MANIFEST")"
+	TAR1090_SHA="$(read_runtime_manifest_sha wiedehopf-tar1090 tar1090 "$RUNTIME_MANIFEST")"
+	TAR1090_DB_SHA="$(read_runtime_manifest_sha wiedehopf-tar1090-db tar1090_db "$RUNTIME_MANIFEST")"
+	GRAPHS_SHA="$(read_runtime_manifest_sha wiedehopf-graphs1090 graphs1090 "$RUNTIME_MANIFEST")"
+else
+	DECODER_SHA="$(read_sha_sentinel wiedehopf-readsb "${SENTINEL_DIR}/.build-readsb-decoder-sha")"
+	DUMP978_SHA="$(read_sha_sentinel flightaware-dump978 "${SENTINEL_DIR}/.build-dump978-sha")"
+	TAR1090_SHA="$(read_sha_sentinel wiedehopf-tar1090 "${SENTINEL_DIR}/.build-tar1090-sha")"
+	TAR1090_DB_SHA="$(read_sha_sentinel wiedehopf-tar1090-db "${SENTINEL_DIR}/.build-tar1090-db-sha")"
+	GRAPHS_SHA="$(read_sha_sentinel wiedehopf-graphs1090 "${SENTINEL_DIR}/.build-graphs1090-sha")"
+fi
 
 SF_INVOC=""; SF_ENABLES=""; SF_TS=""
 parse_fingerprint "${SENTINEL_DIR}/.build-stub-fingerprint"

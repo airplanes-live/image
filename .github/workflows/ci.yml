@@ -21,7 +21,7 @@ jobs:
         run: |
           shopt -s globstar nullglob
           mapfile -d '' files < <(
-            find scripts stage-airplanes test -type f \
+            find scripts stage-airplanes test runtime-overlay -type f \
               \( -name '*.sh' \
                  -o -name 'systemctl-stub' \
                  -o -name 'airplanes-first-run' \
@@ -43,8 +43,9 @@ jobs:
                    stage-airplanes/**/*.sh \
                    stage-airplanes/**/files/**/airplanes-first-run \
                    stage-airplanes/**/files/**/airplanes-grant-sudo \
-                   stage-airplanes/**/files/**/render-status \
-                   stage-airplanes/**/files/**/10-airplanes-status \
+                   runtime-overlay/src/lib/airplanes/render-status \
+                   runtime-overlay/src/etc/update-motd.d/10-airplanes-status \
+                   runtime-overlay/src/share/airplanes/*.sh \
                    test/*.sh; do
             [[ -e "$f" ]] || continue
             bash -n "$f"
@@ -118,7 +119,7 @@ jobs:
       - name: bats test/
         env:
           AIRPLANES_IMAGE_WEBCONFIG_ROOT: ${{ github.workspace }}/image-webconfig-sibling
-        run: bats test/
+        run: bats -r test/
 
       - name: Verify host state untouched (post-bats)
         if: always()
@@ -524,10 +525,11 @@ jobs:
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06b-console-dashboard/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
-          install -m 0644 stage-airplanes/02-install-decoder/files/etc/systemd/system/*.service \
-              "$ROOT/etc/systemd/system/"
-          install -m 0644 stage-airplanes/03-install-tar1090/files/etc/systemd/system/*.service \
-              stage-airplanes/03-install-tar1090/files/etc/systemd/system/*.path \
+          install -m 0644 runtime-overlay/src/systemd/readsb.service \
+              runtime-overlay/src/systemd/airplanes-978.service \
+              runtime-overlay/src/systemd/dump978-fa.service \
+              runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.service \
+              runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.path \
               "$ROOT/etc/systemd/system/"
           install -m 0644 image-webconfig/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"

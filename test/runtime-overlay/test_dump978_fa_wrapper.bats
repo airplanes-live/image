@@ -17,7 +17,7 @@
 #   DUMP978_FA_NO_HARDWARE_SLEEP=0  — bypass the no_hardware sleep
 
 setup() {
-    SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/02-install-decoder/files/usr/local/share/airplanes/dump978-fa.sh"
+    SCRIPT="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/dump978-fa.sh"
     TMP="$(mktemp -d)"
 
     # Inline minimal airplanes_write_state. Same shape as the feed-shipped

@@ -1,17 +1,17 @@
 #!/usr/bin/env bats
 
-# Unit tests for stage-airplanes/06b-console-dashboard/files/usr/local/lib/airplanes/render-status.
+# Unit tests for runtime-overlay/src/lib/airplanes/render-status.
 # Sources the script for direct access to helpers; the BASH_SOURCE guard at
 # the bottom of render-status suppresses dispatcher execution on source.
 
 bats_require_minimum_version 1.5.0
 
 setup() {
-    SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/lib/airplanes/render-status"
-    LOGO="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/logo.txt"
-    BANNER="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/banner.txt"
-    BANNER_NARROW="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/banner-narrow.txt"
-    ICON="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/icon.txt"
+    SCRIPT="$BATS_TEST_DIRNAME/../../runtime-overlay/src/lib/airplanes/render-status"
+    LOGO="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/logo.txt"
+    BANNER="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/banner.txt"
+    BANNER_NARROW="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/banner-narrow.txt"
+    ICON="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/icon.txt"
     TMP="$(mktemp -d)"
     # Pin the random tagline index so every snapshot test sees the same
     # string. Must be exported before the `source "$SCRIPT"` below — the
@@ -1078,7 +1078,7 @@ EOF
 # appears in the output.
 
 @test "MOTD wrapper: PATHS_* env overrides are stripped before exec" {
-    MOTD_WRAPPER="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/etc/update-motd.d/10-airplanes-status"
+    MOTD_WRAPPER="$BATS_TEST_DIRNAME/../../runtime-overlay/src/etc/update-motd.d/10-airplanes-status"
     HOSTILE="$TMP/hostile-logo"
     printf 'HOSTILE-PAYLOAD-MUST-NOT-APPEAR-IN-MOTD-OUTPUT\n' > "$HOSTILE"
 
@@ -1107,7 +1107,7 @@ EOF
 }
 
 @test "MOTD wrapper: env-scrub directives present in source" {
-    MOTD_WRAPPER="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/etc/update-motd.d/10-airplanes-status"
+    MOTD_WRAPPER="$BATS_TEST_DIRNAME/../../runtime-overlay/src/etc/update-motd.d/10-airplanes-status"
     # shellcheck disable=SC2016  # literal grep target, no expansion intended
     grep -q '^unset "${!PATHS_@}"' "$MOTD_WRAPPER"
     grep -q '^PATH=' "$MOTD_WRAPPER"

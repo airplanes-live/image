@@ -10,7 +10,7 @@
 #   AIRPLANES_TAR1090_SYNC_RESTART_CMD — recorded-invocation stub
 
 setup() {
-    SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/03-install-tar1090/files/usr/local/share/airplanes/tar1090-uat-sync.sh"
+    SCRIPT="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/tar1090-uat-sync.sh"
     TMP="$(mktemp -d)"
 
     AIRPLANES_TAR1090_DEFAULTS_PATH="$TMP/tar1090.defaults"

@@ -33,7 +33,7 @@ git -C "$TAR1090_DB_DIR" remote set-url origin file:///dev/null/airplanes-pinned
 
 # Lighttpd alias for /skyaware978/ → /run/airplanes-978/ so tar1090's UAT view
 # (default URL_978="http://127.0.0.1/skyaware978") resolves to our UAT JSON.
-install -D -m 0644 files/etc/lighttpd/conf-available/89-airplanes-978.conf \
+install -D -m 0644 "${BASE_DIR:-.}/runtime-overlay/src/etc/lighttpd/conf-available/89-airplanes-978.conf" \
 	"${ROOTFS_DIR}/etc/lighttpd/conf-available/89-airplanes-978.conf"
 
 # Runtime reconciler that flips ENABLE_978 in /etc/default/tar1090 to track
@@ -41,9 +41,9 @@ install -D -m 0644 files/etc/lighttpd/conf-available/89-airplanes-978.conf \
 # ENABLE_978=yes that used to live in 01-run-chroot.sh and was wrong for
 # feeders without a 978 SDR (tar1090 would spam "978.json: No such file
 # or directory" every iteration).
-install -D -m 0755 files/usr/local/share/airplanes/tar1090-uat-sync.sh \
+install -D -m 0755 "${BASE_DIR:-.}/runtime-overlay/src/share/airplanes/tar1090-uat-sync.sh" \
 	"${ROOTFS_DIR}/usr/local/share/airplanes/tar1090-uat-sync.sh"
-install -D -m 0644 files/etc/systemd/system/airplanes-tar1090-uat-sync.service \
+install -D -m 0644 "${BASE_DIR:-.}/runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.service" \
 	"${ROOTFS_DIR}/etc/systemd/system/airplanes-tar1090-uat-sync.service"
-install -D -m 0644 files/etc/systemd/system/airplanes-tar1090-uat-sync.path \
+install -D -m 0644 "${BASE_DIR:-.}/runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.path" \
 	"${ROOTFS_DIR}/etc/systemd/system/airplanes-tar1090-uat-sync.path"

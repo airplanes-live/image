@@ -14,7 +14,7 @@
 #                                  returns promptly from the disabled branch
 
 setup() {
-    SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/02-install-decoder/files/usr/local/share/airplanes/airplanes-978.sh"
+    SCRIPT="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/airplanes-978.sh"
     TMP="$(mktemp -d)"
 
     # CI bats job only checks out the image repo, not feed/. Inline a
