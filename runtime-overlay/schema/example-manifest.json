@@ -82,6 +82,36 @@
       "target": "/opt/airplanes-runtime/current/share/airplanes/tar1090-uat-sync.sh"
     },
     {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/logo.txt",
+      "target": "/opt/airplanes-runtime/current/share/airplanes/logo.txt"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/banner.txt",
+      "target": "/opt/airplanes-runtime/current/share/airplanes/banner.txt"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/banner-narrow.txt",
+      "target": "/opt/airplanes-runtime/current/share/airplanes/banner-narrow.txt"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/icon.txt",
+      "target": "/opt/airplanes-runtime/current/share/airplanes/icon.txt"
+    },
+    {
+      "mode": "symlink",
+      "link": "/etc/update-motd.d/10-airplanes-status",
+      "target": "/opt/airplanes-runtime/current/etc/update-motd.d/10-airplanes-status"
+    },
+    {
+      "mode": "symlink",
+      "link": "/etc/lighttpd/conf-available/89-airplanes-978.conf",
+      "target": "/opt/airplanes-runtime/current/etc/lighttpd/conf-available/89-airplanes-978.conf"
+    },
+    {
       "mode": "copy",
       "path": "/etc/sudoers.d/090_airplanes-runtime",
       "from": "etc/sudoers.d/090_airplanes-runtime",
