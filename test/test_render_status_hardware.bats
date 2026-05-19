@@ -61,12 +61,16 @@ EOF
 
 # Install a stub airplanes-webconfig that emits the given line and exits 0.
 # The line should be the full "severity<TAB>summary" wire shape (or
-# malformed, for negative-path tests).
+# malformed, for negative-path tests). The stub captures its argv to
+# $TMP/airplanes-webconfig-argv so tests can assert which flag the
+# caller passed — sentinel against a future regression where
+# render-status reverts to a different one-shot flag.
 install_hardware_stub() {
     local line="$1"
     local stub_path="$TMP/airplanes-webconfig-stub"
     cat > "$stub_path" <<EOF
 #!/bin/bash
+printf '%s' "\$*" > "$TMP/airplanes-webconfig-argv"
 printf '%s\n' "$line"
 exit 0
 EOF
@@ -117,6 +121,18 @@ find_hardware_row() {
     row="$(find_hardware_row)"
     [[ "$row" == *"Hardware"* ]]
     [[ "$row" == *"healthy"* ]]
+}
+
+# Sentinel: render-status invokes the new one-shot flag, not the old
+# --pi-health, and not some other accidental variant. Captures argv via
+# the stub and asserts on the exact flag.
+@test "collect_status_data: invokes airplanes-webconfig with --hardware" {
+    install_hardware_stub $'ok\thealthy'
+    collect_status_data live
+    [ -f "$TMP/airplanes-webconfig-argv" ]
+    local argv
+    argv="$(cat "$TMP/airplanes-webconfig-argv")"
+    [ "$argv" = "--hardware" ]
 }
 
 @test "build_status_lines_full: warn severity renders the full summary text" {
