@@ -1,0 +1,26 @@
+[Unit]
+# Cap graphs1090 collectd's RRD working set in its own tmpfs so its
+# growth can never starve /run/systemd's reload buffer. The
+# collectd.service unit (from the Debian package) carries
+# RuntimeDirectory=collectd + RuntimeDirectoryPreserve=no; that
+# manages the directory's owner/mode/cleanup but operates on the
+# directory whether or not it's a mountpoint. Mounting a sized tmpfs
+# here scopes consumption to 64 MiB without changing collectd's own
+# lifecycle. graphs1090's ExecStartPre=readback.sh restores RRDs
+# from the persistent backup at /var/lib/collectd/rrd on each start.
+Description=Tmpfs cap for graphs1090 collectd RRDs (isolated from /run/systemd)
+Documentation=https://github.com/airplanes-live/image
+DefaultDependencies=no
+After=systemd-remount-fs.service airplanes-run-resize.service
+Before=local-fs.target shutdown.target collectd.service
+RequiresMountsFor=/run
+Conflicts=shutdown.target
+
+[Mount]
+What=tmpfs
+Where=/run/collectd
+Type=tmpfs
+Options=nosuid,nodev,noexec,relatime,size=64M,mode=755
+
+[Install]
+WantedBy=local-fs.target

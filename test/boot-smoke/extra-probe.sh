@@ -264,6 +264,44 @@ assert_service_healthy lighttpd.service
 assert_service_healthy airplanes-webconfig.service
 assert_service_healthy ssh.service
 
+# Tmpfs sizing oneshot ran (oneshot → inactive(dead) on success; not
+# "failed"). Then verify the actual on-disk effects.
+_runresize_state="$(systemctl show airplanes-run-resize.service \
+    --property=ActiveState --value 2>/dev/null || true)"
+[[ "$_runresize_state" == "active" || "$_runresize_state" == "inactive" ]] \
+    || fail "airplanes-run-resize.service in unexpected state: $_runresize_state"
+_runresize_result="$(systemctl show airplanes-run-resize.service \
+    --property=Result --value 2>/dev/null || true)"
+[[ "$_runresize_result" == "success" ]] \
+    || fail "airplanes-run-resize.service result != success (was $_runresize_result)"
+
+# /run is at least 128 MiB. Exact size depends on RAM (max of 128 MiB
+# and 20% MemTotal); the QEMU host's RAM may or may not exceed the
+# floor — only the lower bound is universal.
+_run_bytes="$(findmnt -no SIZE -b --target /run 2>/dev/null || echo 0)"
+(( _run_bytes >= 128 * 1024 * 1024 )) \
+    || fail "/run tmpfs is $_run_bytes bytes (< 128 MiB floor)"
+
+# /run/collectd is its own tmpfs mount of exactly 64 MiB. Use -M to
+# require a mountpoint match (not just "is the parent tmpfs?").
+findmnt -M /run/collectd >/dev/null 2>&1 \
+    || fail "/run/collectd is not a separate mountpoint (would let RRDs starve /run/systemd)"
+_collectd_fstype="$(findmnt -no FSTYPE -M /run/collectd 2>/dev/null || true)"
+[[ "$_collectd_fstype" == "tmpfs" ]] \
+    || fail "/run/collectd fstype is '$_collectd_fstype' (expected tmpfs)"
+_collectd_bytes="$(findmnt -no SIZE -b -M /run/collectd 2>/dev/null || echo 0)"
+(( _collectd_bytes == 64 * 1024 * 1024 )) \
+    || fail "/run/collectd tmpfs is $_collectd_bytes bytes (expected exactly 64 MiB)"
+# run-collectd.mount itself reached active without errors.
+_collectd_mount_state="$(systemctl show run-collectd.mount \
+    --property=ActiveState --value 2>/dev/null || true)"
+[[ "$_collectd_mount_state" == "active" ]] \
+    || fail "run-collectd.mount ActiveState=$_collectd_mount_state (expected active)"
+_collectd_mount_result="$(systemctl show run-collectd.mount \
+    --property=Result --value 2>/dev/null || true)"
+[[ "$_collectd_mount_result" == "success" ]] \
+    || fail "run-collectd.mount Result=$_collectd_mount_result (expected success)"
+
 # Webconfig HTTP via lighttpd reverse proxy. 401 is the legitimate response
 # before initial setup completes; anything in the 200/300/401 band proves the
 # request reached webconfig through lighttpd. 5xx, connection refused, or a

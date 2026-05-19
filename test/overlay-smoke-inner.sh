@@ -567,6 +567,53 @@ esac
 [[ -s /etc/airplanes/.build-pi-gen-sha ]] || fail ".build-pi-gen-sha missing or empty"
 [[ -s /etc/airplanes/.build-airplanes-readsb-sha ]] || fail ".build-airplanes-readsb-sha missing or empty"
 
+echo "==> stage-airplanes/06a-run-tmpfs/00-run.sh"
+( cd /image/stage-airplanes/06a-run-tmpfs && bash 00-run.sh )
+
+echo "==> stage-airplanes/06a-run-tmpfs/01-run-chroot.sh"
+( cd /image/stage-airplanes/06a-run-tmpfs && bash 01-run-chroot.sh )
+
+echo "==> 06a post-install assertions"
+[[ -x /usr/local/lib/airplanes/run-resize.sh ]] \
+    || fail "run-resize.sh missing or not executable"
+[[ "$(stat -c %a /usr/local/lib/airplanes/run-resize.sh)" == "755" ]] \
+    || fail "run-resize.sh mode != 0755"
+[[ -f /etc/systemd/system/airplanes-run-resize.service ]] \
+    || fail "airplanes-run-resize.service missing"
+[[ "$(stat -c %a /etc/systemd/system/airplanes-run-resize.service)" == "644" ]] \
+    || fail "airplanes-run-resize.service mode != 0644"
+grep -q '^WantedBy=local-fs.target$' /etc/systemd/system/airplanes-run-resize.service \
+    || fail "airplanes-run-resize.service missing WantedBy=local-fs.target"
+grep -qE '^After=.*systemd-remount-fs\.service' /etc/systemd/system/airplanes-run-resize.service \
+    || fail "airplanes-run-resize.service missing After=systemd-remount-fs.service"
+[[ -L /etc/systemd/system/local-fs.target.wants/airplanes-run-resize.service ]] \
+    || fail "airplanes-run-resize.service enable symlink missing under local-fs.target.wants/"
+# /run/collectd mount unit (replaces an fstab line; systemd .mount units
+# auto-create the mountpoint directory, which avoids the chicken-and-egg
+# of tmpfiles-setup running After=local-fs.target).
+[[ -f /etc/systemd/system/run-collectd.mount ]] \
+    || fail "run-collectd.mount missing"
+[[ "$(stat -c %a /etc/systemd/system/run-collectd.mount)" == "644" ]] \
+    || fail "run-collectd.mount mode != 0644"
+grep -q '^Where=/run/collectd$' /etc/systemd/system/run-collectd.mount \
+    || fail "run-collectd.mount missing Where=/run/collectd"
+grep -q '^What=tmpfs$' /etc/systemd/system/run-collectd.mount \
+    || fail "run-collectd.mount missing What=tmpfs"
+grep -qE '^Options=.*size=64M' /etc/systemd/system/run-collectd.mount \
+    || fail "run-collectd.mount missing size=64M in Options"
+grep -qE '^Before=.*collectd\.service' /etc/systemd/system/run-collectd.mount \
+    || fail "run-collectd.mount missing Before=collectd.service (would race with collectd start)"
+[[ -L /etc/systemd/system/local-fs.target.wants/run-collectd.mount ]] \
+    || fail "run-collectd.mount enable symlink missing under local-fs.target.wants/"
+grep -qE '^tmpfs[[:space:]]+/run[[:space:]]+tmpfs[[:space:]]+.*size=128M' /etc/fstab \
+    || fail "/etc/fstab missing /run tmpfs floor"
+# Re-running 00-run.sh must be idempotent: the fstab marker line gates
+# the append. A second pass should leave only one /run line.
+( cd /image/stage-airplanes/06a-run-tmpfs && bash 00-run.sh ) >/dev/null
+run_lines=$(grep -cE '^tmpfs[[:space:]]+/run[[:space:]]+tmpfs' /etc/fstab)
+[[ "$run_lines" -eq 1 ]] \
+    || fail "06a-run-tmpfs/00-run.sh appended duplicate /run line on second pass (got $run_lines lines)"
+
 echo "==> stage-airplanes/06b-console-dashboard/00-run.sh"
 ( cd /image/stage-airplanes/06b-console-dashboard && bash 00-run.sh )
 

@@ -1,0 +1,23 @@
+[Unit]
+Description=Resize /run tmpfs to max(128 MiB, 20%% of MemTotal)
+Documentation=https://github.com/airplanes-live/image
+DefaultDependencies=no
+# Runs after systemd-remount-fs applies the /etc/fstab size=128M
+# floor, then bumps higher on larger-RAM Pis. Must finish before
+# local-fs.target so dependents (graphs1090's collectd via the
+# run-collectd.mount sibling, journald's /run/log, the webconfig
+# self-update helper) observe the final /run size.
+After=systemd-remount-fs.service local-fs-pre.target
+Before=local-fs.target shutdown.target
+RequiresMountsFor=/run
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/airplanes/run-resize.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=local-fs.target
