@@ -36,6 +36,11 @@
   },
   {
     "mode": "symlink",
+    "link": "/etc/systemd/system/collectd.service.d/malarky.conf",
+    "target": "/opt/airplanes-runtime/current/etc/systemd/system/collectd.service.d/malarky.conf"
+  },
+  {
+    "mode": "symlink",
     "link": "/usr/bin/readsb",
     "target": "/opt/airplanes-runtime/current/bin/readsb"
   },
@@ -98,6 +103,16 @@
     "mode": "symlink",
     "link": "/etc/update-motd.d/10-airplanes-status",
     "target": "/opt/airplanes-runtime/current/etc/update-motd.d/10-airplanes-status"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/lighttpd/conf-available/88-tar1090.conf",
+    "target": "/opt/airplanes-runtime/current/etc/lighttpd/conf-available/88-tar1090.conf"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/lighttpd/conf-available/88-graphs1090.conf",
+    "target": "/opt/airplanes-runtime/current/etc/lighttpd/conf-available/88-graphs1090.conf"
   },
   {
     "mode": "symlink",

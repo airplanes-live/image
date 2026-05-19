@@ -69,11 +69,14 @@ install -d -m 0755 \
     "$scratch/var/www/html" \
     "$scratch/etc/lighttpd"
 
-# Verify each snippet in isolation. A top-level config sets the minimum
-# directives lighttpd insists on (server.document-root, error log) and then
-# `include`s the snippet under test. Snippets that reference modules not
-# present on the runner via mod_<name> fail loudly — install lighttpd with
-# the full module set on CI (`apt install lighttpd`).
+# Verify each snippet in isolation. The top-level config sets the minimum
+# directives lighttpd insists on (server.document-root, error log) AND
+# pre-loads the standard module set that runtime-overlay snippets depend on
+# — `alias.url` needs mod_alias, `setenv.add-response-header` needs
+# mod_setenv, `dir-listing.activate` needs mod_dirlisting. Snippet authors
+# who add new directives requiring an unlisted module hit a clean failure
+# here. The module list mirrors what stage-tar1090.sh / stage-graphs1090.sh
+# already load when they syntax-check the snippets they produce.
 fail=0
 for conf in "${confs[@]}"; do
     name="$(basename -- "$conf")"
@@ -83,6 +86,7 @@ server.document-root = "$scratch/var/www/html"
 server.errorlog      = "$scratch/var/log/lighttpd/error.log"
 server.pid-file      = "$scratch/var/run/lighttpd/lighttpd.pid"
 server.port          = 8080
+server.modules       = ( "mod_alias", "mod_setenv", "mod_dirlisting" )
 include "$conf"
 WRAP
     if ! lighttpd -tt -f "$wrapper" >"$scratch/$name.out" 2>&1; then

@@ -71,21 +71,11 @@ else
     echo "verify-gates: no share/airplanes/*.sh files to shellcheck (ok)"
 fi
 
-echo "verify-gates: ldd cross-compiled binaries"
-shopt -s nullglob
-bins=("$RELEASE_DIR/bin"/*)
-shopt -u nullglob
-for b in "${bins[@]}"; do
-    # Skip subdirs / non-ELF — `file` is cheap and tells us what's an ELF.
-    if file -bL "$b" 2>/dev/null | grep -q 'ELF'; then
-        if ldd "$b" 2>&1 | grep -q 'not found'; then
-            {
-                echo "verify-gates: $b has unresolved shared libraries:"
-                ldd "$b" | grep 'not found' || true
-            } >&2
-            exit 1
-        fi
-    fi
-done
+# `ldd`-based unresolved-library checks happen at staging time on the
+# arm64 host (cross-compile-readsb.sh / cross-compile-dump978.sh). The
+# verify job typically runs on an x86 runner, where `ldd` against arm64
+# ELFs is not meaningful (the dynamic loader for the foreign ELF class
+# can't resolve, so "not found" lines appear for every dependency). Skip
+# the gate here; trust the staging-time check.
 
 echo "verify-gates: ok"

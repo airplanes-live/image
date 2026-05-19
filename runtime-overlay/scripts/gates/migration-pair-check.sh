@@ -109,69 +109,82 @@ if [[ -n "$within_dups" ]]; then
 fi
 
 # Rule 4: cross-release id uniqueness (against prior published releases on
-# the same channel). Skip if AIRPLANES_MIGRATION_PAIR_SKIP_REMOTE=1 or if gh
-# is not installed. The skip path is taken by the bats tests; production CI
-# runs with gh installed so the gate is actually exercised.
+# the same channel) for migrations whose `run_when` is "first_install_of_version".
+# `every_install` migrations re-run on every install by design — they're
+# expected to share ids across releases, so excluding them is the whole
+# point of the run_when split.
+#
+# Skip the whole check if AIRPLANES_MIGRATION_PAIR_SKIP_REMOTE=1 (bats
+# tests). Production CI runs with gh installed so the gate is actually
+# exercised. If gh is installed but a network/API failure prevents the
+# lookup, fail closed — silent skip on a misconfigured runner would let an
+# id collision through to a feeder.
 if [[ "${AIRPLANES_MIGRATION_PAIR_SKIP_REMOTE:-0}" == "1" ]]; then
     echo "migration-pair-check: skipping cross-release id check (AIRPLANES_MIGRATION_PAIR_SKIP_REMOTE=1)"
+elif ! command -v gh >/dev/null 2>&1; then
+    echo "migration-pair-check: gh not on PATH — required for cross-release id check" >&2
+    fail=1
 else
-    if ! command -v gh >/dev/null 2>&1; then
-        echo "migration-pair-check: gh not available; skipping cross-release id check" >&2
-    else
-        # Resolve prior releases on the same channel. Stable channel = any
-        # release with a tag matching `runtime-vX.Y.Z`. Dev channel = any
-        # release with a tag matching `runtime-dev-*`. We do not consult
-        # `runtime-dev-latest` directly — its manifest equals one of the
-        # immutable dev tags so we'd double-count.
-        #
-        # `gh release list` returns at most 30 by default; bump and rely on
-        # --json filtering rather than paging since the channel namespaces
-        # stay small for the v1 lifetime.
-        case "$CHANNEL" in
-            stable) pattern='^runtime-v[0-9]+\.[0-9]+\.[0-9]+$' ;;
-            dev)    pattern='^runtime-dev-[0-9]{8}-[0-9a-f]{7,40}$' ;;
-        esac
+    # Resolve prior releases on the same channel. Stable channel = any
+    # release with a tag matching `runtime-vX.Y.Z`. Dev channel = any
+    # release with a tag matching `runtime-dev-*`. We do not consult
+    # `runtime-dev-latest` directly — its manifest equals one of the
+    # immutable dev tags so we'd double-count.
+    #
+    # `gh release list` returns at most 30 by default; bump and rely on
+    # --json filtering rather than paging since the channel namespaces
+    # stay small for the v1 lifetime.
+    case "$CHANNEL" in
+        stable) pattern='^runtime-v[0-9]+\.[0-9]+\.[0-9]+$' ;;
+        dev)    pattern='^runtime-dev-[0-9]{8}-[0-9a-f]{7,40}$' ;;
+    esac
 
-        # Fetch tags; tolerate missing repo / first-ever release (returns
-        # an empty list).
-        if ! tag_list="$(gh release list -R "$REPO" --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null)"; then
-            echo "migration-pair-check: gh release list failed; skipping cross-release id check" >&2
-            tag_list=""
+    if ! tag_list="$(gh release list -R "$REPO" --limit 100 --json tagName --jq '.[].tagName' 2>&1)"; then
+        echo "migration-pair-check: gh release list failed; fail-closed (would let collisions through)" >&2
+        echo "$tag_list" >&2
+        exit 1
+    fi
+
+    prior_ids_file="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f -- '$prior_ids_file'" EXIT
+
+    matched_any=0
+    while IFS= read -r tag; do
+        [[ -z "$tag" ]] && continue
+        if ! [[ "$tag" =~ $pattern ]]; then
+            continue
         fi
-
-        prior_ids_file="$(mktemp)"
-        trap 'rm -f "$prior_ids_file"' EXIT
-
-        while IFS= read -r tag; do
-            [[ -z "$tag" ]] && continue
-            if ! [[ "$tag" =~ $pattern ]]; then
-                continue
-            fi
-            # Pull manifest.json from each prior release. Tolerate fetch
-            # failure (release with broken asset set on the legacy channel
-            # shouldn't permanently break this gate); log + continue.
-            tmp_manifest="$(mktemp)"
-            if gh release download "$tag" -R "$REPO" -p 'manifest.json' \
-                    --output "$tmp_manifest" --clobber 2>/dev/null; then
-                jq -r '.migrations[]?.id' "$tmp_manifest" >> "$prior_ids_file" 2>/dev/null || true
-            else
-                echo "migration-pair-check: skipping $tag (no manifest.json asset)" >&2
-            fi
-            rm -f -- "$tmp_manifest"
-        done <<< "$tag_list"
-
-        # Compare against current release ids; report collisions.
-        if [[ -s "$prior_ids_file" ]]; then
-            current_ids_file="$(mktemp)"
-            jq -r '.migrations[]?.id' "$manifest" > "$current_ids_file"
-            mapfile -t collisions < <(LC_ALL=C sort -u "$prior_ids_file" | LC_ALL=C comm -12 - <(LC_ALL=C sort -u "$current_ids_file"))
-            rm -f -- "$current_ids_file"
-            if [[ "${#collisions[@]}" -gt 0 ]]; then
-                echo "migration-pair-check: migration ids collide with prior releases on channel '$CHANNEL': ${collisions[*]}" >&2
-                fail=1
-            fi
+        matched_any=1
+        # Pull manifest.json from each prior release. Tolerate fetch
+        # failure (release with broken asset set shouldn't permanently
+        # break this gate); log + continue.
+        tmp_manifest="$(mktemp)"
+        if gh release download "$tag" -R "$REPO" -p 'manifest.json' \
+                --output "$tmp_manifest" --clobber 2>/dev/null; then
+            # Only collect ids whose run_when == first_install_of_version
+            # — those are the ones whose semantics break if re-applied.
+            jq -r '.migrations[]? | select((.run_when // "every_install") == "first_install_of_version") | .id' \
+                "$tmp_manifest" >> "$prior_ids_file" 2>/dev/null || true
         else
-            echo "migration-pair-check: no prior releases on channel '$CHANNEL' (first release; ok)"
+            echo "migration-pair-check: skipping $tag (no manifest.json asset)" >&2
+        fi
+        rm -f -- "$tmp_manifest"
+    done <<< "$tag_list"
+
+    if [[ "$matched_any" -eq 0 ]]; then
+        echo "migration-pair-check: no prior releases on channel '$CHANNEL' (first release; ok)"
+    elif [[ -s "$prior_ids_file" ]]; then
+        current_ids_file="$(mktemp)"
+        # Same projection on the current manifest — every_install ids
+        # legitimately recur.
+        jq -r '.migrations[]? | select((.run_when // "every_install") == "first_install_of_version") | .id' \
+            "$manifest" > "$current_ids_file"
+        mapfile -t collisions < <(LC_ALL=C sort -u "$prior_ids_file" | LC_ALL=C comm -12 - <(LC_ALL=C sort -u "$current_ids_file"))
+        rm -f -- "$current_ids_file"
+        if [[ "${#collisions[@]}" -gt 0 ]]; then
+            echo "migration-pair-check: first_install_of_version migration ids collide with prior releases on channel '$CHANNEL': ${collisions[*]}" >&2
+            fail=1
         fi
     fi
 fi

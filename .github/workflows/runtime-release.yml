@@ -273,6 +273,28 @@ jobs:
               --release-dir "$RUNNER_TEMP/release/v$VERSION" \
               --output "$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz"
 
+      - name: Compose publish-level SHA256SUMS
+        # The release tree's internal SHA256SUMS (written by build-release.sh)
+        # only covers tree-internal files — it does NOT cover the packed
+        # tarball, manifest.json (copied out for direct download), or
+        # PROVENANCE.md. The publish-level SHA256SUMS lives at the release
+        # root and covers every asset uploaded to GitHub. It is the file the
+        # sign job signs.
+        run: |
+          set -euo pipefail
+          publish_dir="$RUNNER_TEMP/release/v$VERSION"
+          tarball="$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz"
+          out="$RUNNER_TEMP/release/SHA256SUMS"
+          tmp="$(mktemp)"
+          # Use basename-only paths in the checksum file so consumers can
+          # `sha256sum -c SHA256SUMS` from the directory the downloaded
+          # assets sit in.
+          ( cd "$publish_dir" && sha256sum manifest.json PROVENANCE.md ) > "$tmp"
+          ( cd "$(dirname -- "$tarball")" && sha256sum "$(basename -- "$tarball")" ) >> "$tmp"
+          LC_ALL=C sort -k2 "$tmp" > "$out"
+          rm -f -- "$tmp"
+          cat "$out"
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # release-assets carries everything publish-release needs: the
@@ -347,39 +369,41 @@ jobs:
           name: release-assets-unsigned
           path: ${{ runner.temp }}/release
 
-      - name: Sign SHA256SUMS
+      - name: Sign publish-level SHA256SUMS
         env:
           MINISIGN_PRIVKEY: ${{ secrets.RUNTIME_RELEASE_MINISIGN_PRIVKEY }}
         run: |
           set -euo pipefail
+          # Scrub the key file on every exit path so a `minisign` failure
+          # mid-step doesn't leave key material on the runner. The runner
+          # is ephemeral but defense-in-depth costs us nothing here.
+          privkey_path="$RUNNER_TEMP/minisign.key"
+          # shellcheck disable=SC2064
+          trap "shred -u -- '$privkey_path' 2>/dev/null || rm -f -- '$privkey_path'" EXIT
           if [[ -z "${MINISIGN_PRIVKEY:-}" ]]; then
               echo "::error::secret RUNTIME_RELEASE_MINISIGN_PRIVKEY is not set on this repository. A repo admin must add it under Settings > Secrets and variables > Actions before the release workflow can sign."
               exit 1
           fi
-          release_dir="$RUNNER_TEMP/release/v$VERSION"
-          if [[ ! -f "$release_dir/SHA256SUMS" ]]; then
-              echo "::error::SHA256SUMS missing under $release_dir" >&2
+          sums="$RUNNER_TEMP/release/SHA256SUMS"
+          if [[ ! -f "$sums" ]]; then
+              echo "::error::publish-level SHA256SUMS missing at $sums" >&2
               exit 1
           fi
-          # Restore the private key to a 0600 tmp file. Use a non-printf
-          # write to disk: printf "%s" risks interpreting % sequences in
-          # the key payload. `printenv` reads the named env var raw.
-          privkey_path="$RUNNER_TEMP/minisign.key"
+          # Restore the private key to a 0600 tmp file. `printenv` reads
+          # the named env var raw — avoids `printf "%s"` interpreting any
+          # % sequences in the key payload.
           umask 077
           printenv MINISIGN_PRIVKEY > "$privkey_path"
           # The PRIVKEY is unencrypted (minisign expects a passphrase
-          # interactively otherwise). For an unencrypted key, `-W` accepts
+          # interactively otherwise). `-W` accepts an unencrypted key
           # without prompting. If we ever rotate to a passphrase-protected
           # key, supply MINISIGN_PASSWORD via a stdin redirection here.
-          cd "$release_dir"
-          minisign -Sm SHA256SUMS \
-              -s "$privkey_path" \
-              -W \
-              -t "airplanes.live runtime overlay $CHANNEL $IMMUTABLE_TAG"
-          # Scrub the key from disk as soon as we're done with it. The runner
-          # is ephemeral but the file is small enough to overwrite safely.
-          shred -u -- "$privkey_path" || rm -f -- "$privkey_path"
-          ls -la SHA256SUMS.minisig
+          ( cd "$(dirname -- "$sums")" && \
+            minisign -Sm SHA256SUMS \
+                -s "$privkey_path" \
+                -W \
+                -t "airplanes.live runtime overlay $CHANNEL $IMMUTABLE_TAG" )
+          ls -la "$RUNNER_TEMP/release/SHA256SUMS.minisig"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -419,21 +443,30 @@ jobs:
 
       - name: Stage release assets
         # Materialize the five published assets in a flat dir for upload.
-        # Re-verify SHA256SUMS as a final guard against artifact transit
+        # Verify the publish-level SHA256SUMS (covers tarball + manifest +
+        # provenance) AND the tree-internal SHA256SUMS (covers extracted
+        # tarball contents) as a final guard against artifact transit
         # corruption between sign and publish.
         run: |
           set -euo pipefail
           src="$RUNNER_TEMP/release/v$VERSION"
           dst="$RUNNER_TEMP/publish"
           mkdir -p "$dst"
+          # Inner tree integrity (matches what the on-device installer will
+          # check after unpacking the tarball).
           (cd "$src" && sha256sum -c SHA256SUMS)
           cp -- \
               "$src/manifest.json" \
-              "$src/SHA256SUMS" \
-              "$src/SHA256SUMS.minisig" \
               "$src/PROVENANCE.md" \
               "$dst/"
-          cp -- "$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz" "$dst/"
+          cp -- \
+              "$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+              "$RUNNER_TEMP/release/SHA256SUMS" \
+              "$RUNNER_TEMP/release/SHA256SUMS.minisig" \
+              "$dst/"
+          # Outer publish-set integrity (what the signed SHA256SUMS covers
+          # and what consumers download).
+          (cd "$dst" && sha256sum -c SHA256SUMS)
           ls -la "$dst"
 
       - name: Publish immutable release
@@ -442,48 +475,43 @@ jobs:
         # workflow may have been triggered by a workflow_dispatch with no
         # corresponding git tag yet — `gh release create` accepts --target
         # to anchor the new tag on the commit SHA in that case.
+        #
+        # Immutability: the immutable tag name embeds the commit SHA, so an
+        # existing release at the same name means a previous run already
+        # published this exact build. We refuse to mutate it — re-running
+        # the same workflow for a different SHA on the same day is fine
+        # because the SHA suffix differs; the only path to a collision is
+        # re-running the SAME run, which should be a no-op, not an
+        # asset-clobber.
         run: |
           set -euo pipefail
           dst="$RUNNER_TEMP/publish"
-          # Avoid clobbering an existing release with the same name. For
-          # immutable tags this should never collide; the guard is here
-          # so a re-run does not silently overwrite. If the release already
-          # exists, just refresh assets.
           if gh release view "$IMMUTABLE_TAG" >/dev/null 2>&1; then
-              gh release upload "$IMMUTABLE_TAG" \
+              echo "::warning::release $IMMUTABLE_TAG already exists; skipping immutable publish (re-runs of the same commit do not mutate published immutable assets)"
+              exit 0
+          fi
+          if [[ "$CHANNEL" == "stable" ]]; then
+              gh release create "$IMMUTABLE_TAG" \
+                  --title "$IMMUTABLE_TAG" \
+                  --notes-file "$dst/PROVENANCE.md" \
+                  --latest \
+                  --target "$COMMIT_SHA" \
                   "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
                   "$dst/manifest.json" \
                   "$dst/SHA256SUMS" \
                   "$dst/SHA256SUMS.minisig" \
-                  "$dst/PROVENANCE.md" \
-                  --clobber
-              if [[ "$CHANNEL" == "stable" ]]; then
-                  gh release edit "$IMMUTABLE_TAG" --draft=false --latest
-              fi
+                  "$dst/PROVENANCE.md"
           else
-              if [[ "$CHANNEL" == "stable" ]]; then
-                  gh release create "$IMMUTABLE_TAG" \
-                      --title "$IMMUTABLE_TAG" \
-                      --notes-file "$dst/PROVENANCE.md" \
-                      --latest \
-                      --target "$COMMIT_SHA" \
-                      "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
-                      "$dst/manifest.json" \
-                      "$dst/SHA256SUMS" \
-                      "$dst/SHA256SUMS.minisig" \
-                      "$dst/PROVENANCE.md"
-              else
-                  gh release create "$IMMUTABLE_TAG" \
-                      --title "$IMMUTABLE_TAG" \
-                      --notes-file "$dst/PROVENANCE.md" \
-                      --prerelease \
-                      --target "$COMMIT_SHA" \
-                      "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
-                      "$dst/manifest.json" \
-                      "$dst/SHA256SUMS" \
-                      "$dst/SHA256SUMS.minisig" \
-                      "$dst/PROVENANCE.md"
-              fi
+              gh release create "$IMMUTABLE_TAG" \
+                  --title "$IMMUTABLE_TAG" \
+                  --notes-file "$dst/PROVENANCE.md" \
+                  --prerelease \
+                  --target "$COMMIT_SHA" \
+                  "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+                  "$dst/manifest.json" \
+                  "$dst/SHA256SUMS" \
+                  "$dst/SHA256SUMS.minisig" \
+                  "$dst/PROVENANCE.md"
           fi
 
       - name: Force-move floating dev tag
