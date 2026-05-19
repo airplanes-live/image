@@ -1,0 +1,24 @@
+[
+  {
+    "id": "readsb-user-groups",
+    "type": "group_membership",
+    "run_when": "every_install",
+    "user": "readsb",
+    "groups": ["plugdev", "dialout"]
+  },
+  {
+    "id": "tar1090-defaults-uat-key",
+    "type": "config_kv",
+    "run_when": "first_install_of_version",
+    "file": "/etc/default/tar1090",
+    "set": {
+      "ENABLE_978": "no"
+    },
+    "if_key_unset": true
+  },
+  {
+    "id": "udev-rules-reload",
+    "type": "udev_reload",
+    "run_when": "every_install"
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "enable": [
+    "readsb.service",
+    "airplanes-978.service",
+    "dump978-fa.service",
+    "airplanes-tar1090-uat-sync.path",
+    "airplanes-runtime-update-recover.service"
+  ],
+  "disable": [],
+  "daemon_reload": true
+}
