@@ -1,0 +1,129 @@
+{
+  "version": "1.4.0",
+  "channel": "stable",
+  "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+  "build_date": "2026-05-19T12:34:56Z",
+  "arches": ["arm64"],
+  "compat": {
+    "requires_webconfig": ">=2.1.0,<2.3.0",
+    "requires_feed_contract": ">=14"
+  },
+  "components": {
+    "readsb_wiedehopf": "a1b2c3d4e5f6789012345678901234567890abcd",
+    "dump978_fa": "0fedcba987654321fedcba9876543210fedcba98",
+    "tar1090": "1234567890abcdef1234567890abcdef12345678",
+    "tar1090_db": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    "graphs1090": "cafebabecafebabecafebabecafebabecafebabe"
+  },
+  "managed_paths": [
+    {
+      "mode": "symlink",
+      "link": "/usr/bin/readsb",
+      "target": "/opt/airplanes-runtime/current/bin/readsb"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/bin/airplanes-978",
+      "target": "/opt/airplanes-runtime/current/bin/readsb"
+    },
+    {
+      "mode": "symlink",
+      "link": "/etc/systemd/system/readsb.service",
+      "target": "/opt/airplanes-runtime/current/systemd/readsb.service"
+    },
+    {
+      "mode": "symlink",
+      "link": "/etc/systemd/system/airplanes-978.service",
+      "target": "/opt/airplanes-runtime/current/systemd/airplanes-978.service"
+    },
+    {
+      "mode": "symlink",
+      "link": "/etc/systemd/system/dump978-fa.service",
+      "target": "/opt/airplanes-runtime/current/systemd/dump978-fa.service"
+    },
+    {
+      "mode": "symlink",
+      "link": "/etc/systemd/system/airplanes-tar1090-uat-sync.service",
+      "target": "/opt/airplanes-runtime/current/systemd/airplanes-tar1090-uat-sync.service"
+    },
+    {
+      "mode": "symlink",
+      "link": "/etc/systemd/system/airplanes-tar1090-uat-sync.path",
+      "target": "/opt/airplanes-runtime/current/systemd/airplanes-tar1090-uat-sync.path"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/tar1090",
+      "target": "/opt/airplanes-runtime/current/share/tar1090"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/render-status",
+      "target": "/opt/airplanes-runtime/current/lib/airplanes/render-status"
+    },
+    {
+      "mode": "copy",
+      "path": "/etc/sudoers.d/090_airplanes-runtime",
+      "from": "etc/sudoers.d/090_airplanes-runtime",
+      "owner": "root:root",
+      "perm": "0440",
+      "post_install": ["/usr/sbin/visudo", "-c"]
+    }
+  ],
+  "mutable_paths": [
+    "/etc/default/tar1090",
+    "/etc/collectd/collectd.conf"
+  ],
+  "systemd": {
+    "enable": [
+      "readsb.service",
+      "airplanes-978.service",
+      "dump978-fa.service",
+      "airplanes-tar1090-uat-sync.path",
+      "airplanes-runtime-update-recover.service"
+    ],
+    "disable": [],
+    "daemon_reload": true
+  },
+  "migrations": [
+    {
+      "id": "readsb-user-groups",
+      "type": "group_membership",
+      "run_when": "every_install",
+      "user": "readsb",
+      "groups": ["plugdev", "dialout"]
+    },
+    {
+      "id": "tar1090-defaults-uat-key",
+      "type": "config_kv",
+      "run_when": "first_install_of_version",
+      "file": "/etc/default/tar1090",
+      "set": {
+        "ENABLE_978": "no"
+      },
+      "if_key_unset": true
+    },
+    {
+      "id": "readsb-cap-net-raw",
+      "type": "shell",
+      "run_when": "first_install_of_version",
+      "script": "migrations/readsb-cap-net-raw.sh",
+      "rollback_script": "migrations/readsb-cap-net-raw.rollback.sh"
+    },
+    {
+      "id": "udev-rules-reload",
+      "type": "udev_reload",
+      "run_when": "every_install"
+    },
+    {
+      "id": "sysctl-reload",
+      "type": "sysctl_reload",
+      "run_when": "every_install"
+    },
+    {
+      "id": "nm-reload",
+      "type": "nmcli_reload",
+      "run_when": "every_install"
+    }
+  ]
+}
