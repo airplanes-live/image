@@ -13,9 +13,13 @@ setup() {
     REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
     STABLE="$REPO_ROOT/runtime-overlay/config-stable"
     DEV="$REPO_ROOT/runtime-overlay/config-dev"
+    LOADER="$REPO_ROOT/runtime-overlay/scripts/lib/component-pins.sh"
 
-    [ -f "$STABLE" ] || skip "config-stable missing: $STABLE"
-    [ -f "$DEV" ]    || skip "config-dev missing: $DEV"
+    # Hard-fail (not skip) — these files are the subject of this suite.
+    # A missing file should be a CI red, not a silent skipped test.
+    [ -f "$STABLE" ] || { echo "config-stable missing: $STABLE" >&2; return 1; }
+    [ -f "$DEV" ]    || { echo "config-dev missing: $DEV"       >&2; return 1; }
+    [ -f "$LOADER" ] || { echo "component-pins.sh missing: $LOADER" >&2; return 1; }
 
     COMPONENTS=(
         AIRPLANES_READSB_DECODER
@@ -103,6 +107,40 @@ load_pins() {
             [[ "$repo" == https://github.com/* ]] \
                 || { echo "$file: ${c}_REPO not HTTPS github.com: '$repo'" >&2; return 1; }
         done
+    done
+}
+
+# Round-trip the file through A-3b's loader and assert the emitted key set
+# is EXACTLY the ten expected names — guards against:
+#   - a typo in the config adding a stray pseudo-pin;
+#   - a future helper edit relaxing the AIRPLANES_*_REPO|_BRANCH filter;
+#   - silent shape drift between this file and the loader's contract.
+@test "loader emits exactly the expected 10 pin keys for both channels" {
+    for channel in stable dev; do
+        run env -u AIRPLANES_RUNTIME_OVERLAY_DIR bash -c \
+            ". \"$LOADER\" && airplanes_runtime_load_component_pins $channel"
+        [ "$status" -eq 0 ]
+
+        # Build the expected key list.
+        local expected=""
+        for c in "${COMPONENTS[@]}"; do
+            expected+="${c}_BRANCH"$'\n'"${c}_REPO"$'\n'
+        done
+        expected="$(printf '%s' "$expected" | LC_ALL=C sort -u)"
+
+        # Extract just the key names from the loader output (lines look like
+        # `KEY='value'`). The loader writes warnings to stderr; `run` only
+        # captures stdout into $output, so a stray-shape warning would not
+        # contaminate the comparison.
+        local got
+        got="$(printf '%s\n' "$output" | sed -n "s/^\\([A-Z0-9_]\\+\\)=.*/\\1/p" | LC_ALL=C sort -u)"
+
+        if [ "$got" != "$expected" ]; then
+            echo "channel=$channel: loader key set drifted" >&2
+            echo "expected:" >&2; printf '%s\n' "$expected" >&2
+            echo "got:"      >&2; printf '%s\n' "$got"      >&2
+            return 1
+        fi
     done
 }
 
