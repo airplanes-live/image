@@ -233,6 +233,11 @@ grep -q -- '--write-json-every ' /usr/local/share/airplanes/readsb.sh \
     || fail "readsb.sh missing --write-json-every"
 ! grep -q -- '--aircraft-update-interval' /usr/local/share/airplanes/readsb.sh \
     || fail "readsb.sh has --aircraft-update-interval (unsupported by wiedehopf/readsb)"
+# MLAT input port — mlat-client routes Beast results to 127.0.0.1:30104 so
+# tar1090/graphs1090 show MLAT planes locally. Grep the default assignment
+# (not a stray comment match) to catch accidental removal of the listener.
+grep -Eq -- 'READSB_NET_OPTIONS=.*--net-bi-port 30004,30104' /usr/local/share/airplanes/readsb.sh \
+    || fail "readsb.sh missing default --net-bi-port 30004,30104 listener"
 [[ -d /var/globe_history ]] || fail "/var/globe_history not created"
 [[ "$(stat -c %U /var/globe_history)" == "readsb" ]] || fail "/var/globe_history not owned by readsb"
 
