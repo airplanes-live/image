@@ -1234,11 +1234,11 @@ EOF
     [[ "$plain" =~ $'\n'"            http://"[a-zA-Z0-9-]+\.local ]]
 }
 
-@test "snapshot: pi-health summary in the new builder is truncated to fit 80 cols" {
+@test "snapshot: hardware-health summary in the new builder is truncated to fit 80 cols" {
     # 100-char ASCII summary; the snapshot builder must clamp it so the
     # Hardware row is <= 80 display cells after the 12-cell label.
     local stub long
-    stub="$TMP/pihealth-long"
+    stub="$TMP/hardware-long"
     long="$(printf 'X%.0s' {1..100})"
     cat > "$stub" <<EOF
 #!/bin/bash

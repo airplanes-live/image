@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 
-# Pi-health row tests for render-status. Stubs the airplanes-webconfig
+# Hardware row tests for render-status. Stubs the airplanes-webconfig
 # binary via PATHS_PIHEALTH_BIN and verifies the Hardware row renders
 # (or doesn't) under the expected conditions.
 
@@ -16,8 +16,8 @@ setup() {
     export AIRPLANES_STATUS_TAGLINE_INDEX=0
 
     # All PATHS_* default to /nonexistent so an un-overridden test gets the
-    # "all sources missing" baseline. The pi-health binary path is the one
-    # we'll override per-test.
+    # "all sources missing" baseline. The hardware-probe binary path is
+    # the one we'll override per-test.
     export PATHS_FEEDER_ID="$TMP/nx-feeder-id"
     export PATHS_RELEASE_CHANNEL="$TMP/nx-channel"
     export PATHS_MANIFEST="$TMP/nx-manifest"
@@ -61,12 +61,16 @@ EOF
 
 # Install a stub airplanes-webconfig that emits the given line and exits 0.
 # The line should be the full "severity<TAB>summary" wire shape (or
-# malformed, for negative-path tests).
-install_pihealth_stub() {
+# malformed, for negative-path tests). The stub captures its argv to
+# $TMP/airplanes-webconfig-argv so tests can assert which flag the
+# caller passed — sentinel against a future regression where
+# render-status reverts to a different one-shot flag.
+install_hardware_stub() {
     local line="$1"
     local stub_path="$TMP/airplanes-webconfig-stub"
     cat > "$stub_path" <<EOF
 #!/bin/bash
+printf '%s' "\$*" > "$TMP/airplanes-webconfig-argv"
 printf '%s\n' "$line"
 exit 0
 EOF
@@ -110,7 +114,7 @@ find_hardware_row() {
 # === Full layout — wide panel ===
 
 @test "build_status_lines_full: ok severity renders a Hardware row with the summary" {
-    install_pihealth_stub $'ok\thealthy'
+    install_hardware_stub $'ok\thealthy'
     collect_status_data live
     build_status_lines_full live
     local row
@@ -119,8 +123,20 @@ find_hardware_row() {
     [[ "$row" == *"healthy"* ]]
 }
 
+# Sentinel: render-status invokes the new one-shot flag, not the old
+# --pi-health, and not some other accidental variant. Captures argv via
+# the stub and asserts on the exact flag.
+@test "collect_status_data: invokes airplanes-webconfig with --hardware" {
+    install_hardware_stub $'ok\thealthy'
+    collect_status_data live
+    [ -f "$TMP/airplanes-webconfig-argv" ]
+    local argv
+    argv="$(cat "$TMP/airplanes-webconfig-argv")"
+    [ "$argv" = "--hardware" ]
+}
+
 @test "build_status_lines_full: warn severity renders the full summary text" {
-    install_pihealth_stub $'warn\tundervoltage history * 78C'
+    install_hardware_stub $'warn\tundervoltage history * 78C'
     collect_status_data live
     build_status_lines_full live
     local row
@@ -129,7 +145,7 @@ find_hardware_row() {
 }
 
 @test "build_status_lines_full: err severity renders worst-case summary intact" {
-    install_pihealth_stub $'err\tundervolted now * throttling now * arm freq capped now'
+    install_hardware_stub $'err\tundervolted now * throttling now * arm freq capped now'
     collect_status_data live
     build_status_lines_full live
     local row
@@ -138,7 +154,7 @@ find_hardware_row() {
 }
 
 @test "build_status_lines_full: na severity still surfaces probe failed text" {
-    install_pihealth_stub $'na\tprobe failed'
+    install_hardware_stub $'na\tprobe failed'
     collect_status_data live
     build_status_lines_full live
     local row
@@ -156,21 +172,21 @@ find_hardware_row() {
 }
 
 @test "build_status_lines_full: malformed output (no tab) omits the row" {
-    install_pihealth_stub "weirdoutput"
+    install_hardware_stub "weirdoutput"
     collect_status_data live
     build_status_lines_full live
     ! find_hardware_row
 }
 
 @test "build_status_lines_full: invalid severity token omits the row" {
-    install_pihealth_stub $'bogus\tsomething'
+    install_hardware_stub $'bogus\tsomething'
     collect_status_data live
     build_status_lines_full live
     ! find_hardware_row
 }
 
 @test "build_status_lines_full: multiline output uses only the first line" {
-    install_pihealth_stub $'ok\thealthy\nLEAK_THIS_LINE'
+    install_hardware_stub $'ok\thealthy\nLEAK_THIS_LINE'
     collect_status_data live
     build_status_lines_full live
     local row
@@ -187,7 +203,7 @@ find_hardware_row() {
 @test "build_status_lines_full: control bytes in summary are stripped" {
     # The stub injects an ANSI escape sequence in the summary. The defence
     # in collect_status_data must strip it before it reaches STATUS_LINES.
-    install_pihealth_stub $'ok\thealthy\x1b[31mEVIL'
+    install_hardware_stub $'ok\thealthy\x1b[31mEVIL'
     collect_status_data live
     build_status_lines_full live
     local row
@@ -212,12 +228,12 @@ EOF
     ! find_hardware_row
 }
 
-@test "build_status_lines_full: non-zero exit (old binary rejects --pi-health) omits the row" {
+@test "build_status_lines_full: non-zero exit (old binary rejects --hardware) omits the row" {
     local stub="$TMP/airplanes-webconfig-old"
     cat > "$stub" <<'EOF'
 #!/bin/bash
 # Mimic old binary: flag.Parse rejects unknown flag, exits 2.
-echo "flag provided but not defined: -pi-health" >&2
+echo "flag provided but not defined: -hardware" >&2
 exit 2
 EOF
     chmod +x "$stub"
@@ -230,7 +246,7 @@ EOF
 # === Compact layout (narrow-terminal fallback under <80-col SSH MOTD) ===
 
 @test "build_status_lines_compact: ok severity renders a Hardware row" {
-    install_pihealth_stub $'ok\thealthy'
+    install_hardware_stub $'ok\thealthy'
     collect_status_data snapshot
     build_status_lines_compact
     local row
@@ -242,7 +258,7 @@ EOF
 @test "build_status_lines_compact: long summary is truncated, panel width respected" {
     local long_summary
     long_summary='undervolted now * throttling now * arm freq capped now * time not synced'
-    install_pihealth_stub $'err\t'"$long_summary"
+    install_hardware_stub $'err\t'"$long_summary"
     collect_status_data snapshot
     build_status_lines_compact
     local row stripped
@@ -263,7 +279,7 @@ EOF
 # === Snapshot builder (current SSH MOTD path under cols >= 80) ===
 
 @test "build_status_lines_snapshot: ok severity renders a Hardware row" {
-    install_pihealth_stub $'ok\thealthy'
+    install_hardware_stub $'ok\thealthy'
     collect_status_data snapshot
     build_status_lines_snapshot
     local row
@@ -275,7 +291,7 @@ EOF
 @test "build_status_lines_snapshot: long summary is truncated to fit 80 cols" {
     local long_summary
     long_summary='undervolted now * throttling now * arm freq capped now * time not synced * other-warn'
-    install_pihealth_stub $'err\t'"$long_summary"
+    install_hardware_stub $'err\t'"$long_summary"
     collect_status_data snapshot
     build_status_lines_snapshot
     local row
@@ -298,7 +314,7 @@ EOF
     # Simulate the MOTD wrapper: pin PATH to the system dirs, excluding
     # the directory where our stub lives. The Hardware row should still
     # render because PATHS_PIHEALTH_BIN is an absolute path.
-    install_pihealth_stub $'ok\thealthy'
+    install_hardware_stub $'ok\thealthy'
     PATH=/usr/sbin:/usr/bin:/sbin:/bin collect_status_data live
     build_status_lines_full live
     local row
