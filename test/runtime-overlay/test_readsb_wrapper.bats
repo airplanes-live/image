@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 
-# Tests for stage-airplanes/02-install-decoder/files/usr/local/share/airplanes/readsb.sh
+# Tests for runtime-overlay/src/share/airplanes/readsb.sh
 # — the local 1090 MHz decoder wrapper. The wrapper composes a readsb argv
 # from feed.env env vars (sourced by EnvironmentFile=-/etc/airplanes/feed.env
 # in the systemd unit) plus hardcoded defaults, then execs /usr/bin/readsb.
@@ -9,7 +9,7 @@
 # unchanged when READSB_BIN is unset.
 
 setup() {
-    SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/02-install-decoder/files/usr/local/share/airplanes/readsb.sh"
+    SCRIPT="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/readsb.sh"
     TMP="$(mktemp -d)"
     ARG_LOG="$TMP/readsb-args.log"
 

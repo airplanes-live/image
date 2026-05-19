@@ -7,11 +7,11 @@
 bats_require_minimum_version 1.5.0
 
 setup() {
-    SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/lib/airplanes/render-status"
-    LOGO="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/logo.txt"
-    BANNER="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/banner.txt"
-    BANNER_NARROW="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/banner-narrow.txt"
-    ICON="$BATS_TEST_DIRNAME/../stage-airplanes/06b-console-dashboard/files/usr/local/share/airplanes/icon.txt"
+    SCRIPT="$BATS_TEST_DIRNAME/../../runtime-overlay/src/lib/airplanes/render-status"
+    LOGO="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/logo.txt"
+    BANNER="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/banner.txt"
+    BANNER_NARROW="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/banner-narrow.txt"
+    ICON="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/icon.txt"
     TMP="$(mktemp -d)"
     export AIRPLANES_STATUS_TAGLINE_INDEX=0
 

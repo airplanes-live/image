@@ -18,6 +18,11 @@ setup() {
 	SHA_TAR1090_DB="ffffffffffffffffffffffffffffffffffffffff"
 	SHA_GRAPHS="1234567890123456789012345678901234567890"
 	SHA_PIGEN="abcdef0123456789abcdef0123456789abcdef01"
+	SHA_RUNTIME_DECODER="1111111111111111111111111111111111111111"
+	SHA_RUNTIME_DUMP978="2222222222222222222222222222222222222222"
+	SHA_RUNTIME_TAR1090="3333333333333333333333333333333333333333"
+	SHA_RUNTIME_TAR1090_DB="4444444444444444444444444444444444444444"
+	SHA_RUNTIME_GRAPHS="5555555555555555555555555555555555555555"
 }
 
 teardown() { rm -rf "$TMP"; }
@@ -33,6 +38,24 @@ write_sentinels() {
 	printf '%s\n' "$SHA_GRAPHS" > "$SENT_DIR/.build-graphs1090-sha"
 	printf 'invocations=12 enables=3 ts=2026-05-03T19:22:30Z\n' \
 		> "$SENT_DIR/.build-stub-fingerprint"
+}
+
+write_runtime_manifest() {
+	jq -n \
+		--arg decoder "$SHA_RUNTIME_DECODER" \
+		--arg dump978 "$SHA_RUNTIME_DUMP978" \
+		--arg tar1090 "$SHA_RUNTIME_TAR1090" \
+		--arg tar1090_db "$SHA_RUNTIME_TAR1090_DB" \
+		--arg graphs "$SHA_RUNTIME_GRAPHS" \
+		'{
+			components: {
+				readsb_wiedehopf: $decoder,
+				dump978_fa: $dump978,
+				tar1090: $tar1090,
+				tar1090_db: $tar1090_db,
+				graphs1090: $graphs
+			}
+		}' > "$SENT_DIR/runtime-manifest.json"
 }
 
 @test "happy path: writes manifest with all expected fields" {
@@ -56,6 +79,63 @@ write_sentinels() {
 	[ "$(jq -r .stub_fingerprint.enables "$OUT")" = "3" ]
 	[ "$(jq -r '.stub_fingerprint.enables | type' "$OUT")" = "number" ]
 	[ "$(jq -r .stub_fingerprint.ts "$OUT")" = "2026-05-03T19:22:30Z" ]
+}
+
+@test "runtime manifest path maps runtime components to build manifest keys" {
+	write_sentinels
+	write_runtime_manifest
+	rm "$SENT_DIR/.build-readsb-decoder-sha"
+	rm "$SENT_DIR/.build-dump978-sha"
+	rm "$SENT_DIR/.build-tar1090-sha"
+	rm "$SENT_DIR/.build-tar1090-db-sha"
+	rm "$SENT_DIR/.build-graphs1090-sha"
+	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
+	[ "$status" -eq 0 ]
+	[ "$(jq -r .components.airplanes_feed "$OUT")" = "$SHA_FEED" ]
+	[ "$(jq -r .components.airplanes_readsb "$OUT")" = "$SHA_READSB" ]
+	[ "$(jq -r .components.wiedehopf_readsb "$OUT")" = "$SHA_RUNTIME_DECODER" ]
+	[ "$(jq -r .components.flightaware_dump978 "$OUT")" = "$SHA_RUNTIME_DUMP978" ]
+	[ "$(jq -r .components.wiedehopf_tar1090 "$OUT")" = "$SHA_RUNTIME_TAR1090" ]
+	[ "$(jq -r .components.wiedehopf_tar1090_db "$OUT")" = "$SHA_RUNTIME_TAR1090_DB" ]
+	[ "$(jq -r .components.wiedehopf_graphs1090 "$OUT")" = "$SHA_RUNTIME_GRAPHS" ]
+}
+
+@test "runtime manifest path accepts component objects with commit_sha" {
+	write_sentinels
+	jq -n \
+		--arg decoder "$SHA_RUNTIME_DECODER" \
+		--arg dump978 "$SHA_RUNTIME_DUMP978" \
+		--arg tar1090 "$SHA_RUNTIME_TAR1090" \
+		--arg tar1090_db "$SHA_RUNTIME_TAR1090_DB" \
+		--arg graphs "$SHA_RUNTIME_GRAPHS" \
+		'{
+			components: {
+				readsb_wiedehopf: {commit_sha: $decoder},
+				dump978_fa: {commit_sha: $dump978},
+				tar1090: {commit_sha: $tar1090},
+				tar1090_db: {commit_sha: $tar1090_db},
+				graphs1090: {commit_sha: $graphs}
+			}
+		}' > "$SENT_DIR/runtime-manifest.json"
+	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
+	[ "$status" -eq 0 ]
+	[ "$(jq -r .components.wiedehopf_readsb "$OUT")" = "$SHA_RUNTIME_DECODER" ]
+	[ "$(jq -r .components.flightaware_dump978 "$OUT")" = "$SHA_RUNTIME_DUMP978" ]
+	[ "$(jq -r .components.wiedehopf_tar1090 "$OUT")" = "$SHA_RUNTIME_TAR1090" ]
+	[ "$(jq -r .components.wiedehopf_tar1090_db "$OUT")" = "$SHA_RUNTIME_TAR1090_DB" ]
+	[ "$(jq -r .components.wiedehopf_graphs1090 "$OUT")" = "$SHA_RUNTIME_GRAPHS" ]
+}
+
+@test "runtime manifest path ignores stale component sentinels" {
+	write_sentinels
+	write_runtime_manifest
+	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
+	[ "$status" -eq 0 ]
+	[ "$(jq -r .components.wiedehopf_readsb "$OUT")" = "$SHA_RUNTIME_DECODER" ]
+	[ "$(jq -r .components.flightaware_dump978 "$OUT")" = "$SHA_RUNTIME_DUMP978" ]
+	[ "$(jq -r .components.wiedehopf_tar1090 "$OUT")" = "$SHA_RUNTIME_TAR1090" ]
+	[ "$(jq -r .components.wiedehopf_tar1090_db "$OUT")" = "$SHA_RUNTIME_TAR1090_DB" ]
+	[ "$(jq -r .components.wiedehopf_graphs1090 "$OUT")" = "$SHA_RUNTIME_GRAPHS" ]
 }
 
 @test "manifest mode is 0644" {

@@ -78,7 +78,7 @@ The state machine on FAT visible to a user pulling the SD card: `airplanes-confi
 
 ### Console dashboard
 
-`airplanes-dashboard.service` owns `/dev/tty1` (HDMI) and conflicts with `getty@tty1` (masked). Renders a full-screen ASCII status every 5s via `render-status` (`stage-airplanes/06b-console-dashboard/files/usr/local/lib/airplanes/render-status`). SSH login shows the same snapshot via `/etc/update-motd.d/10-airplanes-status`. TTY2 (Alt+F2) is the fallback local console. Modes: `--snapshot`, `--live`, `--once`. Layout adapts wide vs narrow. Artwork constraints + regeneration via `chafa` are documented in `stage-airplanes/06b-console-dashboard/README.md`.
+`airplanes-dashboard.service` owns `/dev/tty1` (HDMI) and conflicts with `getty@tty1` (masked). Renders a full-screen ASCII status every 5s via `render-status` (`runtime-overlay/src/lib/airplanes/render-status`). SSH login shows the same snapshot via `/etc/update-motd.d/10-airplanes-status`. TTY2 (Alt+F2) is the fallback local console. Modes: `--snapshot`, `--live`, `--once`. Layout adapts wide vs narrow. Artwork constraints + regeneration via `chafa` are documented in `stage-airplanes/06b-console-dashboard/README.md`.
 
 ### Web UI
 
