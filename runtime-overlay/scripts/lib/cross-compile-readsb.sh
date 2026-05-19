@@ -130,9 +130,27 @@ if [[ "$host_arch" != "arm64" ]]; then
     die "host arch is '$host_arch' but --arch is arm64; cross-compile is not configured here — run on an arm64 host (CI uses ubuntu-24.04-arm)"
 fi
 
+# Reproducible-build flags:
+#   SOURCE_DATE_EPOCH      — fixes any __DATE__/__TIME__ baked into the
+#                            binary to the commit timestamp.
+#   -ffile-prefix-map      — rewrites the scratch BUILD_DIR path that
+#                            would otherwise appear in DWARF debug info
+#                            (__FILE__ strings, .debug_str entries).
+#   -fdebug-prefix-map     — same intent for older GCC versions that
+#                            do not honour -ffile-prefix-map for debug
+#                            info specifically. Both are emitted; the
+#                            superset is the cheap, deterministic choice.
+# readsb's Makefile honours OPTIMIZE for appended C/CFLAGS — pass the
+# prefix-map flags via that channel rather than overriding CFLAGS
+# wholesale (which would lose the Makefile's own -O3 and friends).
+SOURCE_DATE_EPOCH="$(git -C "$BUILD_DIR" log -1 --format=%ct)"
+export SOURCE_DATE_EPOCH
+REPRO_FLAGS="-ffile-prefix-map=$BUILD_DIR=. -fdebug-prefix-map=$BUILD_DIR=."
+
 (
     cd "$BUILD_DIR"
-    make -j"$(nproc)" AIRCRAFT_HASH_BITS=12 RTLSDR=yes
+    make -j"$(nproc)" AIRCRAFT_HASH_BITS=12 RTLSDR=yes \
+        OPTIMIZE="$REPRO_FLAGS"
 )
 
 # Stage. The release-tree shape under <output-dir>/bin/ matches what

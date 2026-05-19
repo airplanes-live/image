@@ -80,6 +80,12 @@ done
 if ! command -v bwrap >/dev/null 2>&1; then
     die "bubblewrap (bwrap) is required; install via 'apt-get install bubblewrap'"
 fi
+# lighttpd must be on PATH so graphs1090's install.sh produces the
+# 88-graphs1090.conf snippet we stage. Without it the release would
+# ship no lighttpd alias for /graphs1090/.
+if ! command -v lighttpd >/dev/null 2>&1; then
+    die "lighttpd is required so graphs1090's install.sh emits the lighttpd snippet; install via 'apt-get install lighttpd'"
+fi
 
 is_full_sha() {
     [[ "$1" =~ ^[0-9a-f]{40}$ ]]
@@ -111,6 +117,11 @@ GRAPHS1090_SHA="$(git -C "$BUILD_DIR" rev-parse HEAD)"
 
 # graphs1090 install.sh writes to these absolute paths; all must be backed
 # by sysroot trees we control. $ipath is hardcoded /usr/share/graphs1090.
+# install.sh also calls malarky.sh (unless $ipath/noMalarky exists), which
+# writes to /etc/systemd/system/collectd.service.d/ and /etc/cron.d/.
+# Legacy stage 04 lets malarky.sh run uncontested, so the released image
+# carries those outputs; we mirror that behaviour for runtime-overlay
+# parity. Bind the extra targets so the writes land in sysroot.
 SYSROOT="$SCRATCH_DIR/sysroot"
 IPATH_ABS="/usr/share/graphs1090"
 install -d -m 0755 \
@@ -119,6 +130,8 @@ install -d -m 0755 \
     "$SYSROOT/etc/lighttpd/conf-available" \
     "$SYSROOT/etc/lighttpd/conf-enabled" \
     "$SYSROOT/etc/default" \
+    "$SYSROOT/etc/cron.d" \
+    "$SYSROOT/etc/systemd/system/collectd.service.d" \
     "$SYSROOT/lib/systemd/system" \
     "$SYSROOT/var/lib/graphs1090" \
     "$SYSROOT/var/lib/collectd" \
@@ -160,15 +173,17 @@ bwrap \
     --dev /dev \
     --proc /proc \
     --tmpfs /tmp \
-    --bind "$SYSROOT$IPATH_ABS"             "$IPATH_ABS" \
-    --bind "$SYSROOT/etc/collectd"          /etc/collectd \
-    --bind "$SYSROOT/etc/lighttpd"          /etc/lighttpd \
-    --bind "$SYSROOT/etc/default"           /etc/default \
-    --bind "$SYSROOT/lib/systemd/system"    /lib/systemd/system \
-    --bind "$SYSROOT/var/lib/graphs1090"    /var/lib/graphs1090 \
-    --bind "$SYSROOT/var/lib/collectd"      /var/lib/collectd \
-    --bind "$SYSROOT/run/collectd"          /run/collectd \
-    --bind "$BUILD_DIR"                     "$BUILD_DIR" \
+    --bind "$SYSROOT$IPATH_ABS"                            "$IPATH_ABS" \
+    --bind "$SYSROOT/etc/collectd"                         /etc/collectd \
+    --bind "$SYSROOT/etc/lighttpd"                         /etc/lighttpd \
+    --bind "$SYSROOT/etc/default"                          /etc/default \
+    --bind "$SYSROOT/etc/cron.d"                           /etc/cron.d \
+    --bind "$SYSROOT/etc/systemd/system/collectd.service.d" /etc/systemd/system/collectd.service.d \
+    --bind "$SYSROOT/lib/systemd/system"                   /lib/systemd/system \
+    --bind "$SYSROOT/var/lib/graphs1090"                   /var/lib/graphs1090 \
+    --bind "$SYSROOT/var/lib/collectd"                     /var/lib/collectd \
+    --bind "$SYSROOT/run/collectd"                         /run/collectd \
+    --bind "$BUILD_DIR"                                    "$BUILD_DIR" \
     --setenv PATH "$PATH_IN" \
     --chdir "$BUILD_DIR" \
     -- bash "$BUILD_DIR/install.sh" test \
@@ -252,36 +267,56 @@ in_block && /^[[:space:]]*Interface ".*"/ { next }
 ' "$STAGED_COLLECTD" > "$COLLECTD_TMP"
 mv -f "$COLLECTD_TMP" "$STAGED_COLLECTD"
 
-# --- collectd.service ------------------------------------------------------
+# --- collectd ancillary files ---------------------------------------------
 
-# Note on collectd.service: graphs1090's install.sh does NOT write a collectd
-# unit file. collectd ships as an apt package on the feeder, and the
-# runtime overlay manifest's systemd.enable list just enables the package's
-# /lib/systemd/system/collectd.service. Nothing to stage here from the
-# graphs1090 source tree.
+# graphs1090's install.sh does NOT write a collectd unit file. collectd
+# ships as an apt-installed package on the feeder, and the runtime overlay
+# manifest's systemd.enable list just enables the package's
+# /lib/systemd/system/collectd.service.
+#
+# What install.sh DOES write (via the called malarky.sh):
+#   /etc/systemd/system/collectd.service.d/malarky.conf  — tmpfs DataDir override
+#   /etc/cron.d/collectd_to_disk                         — nightly persist cron
+# Stage both so the on-device install can drop them at the same on-device
+# paths and the malarky behaviour (collectd writes to /run/collectd, persisted
+# nightly) carries over from the legacy stage 04 build verbatim.
+MALARKY_DROP_IN="$SYSROOT/etc/systemd/system/collectd.service.d/malarky.conf"
+if [[ -f "$MALARKY_DROP_IN" ]]; then
+    install -d -m 0755 "$OUTPUT_DIR/etc/systemd/system/collectd.service.d"
+    cp -a "$MALARKY_DROP_IN" \
+        "$OUTPUT_DIR/etc/systemd/system/collectd.service.d/malarky.conf"
+fi
+
+MALARKY_CRON="$SYSROOT/etc/cron.d/collectd_to_disk"
+if [[ -f "$MALARKY_CRON" ]]; then
+    install -d -m 0755 "$OUTPUT_DIR/etc/cron.d"
+    cp -a "$MALARKY_CRON" "$OUTPUT_DIR/etc/cron.d/collectd_to_disk"
+fi
 
 # --- path-relocatability check --------------------------------------------
 
+# Scan ALL text files in the staged tree (-I = skip binaries) for any
+# reference to the scratch / sysroot path. Filter-by-extension would miss
+# extensionless files like default-collectd.conf or scripts in subdirs
+# (Codex review finding). Also scan symlink targets — `cp -a` preserves
+# them — for the same scratch leak.
 LEAK_HITS="$( \
     { \
-        grep -RFnH -- "$SYSROOT" \
-            "$OUTPUT_DIR/share/graphs1090" \
-            "$OUTPUT_DIR/systemd" \
-            "$OUTPUT_DIR/etc/lighttpd" \
-            "$OUTPUT_DIR/etc/collectd" \
-            2>/dev/null || true; \
-        grep -RFnH -- "$SCRATCH_DIR" \
-            "$OUTPUT_DIR/share/graphs1090" \
-            "$OUTPUT_DIR/systemd" \
-            "$OUTPUT_DIR/etc/lighttpd" \
-            "$OUTPUT_DIR/etc/collectd" \
-            2>/dev/null || true; \
-    } | grep -E '\.(sh|py|service|conf)(:|$)' || true \
+        grep -RIFnH -- "$SYSROOT" "$OUTPUT_DIR" 2>/dev/null || true; \
+        grep -RIFnH -- "$SCRATCH_DIR" "$OUTPUT_DIR" 2>/dev/null || true; \
+    } || true \
 )"
-if [[ -n "$LEAK_HITS" ]]; then
+SYMLINK_LEAKS="$( \
+    { \
+        find "$OUTPUT_DIR" -type l -lname "${SYSROOT}*" -print 2>/dev/null || true; \
+        find "$OUTPUT_DIR" -type l -lname "${SCRATCH_DIR}*" -print 2>/dev/null || true; \
+    } || true \
+)"
+if [[ -n "$LEAK_HITS" || -n "$SYMLINK_LEAKS" ]]; then
     {
         echo "stage-graphs1090: scratch/sysroot path leaked into staged tree:"
-        echo "$LEAK_HITS"
+        [[ -n "$LEAK_HITS"     ]] && echo "$LEAK_HITS"
+        [[ -n "$SYMLINK_LEAKS" ]] && echo "symlink targets: $SYMLINK_LEAKS"
     } >&2
     exit 1
 fi

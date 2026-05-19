@@ -93,6 +93,13 @@ done
 if ! command -v bwrap >/dev/null 2>&1; then
     die "bubblewrap (bwrap) is required; install via 'apt-get install bubblewrap'"
 fi
+# lighttpd must be on PATH so tar1090's install.sh sets lighttpd=yes and
+# produces the conf-available snippet we stage. Without it, useSystemd
+# still produces the unit file but no lighttpd config is emitted, and
+# the on-device URL rewrites would be missing from the release.
+if ! command -v lighttpd >/dev/null 2>&1; then
+    die "lighttpd is required so tar1090's install.sh emits the lighttpd snippet; install via 'apt-get install lighttpd'"
+fi
 
 is_full_sha() {
     [[ "$1" =~ ^[0-9a-f]{40}$ ]]
@@ -125,8 +132,14 @@ TAR1090_SHA="$(git -C "$BUILD_DIR" rev-parse HEAD)"
 
 # tar1090-db is pre-populated under $gpath/git-db where $gpath = $ipath
 # (default). install.sh would otherwise auto-refresh from upstream master;
-# repointing the local clone's origin at a guaranteed-to-fail URL keeps our
-# pinned ref in place — same trick stage 03 uses.
+# the canonical-bypass shape is: pass `test` as $1 to install.sh and pre-
+# populate `$gpath/git-db`. With both true, upstream short-circuits its
+# DB version check (`! { [[ "$1" == "test" ]] && cd "$gpath/git-db"; }`)
+# and the rm-and-reclone path that would clobber our pinned ref never
+# runs. Repointing the local clone's origin at a guaranteed-to-fail URL
+# (the stage 03 trick) is insufficient on its own — install.sh's getGIT
+# recovery branch falls back to a fresh `git clone "$db_repo"` after the
+# in-place fetch fails, which wipes our pin.
 SYSROOT="$SCRATCH_DIR/sysroot"
 IPATH_REL="usr/local/share/tar1090"
 IPATH_ABS="/$IPATH_REL"
@@ -143,6 +156,14 @@ fetch_repo "$TAR1090_DB_DIR" "$DB_REPO" "$DB_REF"
 TAR1090_DB_SHA="$(git -C "$TAR1090_DB_DIR" rev-parse HEAD)"
 git -C "$TAR1090_DB_DIR" remote set-url origin file:///dev/null/airplanes-pinned
 
+# install.sh's srcdir resolution when $1 == "test" falls through to a
+# probe chain that looks for /run/<decoder>/aircraft.json. Stage a synthetic
+# aircraft.json under $SYSROOT/run/readsb so the chain lands on
+# srcdir=/run/readsb — the same value stage 03 produces — without us
+# having to pass `/run/readsb` as $1 (which would defeat the
+# tar1090-db pin-protect path).
+: > "$SYSROOT/run/readsb/aircraft.json"
+
 # install.sh sed-edits /etc/lighttpd/lighttpd.conf if it considers lighttpd
 # enabled. Provide an empty stub — `sed -i 's/pattern/repl/'` is a no-op on
 # files with no matching lines. The conf-enabled/ symlink-target install.sh
@@ -156,11 +177,23 @@ git -C "$TAR1090_DB_DIR" remote set-url origin file:///dev/null/airplanes-pinned
 # overlay manifest.
 
 # Stub out commands install.sh might call that we don't want hitting the
-# host: systemctl (daemon-reload), pkill (the script also has its own;
-# defensive), service. Stage 04 has the same pkill pitfall.
+# host:
+#   - systemctl: install.sh's useSystemd() returns true iff `command -v
+#     systemctl` succeeds. We WANT useSystemd=true so the .service /
+#     /etc/default/tar1090 outputs get produced; a no-op stub achieves
+#     that without letting daemon-reload reach the host's init.
+#   - adduser / useradd: with useSystemd=true, install.sh tries to create
+#     the tar1090 system user when `id -u tar1090` fails. Under
+#     bwrap --ro-bind /, the host /etc/passwd is read-only so adduser
+#     fails (set -e abort). The on-device runtime install creates the
+#     user via the manifest's post_install / migrations hooks; stubbing
+#     these commands at staging time skips the no-op write here.
+#   - pkill, service: defensive — stage 04 has the same pkill pitfall
+#     (graphs1090) and tar1090's install.sh has no known pkill call but
+#     can't hurt.
 SHIM_BIN="$SCRATCH_DIR/shim-bin"
 install -d -m 0755 "$SHIM_BIN"
-for cmd in systemctl pkill service; do
+for cmd in systemctl pkill service adduser useradd; do
     {
         printf '#!/bin/sh\n'
         printf 'echo "%s stub (stage-tar1090): $*" >&2\n' "$cmd"
@@ -198,11 +231,18 @@ bwrap \
     --setenv PATH "$PATH_IN" \
     --chdir "$BUILD_DIR" \
     -- bash "$BUILD_DIR/install.sh" \
-        /run/readsb \
+        test \
         tar1090 \
         "$IPATH_ABS" \
         "$BUILD_DIR" \
     || die "tar1090 install.sh failed under bwrap"
+
+# Pin-protect post-check: tar1090-db SHA must still equal what we cloned.
+# Catches any future install.sh code path that would clobber the pin.
+ACTUAL_DB_SHA="$(git -C "$TAR1090_DB_DIR" rev-parse HEAD)"
+if [[ "$ACTUAL_DB_SHA" != "$TAR1090_DB_SHA" ]]; then
+    die "tar1090-db pin was clobbered during install (was $TAR1090_DB_SHA, now $ACTUAL_DB_SHA)"
+fi
 
 # --- collect staging tree --------------------------------------------------
 
@@ -235,28 +275,29 @@ cp -a "$LIGHTTPD_SRC/88-tar1090.conf" \
 
 # --- path-relocatability post-check ---------------------------------------
 
-# Any reference to the SCRATCH or SYSROOT path in shell/unit/conf files
-# inside the staged tree would survive the tarball and fail at runtime.
-# Grep for both prefixes; a single match fails the build. The check is
-# scoped to text-format files install.sh produces.
+# Scan ALL text files in the staged tree (-I = skip binaries) for any
+# reference to the scratch or sysroot path. Filter-by-extension would
+# miss extensionless files like example_config_dont_edit, files under
+# share/tar1090/html/, or scripts dropped into subdirs (Codex review
+# finding). Also separately check symlink targets — install.sh creates
+# symlinks under conf-enabled and `cp -a` preserves them.
 LEAK_HITS="$( \
     { \
-        grep -RFnH -- "$SYSROOT" \
-            "$OUTPUT_DIR/share/tar1090" \
-            "$OUTPUT_DIR/systemd" \
-            "$OUTPUT_DIR/etc/lighttpd" \
-            2>/dev/null || true; \
-        grep -RFnH -- "$SCRATCH_DIR" \
-            "$OUTPUT_DIR/share/tar1090" \
-            "$OUTPUT_DIR/systemd" \
-            "$OUTPUT_DIR/etc/lighttpd" \
-            2>/dev/null || true; \
-    } | grep -E '\.(sh|service|conf)(:|$)' || true \
+        grep -RIFnH -- "$SYSROOT" "$OUTPUT_DIR" 2>/dev/null || true; \
+        grep -RIFnH -- "$SCRATCH_DIR" "$OUTPUT_DIR" 2>/dev/null || true; \
+    } || true \
 )"
-if [[ -n "$LEAK_HITS" ]]; then
+SYMLINK_LEAKS="$( \
+    { \
+        find "$OUTPUT_DIR" -type l -lname "${SYSROOT}*" -print 2>/dev/null || true; \
+        find "$OUTPUT_DIR" -type l -lname "${SCRATCH_DIR}*" -print 2>/dev/null || true; \
+    } || true \
+)"
+if [[ -n "$LEAK_HITS" || -n "$SYMLINK_LEAKS" ]]; then
     {
         echo "stage-tar1090: scratch/sysroot path leaked into staged tree:"
-        echo "$LEAK_HITS"
+        [[ -n "$LEAK_HITS"     ]] && echo "$LEAK_HITS"
+        [[ -n "$SYMLINK_LEAKS" ]] && echo "symlink targets: $SYMLINK_LEAKS"
     } >&2
     exit 1
 fi

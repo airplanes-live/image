@@ -104,6 +104,17 @@ if [[ "$host_arch" != "arm64" ]]; then
     die "host arch is '$host_arch' but --arch is arm64; cross-compile is not configured here — run on an arm64 host (CI uses ubuntu-24.04-arm)"
 fi
 
+# Reproducible-build flags (same shape as cross-compile-readsb.sh):
+#   SOURCE_DATE_EPOCH commits the binary's embedded timestamps to the
+#   commit time; -ffile-prefix-map / -fdebug-prefix-map rewrite the
+#   scratch BUILD_DIR path that would otherwise appear in DWARF debug
+#   info. dump978's Makefile uses CFLAGS += / CXXFLAGS +=, so passing
+#   them via env preserves the upstream -Wall -Werror -O2 etc.
+SOURCE_DATE_EPOCH="$(git -C "$BUILD_DIR" log -1 --format=%ct)"
+export SOURCE_DATE_EPOCH
+export CFLAGS="-ffile-prefix-map=$BUILD_DIR=. -fdebug-prefix-map=$BUILD_DIR=."
+export CXXFLAGS="$CFLAGS"
+
 # Match `stage-airplanes/02-install-decoder/01-run-chroot.sh:30` —
 # `make dump978-fa` only.
 (
