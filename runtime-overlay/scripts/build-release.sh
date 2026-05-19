@@ -165,25 +165,35 @@ RELEASE_DIR="$OUTPUT_DIR/v$VERSION"
 # Refuse to clobber. A previous build at the same version dir is almost
 # always a mistake — either the version got bumped wrong or the prior tree
 # is still in use. The caller can `rm -rf` themselves if they actually mean
-# it.
+# it. We check the final path now so the caller fails fast; the same dir
+# is re-checked atomically after staging via `mkdir` (no -p) below to close
+# the TOCTOU window between two concurrent invocations.
 if [[ -e "$RELEASE_DIR" ]]; then
     die "release dir already exists: $RELEASE_DIR (remove it first or bump --version)"
 fi
 
-mkdir -p -- "$RELEASE_DIR"
+mkdir -p -- "$OUTPUT_DIR"
 
-# Copy the input tree into the release dir. `cp -a` preserves modes,
-# ownership and timestamps; for determinism we don't actually need
-# timestamps preserved (SHA256SUMS doesn't care) but preserving them also
-# does no harm and matches what the on-device installer expects after
-# untar.
-cp -a -- "$INPUT_DIR/." "$RELEASE_DIR/"
+# Stage everything into a sibling tmp dir and only rename to RELEASE_DIR
+# after every gate passes. A broken or partial release is then either
+# fully present at the canonical path or absent — never half-published.
+# The trap below cleans up the staging dir on any non-zero exit path.
+STAGING_DIR="$(mktemp -d "$OUTPUT_DIR/.build-release.XXXXXX")"
+# shellcheck disable=SC2064
+trap 'rm -rf -- "$STAGING_DIR"' EXIT
 
-# Strip the JSON-snippet inputs out of the release tree. They are manifest
+# Copy the input tree into the staging dir. `cp -a` preserves modes,
+# ownership and timestamps so the staged tree matches what the on-device
+# installer will untar in production. SHA256SUMS doesn't care about
+# timestamps, so determinism across two runs against the same input bytes
+# still holds.
+cp -a -- "$INPUT_DIR/." "$STAGING_DIR/"
+
+# Strip the JSON-snippet inputs out of the staged tree. They are manifest
 # build-time inputs, not on-device assets, and the release dir on a feeder
 # must not contain them.
 for snippet in components managed_paths mutable_paths systemd migrations compat; do
-    rm -f -- "$RELEASE_DIR/$snippet.json"
+    rm -f -- "$STAGING_DIR/$snippet.json"
 done
 
 # Compose manifest.json. The renderer is responsible for canonical key
@@ -195,22 +205,65 @@ airplanes_runtime_render_manifest \
     "$BUILD_DATE" \
     "$ARCH" \
     "$INPUT_DIR" \
-    "$RELEASE_DIR/manifest.json"
+    "$STAGING_DIR/manifest.json"
 
-# Build SHA256SUMS over every file in the release dir EXCEPT SHA256SUMS
-# itself. Sort with NUL separators under the C locale so the ordering is
-# reproducible regardless of LANG/LC_COLLATE. Paths are emitted relative to
-# the release dir so a `sha256sum -c` invocation inside that dir verifies
-# cleanly.
-SUMS_TMP="$(mktemp "$RELEASE_DIR/.SHA256SUMS.tmp.XXXXXX")"
-# shellcheck disable=SC2064
-trap 'rm -f -- "$SUMS_TMP"' EXIT
+# Cross-check: every file the manifest references must actually exist in
+# the staged tree. The schema enforces shape; this gate enforces presence.
+# Without it, a typo in components.json / managed_paths.json / migrations.json
+# yields a schema-valid manifest pointing at a missing file, which would
+# only surface during on-device install.
+_check_release_local_path() {
+    # Args: <field-path-for-diagnostic> <release-local-path>
+    local label="$1"
+    local rel="$2"
+    if [[ -z "$rel" || "$rel" == "null" ]]; then
+        return 0
+    fi
+    if [[ ! -e "$STAGING_DIR/$rel" ]]; then
+        die "manifest $label references missing file: $rel"
+    fi
+}
 
-# Subshell to localize the CWD shift; the trap above still fires on exit.
-# `find -printf '%P\0'` strips the leading "./" cleanly so the generated
-# SHA256SUMS contains release-dir-relative paths without any post-processing.
+# managed_paths.target is an absolute /opt/airplanes-runtime/current/... path;
+# strip that prefix to get the release-local path.
+CURRENT_PREFIX="/opt/airplanes-runtime/current/"
+while IFS= read -r abs_target; do
+    [[ -z "$abs_target" ]] && continue
+    if [[ "$abs_target" != "$CURRENT_PREFIX"* ]]; then
+        die "managed_paths.target not under $CURRENT_PREFIX: $abs_target"
+    fi
+    _check_release_local_path "managed_paths.target" "${abs_target#"$CURRENT_PREFIX"}"
+done < <(jq -r '.managed_paths[]? | select(.mode == "symlink") | .target' \
+            "$STAGING_DIR/manifest.json")
+
+# managed_paths.from (copy mode) is already release-local.
+while IFS= read -r from_rel; do
+    [[ -z "$from_rel" ]] && continue
+    _check_release_local_path "managed_paths.from" "$from_rel"
+done < <(jq -r '.managed_paths[]? | select(.mode == "copy") | .from' \
+            "$STAGING_DIR/manifest.json")
+
+# Shell migrations carry release-local script + rollback_script paths.
+while IFS= read -r mig_script; do
+    [[ -z "$mig_script" ]] && continue
+    _check_release_local_path "migrations.script" "$mig_script"
+done < <(jq -r '.migrations[]? | select(.type == "shell") | .script' \
+            "$STAGING_DIR/manifest.json")
+while IFS= read -r mig_rollback; do
+    [[ -z "$mig_rollback" ]] && continue
+    _check_release_local_path "migrations.rollback_script" "$mig_rollback"
+done < <(jq -r '.migrations[]? | select(.type == "shell") | .rollback_script' \
+            "$STAGING_DIR/manifest.json")
+
+# Build SHA256SUMS over every file in the staged tree EXCEPT SHA256SUMS
+# itself. `find -printf '%P\0'` emits release-dir-relative paths so a
+# `sha256sum -c` invocation inside the published dir verifies cleanly. Sort
+# under LC_ALL=C so ordering is reproducible regardless of host LANG /
+# LC_COLLATE.
+SUMS_TMP="$(mktemp "$STAGING_DIR/.SHA256SUMS.tmp.XXXXXX")"
+
 (
-    cd "$RELEASE_DIR"
+    cd "$STAGING_DIR"
     LC_ALL=C find . -type f \
         ! -name SHA256SUMS \
         ! -name '.SHA256SUMS.tmp.*' \
@@ -219,13 +272,26 @@ trap 'rm -f -- "$SUMS_TMP"' EXIT
         | xargs -0 sha256sum --
 ) > "$SUMS_TMP"
 
-mv -f -- "$SUMS_TMP" "$RELEASE_DIR/SHA256SUMS"
-trap - EXIT
+mv -f -- "$SUMS_TMP" "$STAGING_DIR/SHA256SUMS"
 
 # --- self-test: the rendered manifest must validate ------------------------
 
-if ! "$VALIDATE_MANIFEST" "$RELEASE_DIR/manifest.json"; then
-    die "rendered manifest failed schema validation: $RELEASE_DIR/manifest.json"
+if ! "$VALIDATE_MANIFEST" "$STAGING_DIR/manifest.json"; then
+    die "rendered manifest failed schema validation: $STAGING_DIR/manifest.json"
 fi
+
+# --- atomic publish --------------------------------------------------------
+
+# `mv` of a directory onto a non-existent target is atomic on the same
+# filesystem (single rename() syscall). We pre-created OUTPUT_DIR above so
+# RELEASE_DIR's parent is guaranteed to exist on the same FS as STAGING_DIR.
+# Re-checking RELEASE_DIR with a non-clobbering rename closes the TOCTOU
+# window against a parallel invocation that may have published in the
+# meantime.
+if [[ -e "$RELEASE_DIR" ]]; then
+    die "release dir appeared during build: $RELEASE_DIR (concurrent build?)"
+fi
+mv -T -- "$STAGING_DIR" "$RELEASE_DIR"
+trap - EXIT
 
 echo "build-release: wrote $RELEASE_DIR"

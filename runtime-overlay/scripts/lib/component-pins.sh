@@ -67,21 +67,44 @@ airplanes_runtime_load_component_pins() {
         return 1
     fi
 
-    # Source in a subshell so the caller's environment is not polluted; print
-    # only AIRPLANES_* variables back to stdout. `set -a` would also auto-export,
-    # but we explicitly list them so a stray non-AIRPLANES_ variable in the
-    # config can never leak. The single-quote escaping mirrors `bash declare -p`'s
-    # behavior for arbitrary string values.
+    # Source in a subshell so the caller's environment is not polluted.
+    # Snapshot the AIRPLANES_* variable names visible BEFORE sourcing so a
+    # stray AIRPLANES_* var the caller already exported (e.g. the function's
+    # own AIRPLANES_RUNTIME_OVERLAY_DIR resolution hook, CI runner env) does
+    # not get echoed back as if it were a component pin defined by the
+    # config. Only names introduced by the sourced file survive the diff,
+    # and we further restrict the output to names matching the documented
+    # AIRPLANES_*_REPO / AIRPLANES_*_BRANCH shape so a typo in the config
+    # surfaces visibly instead of being silently emitted as a pseudo-pin.
     (
+        # Snapshot pre-source state.
+        local pre
+        pre="$(compgen -v | grep -E '^AIRPLANES_' || true)"
+
         # shellcheck disable=SC1090
         . "$config_path" || exit 1
-        # Iterate the variables defined in this shell. compgen prints names.
+
+        # Names visible post-source minus the pre-existing ones.
+        local post
+        post="$(compgen -v | grep -E '^AIRPLANES_' || true)"
+        local introduced
+        introduced="$(LC_ALL=C comm -13 \
+            <(printf '%s\n' "$pre"  | LC_ALL=C sort -u) \
+            <(printf '%s\n' "$post" | LC_ALL=C sort -u))"
+
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
+            case "$name" in
+                AIRPLANES_*_REPO|AIRPLANES_*_BRANCH) ;;
+                *)
+                    echo "airplanes_runtime_load_component_pins: ignoring config variable with unrecognised shape: $name" >&2
+                    continue
+                    ;;
+            esac
             local value="${!name-}"
             # Escape single quotes in value: ' → '\''
             local esc="${value//\'/\'\\\'\'}"
             printf "%s='%s'\n" "$name" "$esc"
-        done < <(compgen -v | grep -E '^AIRPLANES_' || true)
+        done <<<"$introduced"
     ) || return 1
 }

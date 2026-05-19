@@ -21,10 +21,12 @@ setup() {
 
     # Rehydrate the fixture: copy committed inputs (JSON snippets, stub
     # binaries, .gitkeep markers) plus the real overlay-source files the
-    # manifest references. The result is a full input tree the build script
-    # accepts without further hand-holding.
+    # manifest references. The .gitkeep placeholders only exist to make
+    # empty fixture subdirs survive git; remove them before invoking the
+    # build so the produced release tree doesn't ship them as payload.
     INPUT_DIR="$BATS_TEST_TMPDIR/input"
     cp -a "$FIXTURE_SRC" "$INPUT_DIR"
+    find "$INPUT_DIR" -name '.gitkeep' -type f -delete
 
     cp -a "$REPO_ROOT/runtime-overlay/src/share/airplanes/." \
           "$INPUT_DIR/share/airplanes/"
@@ -81,6 +83,14 @@ setup() {
     [ ! -f "$OUTPUT_DIR/v1.4.0/systemd.json" ]
     [ ! -f "$OUTPUT_DIR/v1.4.0/migrations.json" ]
     [ ! -f "$OUTPUT_DIR/v1.4.0/compat.json" ]
+}
+
+@test "produced release tree contains no .gitkeep markers" {
+    run "$BUILD" "${GOOD_ARGS[@]}"
+    [ "$status" -eq 0 ]
+    run find "$OUTPUT_DIR/v1.4.0" -name '.gitkeep'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
 }
 
 @test "rendered manifest passes the schema validator" {
@@ -174,6 +184,26 @@ setup() {
     run "$BUILD" "${GOOD_ARGS[@]}"
     [ "$status" -ne 0 ]
     [[ "$output" == *"systemd"* ]]
+}
+
+@test "rejects when a managed_paths.target points at a missing file" {
+    # Delete a file the fixture's managed_paths.json references; the
+    # cross-check inside the build must catch this before SHA256SUMS or
+    # publish.
+    rm "$INPUT_DIR/share/airplanes/readsb.sh"
+    run "$BUILD" "${GOOD_ARGS[@]}"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"managed_paths"* ]]
+    [[ "$output" == *"readsb.sh"* ]]
+}
+
+@test "leaves no partial release dir when validation fails" {
+    # Same trigger as above. The build must clean up its staging tree
+    # rather than leave a half-published v1.4.0 under output-dir.
+    rm "$INPUT_DIR/share/airplanes/readsb.sh"
+    run "$BUILD" "${GOOD_ARGS[@]}"
+    [ "$status" -ne 0 ]
+    [ ! -e "$OUTPUT_DIR/v1.4.0" ]
 }
 
 @test "manifest keys are canonically sorted at every nesting level" {
