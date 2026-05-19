@@ -1,0 +1,32 @@
+# Runtime-overlay channel pins (dev).
+#
+# Sourced by the runtime-overlay build helpers
+# (runtime-overlay/scripts/lib/component-pins.sh,
+# runtime-overlay/scripts/lib/cross-compile-readsb.sh,
+# runtime-overlay/scripts/lib/cross-compile-dump978.sh,
+# runtime-overlay/scripts/lib/stage-tar1090.sh,
+# runtime-overlay/scripts/lib/stage-graphs1090.sh) to pick the upstream
+# sources baked into runtime-overlay releases published on the dev channel.
+#
+# Scope is the inbound-decode stack only — readsb (wiedehopf), dump978-fa
+# (flightaware), tar1090 (wiedehopf), tar1090-db (wiedehopf), graphs1090
+# (wiedehopf). Mirrors the matching refs in the top-level config-dev.
+#
+# Dev tracks upstream branch heads (moving target by design) so the runtime
+# overlay catches upstream drift early. Dev releases are intentionally not
+# reproducible from this file alone.
+
+export AIRPLANES_READSB_DECODER_REPO="${AIRPLANES_READSB_DECODER_REPO:-https://github.com/wiedehopf/readsb.git}"
+export AIRPLANES_READSB_DECODER_BRANCH="${AIRPLANES_READSB_DECODER_BRANCH:-dev}"
+
+export AIRPLANES_DUMP978_REPO="${AIRPLANES_DUMP978_REPO:-https://github.com/flightaware/dump978.git}"
+export AIRPLANES_DUMP978_BRANCH="${AIRPLANES_DUMP978_BRANCH:-master}"
+
+export AIRPLANES_TAR1090_REPO="${AIRPLANES_TAR1090_REPO:-https://github.com/wiedehopf/tar1090.git}"
+export AIRPLANES_TAR1090_BRANCH="${AIRPLANES_TAR1090_BRANCH:-master}"
+
+export AIRPLANES_TAR1090_DB_REPO="${AIRPLANES_TAR1090_DB_REPO:-https://github.com/wiedehopf/tar1090-db.git}"
+export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-master}"
+
+export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
+export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-master}"
