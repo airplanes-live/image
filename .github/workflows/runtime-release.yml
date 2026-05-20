@@ -118,9 +118,12 @@ jobs:
               librtlsdr-dev \
               libncurses-dev \
               zlib1g-dev \
+              libzstd-dev \
               libboost-system-dev \
               libboost-program-options-dev \
               libboost-regex-dev \
+              libboost-filesystem-dev \
+              libsoapysdr-dev \
               liblzma-dev \
               libssl-dev \
               jq \
