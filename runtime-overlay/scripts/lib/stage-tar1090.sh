@@ -165,10 +165,16 @@ git -C "$TAR1090_DB_DIR" remote set-url origin file:///dev/null/airplanes-pinned
 : > "$SYSROOT/run/readsb/aircraft.json"
 
 # install.sh sed-edits /etc/lighttpd/lighttpd.conf if it considers lighttpd
-# enabled. Provide an empty stub — `sed -i 's/pattern/repl/'` is a no-op on
-# files with no matching lines. The conf-enabled/ symlink-target install.sh
-# emits is what we actually care about; the host's lighttpd.conf is not.
-: > "$SYSROOT/etc/lighttpd/lighttpd.conf"
+# enabled AND runs `lighttpd -tt -f` against it to validate. An empty stub
+# fails validation ("server.document-root is not set"). Copy the host's
+# Debian-default lighttpd.conf as a known-parseable starting point. The
+# conf-enabled/ symlink-target install.sh emits is the artifact we actually
+# care about; this stub only has to satisfy install.sh's self-check.
+if [[ -r /etc/lighttpd/lighttpd.conf ]]; then
+    cp /etc/lighttpd/lighttpd.conf "$SYSROOT/etc/lighttpd/lighttpd.conf"
+else
+    die "/etc/lighttpd/lighttpd.conf not readable on host — lighttpd package not installed?"
+fi
 
 # install.sh also creates a tar1090 system user when systemctl is detected.
 # We stub systemctl out below so useSystemd=no and the adduser step is
@@ -211,7 +217,7 @@ done
 #   $SHIM_BIN ahead of host PATH      → stub systemctl/pkill/service
 # Read-only everywhere else. /proc and /dev/null are useful for the install
 # script's misc calls.
-PATH_IN="$SHIM_BIN:/usr/bin:/bin"
+PATH_IN="$SHIM_BIN:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Pre-create bind mountpoints on the host. With `--ro-bind / /`, bwrap
 # cannot mkdir its own mountpoint dirs inside the read-only root, so any
@@ -235,6 +241,10 @@ ensure_mountpoint "$IPATH_ABS" /run/readsb
 # --unshare-pid: defense in depth — tar1090 install.sh is not known to
 # daemonize anything, but isolating the sandbox PID namespace means any
 # unexpected leak dies with bwrap exit instead of surviving on the host.
+# --tmpfs /tmp masks the host /tmp inside the sandbox, which would hide
+# both SCRATCH_DIR (containing SHIM_BIN) and BUILD_DIR. Bind them through
+# explicitly so PATH lookup against $SHIM_BIN resolves and install.sh
+# can reach its own source tree.
 bwrap \
     --unshare-pid \
     --ro-bind / / \
@@ -246,6 +256,7 @@ bwrap \
     --bind "$SYSROOT/etc/lighttpd"             /etc/lighttpd \
     --bind "$SYSROOT/etc/default"              /etc/default \
     --bind "$SYSROOT/run/readsb"               /run/readsb \
+    --ro-bind "$SHIM_BIN"                      "$SHIM_BIN" \
     --bind "$BUILD_DIR"                        "$BUILD_DIR" \
     --setenv PATH "$PATH_IN" \
     --chdir "$BUILD_DIR" \
