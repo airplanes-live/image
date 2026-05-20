@@ -251,7 +251,11 @@ if [[ ! -d "$OUTPUT_DIR/share/graphs1090/978-symlink" ]]; then
     # stable parent. The on-device install creates the inner `data` link
     # pointing at /run/airplanes-978.
     install -d -m 0755 "$OUTPUT_DIR/share/graphs1090/978-symlink"
-    : > "$OUTPUT_DIR/share/graphs1090/978-symlink/.gitkeep"
+    # Non-hidden placeholder so actions/upload-artifact (which drops
+    # hidden files by default) retains the otherwise-empty directory.
+    # The on-device install replaces the inner `data` link at first boot;
+    # this marker can stay alongside it harmlessly.
+    : > "$OUTPUT_DIR/share/graphs1090/978-symlink/KEEP"
 fi
 
 # Capture the systemd unit.
