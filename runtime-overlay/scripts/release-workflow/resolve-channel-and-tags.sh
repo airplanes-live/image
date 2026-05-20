@@ -135,13 +135,15 @@ case "$EVENT" in
         # PR runs are validation-only — the workflow's sign and publish
         # jobs are gated to skip on pull_request. We still need a sane
         # channel/version/immutable_tag so the build and verify jobs can
-        # render a manifest. Treat PR like a dev build keyed by PR number.
+        # render a manifest. Treat PR like a dev build (same version
+        # shape so build-release.sh's strict regex accepts it). PR
+        # number lives in the immutable_tag for log readability only —
+        # the tag is never published.
         channel="dev"
         base="$(latest_stable_version || true)"
         [[ -n "$base" ]] || base="0.0.0"
-        pr_num="${GITHUB_PR_NUMBER:-0}"
-        version="${base}-dev-pr${pr_num}-${short_sha}"
-        immutable_tag="runtime-dev-pr${pr_num}-${short_sha}"
+        version="${base}-dev-${today}-${short_sha}"
+        immutable_tag="runtime-dev-pr${GITHUB_PR_NUMBER:-0}-${short_sha}"
         floating_tag=""
         should_publish="false"
         ;;
