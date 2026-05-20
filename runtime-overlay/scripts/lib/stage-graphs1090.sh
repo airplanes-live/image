@@ -160,6 +160,28 @@ done
 
 PATH_IN="$SHIM_BIN:/usr/bin:/bin"
 
+# Pre-create bind mountpoints on the host. With `--ro-bind / /`, bwrap
+# cannot mkdir its own mountpoint dirs inside the read-only root, so any
+# bind target that does not already exist on the host (graphs1090's
+# install dir, the per-service /var/lib and /run dirs, /etc/collectd on
+# a runner without collectd-core apt-installed) trips bwrap with
+# "Can't mkdir ...: Read-only file system". The dirs are empty
+# placeholders; bwrap mounts SYSROOT subdirs over them.
+ensure_mountpoint() {
+    local p
+    for p in "$@"; do
+        if [[ -d "$p" ]]; then continue; fi
+        if mkdir -p "$p" 2>/dev/null; then continue; fi
+        sudo mkdir -p "$p" || die "could not create bind mountpoint $p (need root or sudo)"
+    done
+}
+ensure_mountpoint \
+    "$IPATH_ABS" \
+    /etc/collectd \
+    /var/lib/graphs1090 \
+    /var/lib/collectd \
+    /run/collectd
+
 # Bind all paths install.sh touches. Read-only everywhere else.
 # --unshare-pid: graphs1090's install.sh detects the python version by
 # running `collectd 2>&1 | grep ...`. Per upstream's own comment that
