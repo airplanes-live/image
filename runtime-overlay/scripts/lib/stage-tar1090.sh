@@ -165,10 +165,16 @@ git -C "$TAR1090_DB_DIR" remote set-url origin file:///dev/null/airplanes-pinned
 : > "$SYSROOT/run/readsb/aircraft.json"
 
 # install.sh sed-edits /etc/lighttpd/lighttpd.conf if it considers lighttpd
-# enabled. Provide an empty stub — `sed -i 's/pattern/repl/'` is a no-op on
-# files with no matching lines. The conf-enabled/ symlink-target install.sh
-# emits is what we actually care about; the host's lighttpd.conf is not.
-: > "$SYSROOT/etc/lighttpd/lighttpd.conf"
+# enabled AND runs `lighttpd -tt -f` against it to validate. An empty stub
+# fails validation ("server.document-root is not set"). Copy the host's
+# Debian-default lighttpd.conf as a known-parseable starting point. The
+# conf-enabled/ symlink-target install.sh emits is the artifact we actually
+# care about; this stub only has to satisfy install.sh's self-check.
+if [[ -r /etc/lighttpd/lighttpd.conf ]]; then
+    cp /etc/lighttpd/lighttpd.conf "$SYSROOT/etc/lighttpd/lighttpd.conf"
+else
+    die "/etc/lighttpd/lighttpd.conf not readable on host — lighttpd package not installed?"
+fi
 
 # install.sh also creates a tar1090 system user when systemctl is detected.
 # We stub systemctl out below so useSystemd=no and the adduser step is

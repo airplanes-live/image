@@ -138,8 +138,14 @@ install -d -m 0755 \
     "$SYSROOT/var/lib/collectd" \
     "$SYSROOT/run/collectd"
 
-# Empty stub so install.sh's sed edits against lighttpd.conf no-op cleanly.
-: > "$SYSROOT/etc/lighttpd/lighttpd.conf"
+# install.sh sed-edits lighttpd.conf AND validates with `lighttpd -tt -f`.
+# An empty stub fails validation. Copy the host's Debian-default conf as a
+# known-parseable starting point.
+if [[ -r /etc/lighttpd/lighttpd.conf ]]; then
+    cp /etc/lighttpd/lighttpd.conf "$SYSROOT/etc/lighttpd/lighttpd.conf"
+else
+    die "/etc/lighttpd/lighttpd.conf not readable on host — lighttpd package not installed?"
+fi
 
 # Stubs for the few commands install.sh calls that should not touch the
 # host. graphs1090's install.sh has an explicit `pkill -9 collectd` per
