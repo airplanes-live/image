@@ -213,6 +213,25 @@ done
 # script's misc calls.
 PATH_IN="$SHIM_BIN:/usr/bin:/bin"
 
+# Pre-create bind mountpoints on the host. With `--ro-bind / /`, bwrap
+# cannot mkdir its own mountpoint dirs inside the read-only root, so any
+# bind target that does not already exist on the host (notably
+# /usr/local/share/tar1090 and /run/readsb on a CI runner) trips bwrap
+# with "Can't mkdir ...: Read-only file system". The dirs are empty
+# placeholders; bwrap mounts SYSROOT subdirs over them at sandbox setup.
+# Try unprivileged first so a root-running caller (e.g. inside a
+# container) does not require sudo to be installed; fall back to sudo
+# for the unprivileged-runner case (default on GH Actions).
+ensure_mountpoint() {
+    local p
+    for p in "$@"; do
+        if [[ -d "$p" ]]; then continue; fi
+        if mkdir -p "$p" 2>/dev/null; then continue; fi
+        sudo mkdir -p "$p" || die "could not create bind mountpoint $p (need root or sudo)"
+    done
+}
+ensure_mountpoint "$IPATH_ABS" /run/readsb
+
 # --unshare-pid: defense in depth — tar1090 install.sh is not known to
 # daemonize anything, but isolating the sandbox PID namespace means any
 # unexpected leak dies with bwrap exit instead of surviving on the host.
