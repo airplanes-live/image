@@ -147,7 +147,12 @@ jobs:
               git \
               file \
               ca-certificates \
-              curl
+              curl \
+              wget \
+              unzip \
+              bash-builtins \
+              rrdtool \
+              collectd-core
           # rfc3339-validator: best-effort. The validator falls back to a
           # regex when this is missing, which still gates the YYYY-MM-DDTHH:MM:SS
           # shape on build_date.
