@@ -1,0 +1,545 @@
+name: runtime-release
+
+# Triggers:
+#   push of a `runtime-v[MAJOR].[MINOR].[PATCH]` tag — stable runtime-overlay
+#       release. Publishes a GitHub Release at the tag with the release
+#       tarball, manifest.json, SHA256SUMS, SHA256SUMS.minisig, PROVENANCE.md.
+#   push to dev — only when files under runtime-overlay/** change. Publishes
+#       BOTH an immutable per-commit prerelease tag
+#       (runtime-dev-<YYYYMMDD>-<short-sha>) AND force-moves the floating
+#       `runtime-dev-latest` tag/release. The immutable tag is what image
+#       config pins; the floating tag is what on-device updaters resolve.
+#   workflow_dispatch — manual; accepts channel (stable|dev) and an optional
+#       explicit version. Useful for the first dev smoke run and for
+#       re-publishing assets if something goes wrong.
+#
+# arm64 is the only target architecture in v1, so workflow-level concurrency
+# keyed on github.ref is sufficient — there's no matrix dimension to scope.
+# cancel-in-progress is false: a slower in-flight run must not be torn down
+# by a newer one and leave a half-published release behind.
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel'
+        type: choice
+        options: [dev, stable]
+        default: dev
+      version:
+        description: 'Explicit version (stable: X.Y.Z; dev: X.Y.Z-dev-YYYYMMDD-<sha7>). Required for stable.'
+        type: string
+        required: false
+  push:
+    tags: ['runtime-v*']
+    branches: [dev]
+    paths:
+      # Restrict the dev trigger to changes that actually affect overlay
+      # contents. Most dev commits touch other parts of the image (pi-gen
+      # stages, top-level CI, docs) and shouldn't trigger a republish.
+      - 'runtime-overlay/**'
+      - '.github/workflows/runtime-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-channel-and-tags:
+    name: Resolve channel & tags
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      channel: ${{ steps.resolve.outputs.channel }}
+      version: ${{ steps.resolve.outputs.version }}
+      floating_tag: ${{ steps.resolve.outputs.floating_tag }}
+      immutable_tag: ${{ steps.resolve.outputs.immutable_tag }}
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+      should_publish: ${{ steps.resolve.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Tag enumeration in resolve-channel-and-tags.sh needs the full
+          # history's tags. Cheap enough on a small dev box runner.
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve
+        id: resolve
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          INPUT_CHANNEL: ${{ github.event.inputs.channel }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: bash runtime-overlay/scripts/release-workflow/resolve-channel-and-tags.sh
+
+  build-arm64:
+    name: Build runtime-overlay (arm64)
+    needs: [resolve-channel-and-tags]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      CHANNEL: ${{ needs.resolve-channel-and-tags.outputs.channel }}
+      VERSION: ${{ needs.resolve-channel-and-tags.outputs.version }}
+      IMMUTABLE_TAG: ${{ needs.resolve-channel-and-tags.outputs.immutable_tag }}
+      COMMIT_SHA: ${{ needs.resolve-channel-and-tags.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Component build helpers run `git ls-remote` on upstream repos
+          # for SHA resolution; that doesn't need history. They also
+          # `git fetch` against the checked-out tree to read the tip
+          # commit timestamp for SOURCE_DATE_EPOCH, which does — depth 0
+          # is the safe cheap default.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install build + verify dependencies
+        # Native arm64 runner: install component-build deps (libusb / rtlsdr
+        # / boost / ncurses for readsb; bwrap + lighttpd for the staging
+        # sandboxes) PLUS gate deps (shellcheck, python3-jsonschema, jq,
+        # minisign, file).
+        #
+        # rfc3339-validator is on PyPI but not in apt; install via pip so
+        # `validate-manifest.sh` enforces format: date-time strictly rather
+        # than falling through to the regex-only check. Failing to install
+        # rfc3339-validator is non-fatal — the script still gates the
+        # regex pattern on build_date.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential \
+              libusb-1.0-0-dev \
+              pkg-config \
+              librtlsdr-dev \
+              libncurses-dev \
+              zlib1g-dev \
+              libboost-system-dev \
+              libboost-program-options-dev \
+              libboost-regex-dev \
+              liblzma-dev \
+              libssl-dev \
+              jq \
+              python3-jsonschema \
+              python3-pip \
+              lighttpd \
+              shellcheck \
+              bubblewrap \
+              minisign \
+              git \
+              file \
+              ca-certificates \
+              curl
+          # rfc3339-validator: best-effort. The validator falls back to a
+          # regex when this is missing, which still gates the YYYY-MM-DDTHH:MM:SS
+          # shape on build_date.
+          pip3 install --break-system-packages rfc3339-validator || true
+
+      - name: Source channel config
+        # config-stable / config-dev export the upstream component pins
+        # (AIRPLANES_READSB_DECODER_REPO/BRANCH etc.) the build helpers
+        # consume. Persist them into $GITHUB_ENV so subsequent steps see
+        # them without re-sourcing.
+        run: |
+          set -a
+          # shellcheck disable=SC1090
+          . "runtime-overlay/config-$CHANNEL"
+          set +a
+          {
+            echo "AIRPLANES_READSB_DECODER_REPO=$AIRPLANES_READSB_DECODER_REPO"
+            echo "AIRPLANES_READSB_DECODER_BRANCH=$AIRPLANES_READSB_DECODER_BRANCH"
+            echo "AIRPLANES_DUMP978_REPO=$AIRPLANES_DUMP978_REPO"
+            echo "AIRPLANES_DUMP978_BRANCH=$AIRPLANES_DUMP978_BRANCH"
+            echo "AIRPLANES_TAR1090_REPO=$AIRPLANES_TAR1090_REPO"
+            echo "AIRPLANES_TAR1090_BRANCH=$AIRPLANES_TAR1090_BRANCH"
+            echo "AIRPLANES_TAR1090_DB_REPO=$AIRPLANES_TAR1090_DB_REPO"
+            echo "AIRPLANES_TAR1090_DB_BRANCH=$AIRPLANES_TAR1090_DB_BRANCH"
+            echo "AIRPLANES_GRAPHS1090_REPO=$AIRPLANES_GRAPHS1090_REPO"
+            echo "AIRPLANES_GRAPHS1090_BRANCH=$AIRPLANES_GRAPHS1090_BRANCH"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare staging dir
+        run: |
+          mkdir -p "$RUNNER_TEMP/staging" "$RUNNER_TEMP/release"
+          # Manifest-input snippets are the "policy" half of a release; the
+          # build helpers produce the "pipeline" half. Copy the policy in.
+          cp -- runtime-overlay/manifest-inputs/managed_paths.json \
+                runtime-overlay/manifest-inputs/mutable_paths.json \
+                runtime-overlay/manifest-inputs/systemd.json \
+                runtime-overlay/manifest-inputs/migrations.json \
+                runtime-overlay/manifest-inputs/compat.json \
+                "$RUNNER_TEMP/staging/"
+
+      - name: Cross-compile readsb (wiedehopf fork)
+        run: |
+          bash runtime-overlay/scripts/lib/cross-compile-readsb.sh \
+              --repo "$AIRPLANES_READSB_DECODER_REPO" \
+              --ref "$AIRPLANES_READSB_DECODER_BRANCH" \
+              --arch arm64 \
+              --output-dir "$RUNNER_TEMP/staging"
+
+      - name: Cross-compile dump978-fa
+        run: |
+          bash runtime-overlay/scripts/lib/cross-compile-dump978.sh \
+              --repo "$AIRPLANES_DUMP978_REPO" \
+              --ref "$AIRPLANES_DUMP978_BRANCH" \
+              --arch arm64 \
+              --output-dir "$RUNNER_TEMP/staging"
+
+      - name: Stage tar1090
+        run: |
+          bash runtime-overlay/scripts/lib/stage-tar1090.sh \
+              --repo "$AIRPLANES_TAR1090_REPO" \
+              --ref "$AIRPLANES_TAR1090_BRANCH" \
+              --db-repo "$AIRPLANES_TAR1090_DB_REPO" \
+              --db-ref "$AIRPLANES_TAR1090_DB_BRANCH" \
+              --output-dir "$RUNNER_TEMP/staging"
+
+      - name: Stage graphs1090
+        run: |
+          bash runtime-overlay/scripts/lib/stage-graphs1090.sh \
+              --repo "$AIRPLANES_GRAPHS1090_REPO" \
+              --ref "$AIRPLANES_GRAPHS1090_BRANCH" \
+              --output-dir "$RUNNER_TEMP/staging"
+
+      - name: Stage overlay-owned source files
+        # share/airplanes/*.sh, share/airplanes/*.txt, lib/airplanes/render-status,
+        # systemd unit files, lighttpd snippet, update-motd hook —
+        # everything under runtime-overlay/src/ is the overlay's own source
+        # that the runtime release ships at the same FHS paths it occupies
+        # on-device. Copy as-is, preserving relative subtree shape.
+        #
+        # The self-update helper (B-2) will add lib/runtime-self-update.sh +
+        # the recovery service unit. Until then this step is a no-op for
+        # those paths.
+        run: |
+          if [[ -d runtime-overlay/src/share/airplanes ]]; then
+              mkdir -p "$RUNNER_TEMP/staging/share/airplanes"
+              cp -a runtime-overlay/src/share/airplanes/. "$RUNNER_TEMP/staging/share/airplanes/"
+          fi
+          if [[ -d runtime-overlay/src/lib ]]; then
+              mkdir -p "$RUNNER_TEMP/staging/lib"
+              cp -a runtime-overlay/src/lib/. "$RUNNER_TEMP/staging/lib/"
+          fi
+          # systemd/ may already be populated by stage helpers (tar1090.service,
+          # graphs1090.service); add the overlay-owned units on top. cp -n
+          # would skip; we explicitly want the overlay's copy to win for
+          # paths it owns.
+          if [[ -d runtime-overlay/src/systemd ]]; then
+              mkdir -p "$RUNNER_TEMP/staging/systemd"
+              cp -a runtime-overlay/src/systemd/. "$RUNNER_TEMP/staging/systemd/"
+          fi
+          if [[ -d runtime-overlay/src/etc ]]; then
+              mkdir -p "$RUNNER_TEMP/staging/etc"
+              cp -a runtime-overlay/src/etc/. "$RUNNER_TEMP/staging/etc/"
+          fi
+          # build-release.sh requires migrations/ to exist; create it empty
+          # if no shell migrations are declared yet (current state).
+          mkdir -p "$RUNNER_TEMP/staging/migrations"
+
+      - name: Aggregate components.json
+        run: |
+          bash runtime-overlay/scripts/lib/aggregate-components-json.sh \
+              --input-dir "$RUNNER_TEMP/staging"
+
+      - name: Build release tree
+        # build-release.sh produces $RUNNER_TEMP/release/v<VERSION>/ with
+        # manifest.json + SHA256SUMS + the full overlay tree.
+        run: |
+          # Canonical RFC3339 UTC build date (T separator).
+          BUILD_DATE="$(date -u --rfc-3339=seconds | sed 's/ /T/')"
+          bash runtime-overlay/scripts/build-release.sh \
+              --arch arm64 \
+              --channel "$CHANNEL" \
+              --version "$VERSION" \
+              --commit-sha "$COMMIT_SHA" \
+              --build-date "$BUILD_DATE" \
+              --input-dir "$RUNNER_TEMP/staging" \
+              --output-dir "$RUNNER_TEMP/release"
+
+      - name: Generate PROVENANCE.md
+        run: |
+          bash runtime-overlay/scripts/release-workflow/write-provenance.sh \
+              --release-dir "$RUNNER_TEMP/release/v$VERSION" \
+              --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Pack release tarball
+        run: |
+          bash runtime-overlay/scripts/release-workflow/pack-release-tarball.sh \
+              --release-dir "$RUNNER_TEMP/release/v$VERSION" \
+              --output "$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz"
+
+      - name: Compose publish-level SHA256SUMS
+        # The release tree's internal SHA256SUMS (written by build-release.sh)
+        # only covers tree-internal files — it does NOT cover the packed
+        # tarball, manifest.json (copied out for direct download), or
+        # PROVENANCE.md. The publish-level SHA256SUMS lives at the release
+        # root and covers every asset uploaded to GitHub. It is the file the
+        # sign job signs.
+        run: |
+          set -euo pipefail
+          publish_dir="$RUNNER_TEMP/release/v$VERSION"
+          tarball="$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz"
+          out="$RUNNER_TEMP/release/SHA256SUMS"
+          tmp="$(mktemp)"
+          # Use basename-only paths in the checksum file so consumers can
+          # `sha256sum -c SHA256SUMS` from the directory the downloaded
+          # assets sit in.
+          ( cd "$publish_dir" && sha256sum manifest.json PROVENANCE.md ) > "$tmp"
+          ( cd "$(dirname -- "$tarball")" && sha256sum "$(basename -- "$tarball")" ) >> "$tmp"
+          LC_ALL=C sort -k2 "$tmp" > "$out"
+          rm -f -- "$tmp"
+          cat "$out"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # release-assets carries everything publish-release needs: the
+          # full release tree v<VERSION>/ (for verify/sign jobs to operate
+          # on a real on-disk shape) PLUS the packed tarball.
+          name: release-assets-unsigned
+          path: ${{ runner.temp }}/release
+          retention-days: 7
+          if-no-files-found: error
+
+  verify:
+    name: Verify release gates
+    needs: [resolve-channel-and-tags, build-arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CHANNEL: ${{ needs.resolve-channel-and-tags.outputs.channel }}
+      VERSION: ${{ needs.resolve-channel-and-tags.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install gate dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              jq \
+              python3-jsonschema \
+              python3-pip \
+              shellcheck \
+              lighttpd \
+              systemd \
+              file \
+              ca-certificates \
+              gh
+          pip3 install --break-system-packages rfc3339-validator || true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets-unsigned
+          path: ${{ runner.temp }}/release
+
+      - name: Run release gates
+        run: |
+          bash runtime-overlay/scripts/release-workflow/verify-gates.sh \
+              --release-dir "$RUNNER_TEMP/release/v$VERSION" \
+              --channel "$CHANNEL"
+
+  sign:
+    name: Sign SHA256SUMS (minisign)
+    needs: [resolve-channel-and-tags, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.resolve-channel-and-tags.outputs.version }}
+      CHANNEL: ${{ needs.resolve-channel-and-tags.outputs.channel }}
+      IMMUTABLE_TAG: ${{ needs.resolve-channel-and-tags.outputs.immutable_tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets-unsigned
+          path: ${{ runner.temp }}/release
+
+      - name: Sign publish-level SHA256SUMS
+        env:
+          MINISIGN_PRIVKEY: ${{ secrets.RUNTIME_RELEASE_MINISIGN_PRIVKEY }}
+        run: |
+          set -euo pipefail
+          # Scrub the key file on every exit path so a `minisign` failure
+          # mid-step doesn't leave key material on the runner. The runner
+          # is ephemeral but defense-in-depth costs us nothing here.
+          privkey_path="$RUNNER_TEMP/minisign.key"
+          # shellcheck disable=SC2064
+          trap "shred -u -- '$privkey_path' 2>/dev/null || rm -f -- '$privkey_path'" EXIT
+          if [[ -z "${MINISIGN_PRIVKEY:-}" ]]; then
+              echo "::error::secret RUNTIME_RELEASE_MINISIGN_PRIVKEY is not set on this repository. A repo admin must add it under Settings > Secrets and variables > Actions before the release workflow can sign."
+              exit 1
+          fi
+          sums="$RUNNER_TEMP/release/SHA256SUMS"
+          if [[ ! -f "$sums" ]]; then
+              echo "::error::publish-level SHA256SUMS missing at $sums" >&2
+              exit 1
+          fi
+          # Restore the private key to a 0600 tmp file. `printenv` reads
+          # the named env var raw — avoids `printf "%s"` interpreting any
+          # % sequences in the key payload.
+          umask 077
+          printenv MINISIGN_PRIVKEY > "$privkey_path"
+          # The PRIVKEY is unencrypted (minisign expects a passphrase
+          # interactively otherwise). `-W` accepts an unencrypted key
+          # without prompting. If we ever rotate to a passphrase-protected
+          # key, supply MINISIGN_PASSWORD via a stdin redirection here.
+          ( cd "$(dirname -- "$sums")" && \
+            minisign -Sm SHA256SUMS \
+                -s "$privkey_path" \
+                -W \
+                -t "airplanes.live runtime overlay $CHANNEL $IMMUTABLE_TAG" )
+          ls -la "$RUNNER_TEMP/release/SHA256SUMS.minisig"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets-signed
+          path: ${{ runner.temp }}/release
+          retention-days: 7
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [resolve-channel-and-tags, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      CHANNEL: ${{ needs.resolve-channel-and-tags.outputs.channel }}
+      VERSION: ${{ needs.resolve-channel-and-tags.outputs.version }}
+      FLOATING_TAG: ${{ needs.resolve-channel-and-tags.outputs.floating_tag }}
+      IMMUTABLE_TAG: ${{ needs.resolve-channel-and-tags.outputs.immutable_tag }}
+      COMMIT_SHA: ${{ needs.resolve-channel-and-tags.outputs.commit_sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The dev path runs `git tag -f` + `git push -f` to move
+          # runtime-dev-latest. Keep default GITHUB_TOKEN credentials so
+          # git has push auth.
+          persist-credentials: true
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets-signed
+          path: ${{ runner.temp }}/release
+
+      - name: Stage release assets
+        # Materialize the five published assets in a flat dir for upload.
+        # Verify the publish-level SHA256SUMS (covers tarball + manifest +
+        # provenance) AND the tree-internal SHA256SUMS (covers extracted
+        # tarball contents) as a final guard against artifact transit
+        # corruption between sign and publish.
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/release/v$VERSION"
+          dst="$RUNNER_TEMP/publish"
+          mkdir -p "$dst"
+          # Inner tree integrity (matches what the on-device installer will
+          # check after unpacking the tarball).
+          (cd "$src" && sha256sum -c SHA256SUMS)
+          cp -- \
+              "$src/manifest.json" \
+              "$src/PROVENANCE.md" \
+              "$dst/"
+          cp -- \
+              "$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+              "$RUNNER_TEMP/release/SHA256SUMS" \
+              "$RUNNER_TEMP/release/SHA256SUMS.minisig" \
+              "$dst/"
+          # Outer publish-set integrity (what the signed SHA256SUMS covers
+          # and what consumers download).
+          (cd "$dst" && sha256sum -c SHA256SUMS)
+          ls -la "$dst"
+
+      - name: Publish immutable release
+        # Stable: create the release at the user-pushed tag.
+        # Dev: create a per-commit prerelease at the immutable tag. The
+        # workflow may have been triggered by a workflow_dispatch with no
+        # corresponding git tag yet — `gh release create` accepts --target
+        # to anchor the new tag on the commit SHA in that case.
+        #
+        # Immutability: the immutable tag name embeds the commit SHA, so an
+        # existing release at the same name means a previous run already
+        # published this exact build. We refuse to mutate it — re-running
+        # the same workflow for a different SHA on the same day is fine
+        # because the SHA suffix differs; the only path to a collision is
+        # re-running the SAME run, which should be a no-op, not an
+        # asset-clobber.
+        run: |
+          set -euo pipefail
+          dst="$RUNNER_TEMP/publish"
+          if gh release view "$IMMUTABLE_TAG" >/dev/null 2>&1; then
+              echo "::warning::release $IMMUTABLE_TAG already exists; skipping immutable publish (re-runs of the same commit do not mutate published immutable assets)"
+              exit 0
+          fi
+          if [[ "$CHANNEL" == "stable" ]]; then
+              gh release create "$IMMUTABLE_TAG" \
+                  --title "$IMMUTABLE_TAG" \
+                  --notes-file "$dst/PROVENANCE.md" \
+                  --latest \
+                  --target "$COMMIT_SHA" \
+                  "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+                  "$dst/manifest.json" \
+                  "$dst/SHA256SUMS" \
+                  "$dst/SHA256SUMS.minisig" \
+                  "$dst/PROVENANCE.md"
+          else
+              gh release create "$IMMUTABLE_TAG" \
+                  --title "$IMMUTABLE_TAG" \
+                  --notes-file "$dst/PROVENANCE.md" \
+                  --prerelease \
+                  --target "$COMMIT_SHA" \
+                  "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+                  "$dst/manifest.json" \
+                  "$dst/SHA256SUMS" \
+                  "$dst/SHA256SUMS.minisig" \
+                  "$dst/PROVENANCE.md"
+          fi
+
+      - name: Force-move floating dev tag
+        if: env.FLOATING_TAG != ''
+        # Dev channel only. Mirrors image-webconfig/.github/workflows/release.yml:
+        # delete the existing release+tag, recreate at the current commit. The
+        # workflow-level concurrency group (cancel-in-progress=false) keeps a
+        # later dev push from interleaving with an in-flight publish so we
+        # never overwrite a fresher release with stale assets.
+        run: |
+          set -euo pipefail
+          dst="$RUNNER_TEMP/publish"
+          if gh release view "$FLOATING_TAG" >/dev/null 2>&1; then
+              gh release delete "$FLOATING_TAG" --yes --cleanup-tag
+          fi
+          # `git push --force origin :refs/tags/$FLOATING_TAG` would be the
+          # belt-and-braces way to drop a tag the release-delete missed; the
+          # --cleanup-tag flag covers the common case. The next `git tag -f`
+          # + `git push --force` recreates it at the new commit either way.
+          git tag -f "$FLOATING_TAG" "$COMMIT_SHA"
+          git push origin "refs/tags/$FLOATING_TAG" --force
+          gh release create "$FLOATING_TAG" \
+              --title "$FLOATING_TAG (${COMMIT_SHA:0:8})" \
+              --notes-file "$dst/PROVENANCE.md" \
+              --prerelease \
+              --target "$COMMIT_SHA" \
+              "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+              "$dst/manifest.json" \
+              "$dst/SHA256SUMS" \
+              "$dst/SHA256SUMS.minisig" \
+              "$dst/PROVENANCE.md"

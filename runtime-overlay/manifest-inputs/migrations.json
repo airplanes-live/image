@@ -1,0 +1,9 @@
+[
+  {
+    "id": "readsb-user-groups",
+    "type": "group_membership",
+    "run_when": "every_install",
+    "user": "readsb",
+    "groups": ["plugdev", "dialout"]
+  }
+]
