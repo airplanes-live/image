@@ -142,6 +142,16 @@ jobs:
           # shape on build_date.
           pip3 install --break-system-packages rfc3339-validator || true
 
+      - name: Allow unprivileged user namespaces (bwrap)
+        # Ubuntu 24.04 ships an AppArmor restriction
+        # (kernel.apparmor_restrict_unprivileged_userns=1) that breaks bwrap's
+        # uid map setup with "Permission denied". The tar1090 and graphs1090
+        # staging helpers rely on bwrap to mask host paths the upstream
+        # installers would otherwise mutate (/etc/lighttpd, /etc/collectd,
+        # /etc/cron.d, /lib/systemd/system, ...). Turn the restriction off
+        # for the duration of this job; the runner is ephemeral.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Source channel config
         # config-stable / config-dev export the upstream component pins
         # (AIRPLANES_READSB_DECODER_REPO/BRANCH etc.) the build helpers
