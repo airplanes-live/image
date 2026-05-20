@@ -158,7 +158,7 @@ for cmd in systemctl pkill service; do
     chmod 0755 "$SHIM_BIN/$cmd"
 done
 
-PATH_IN="$SHIM_BIN:/usr/bin:/bin"
+PATH_IN="$SHIM_BIN:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Pre-create bind mountpoints on the host. With `--ro-bind / /`, bwrap
 # cannot mkdir its own mountpoint dirs inside the read-only root, so any

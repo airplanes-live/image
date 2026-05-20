@@ -211,7 +211,7 @@ done
 #   $SHIM_BIN ahead of host PATH      → stub systemctl/pkill/service
 # Read-only everywhere else. /proc and /dev/null are useful for the install
 # script's misc calls.
-PATH_IN="$SHIM_BIN:/usr/bin:/bin"
+PATH_IN="$SHIM_BIN:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Pre-create bind mountpoints on the host. With `--ro-bind / /`, bwrap
 # cannot mkdir its own mountpoint dirs inside the read-only root, so any
