@@ -64,15 +64,17 @@ trap 'rm -f -- "$tmp"' EXIT
 
 {
     printf '# airplanes.live runtime overlay release\n\n'
-    printf '- Version: %s\n' "$version"
-    printf '- Channel: %s\n' "$channel"
-    printf '- Build date: %s\n' "$build_date"
+    # printf interprets a format starting with `-` as a flag. Use `--`
+    # so the leading markdown bullet is treated as the format string.
+    printf -- '- Version: %s\n' "$version"
+    printf -- '- Channel: %s\n' "$channel"
+    printf -- '- Build date: %s\n' "$build_date"
     # SC2016: backticks here are intentional markdown formatting, not a
     # command-substitution syntax.
     # shellcheck disable=SC2016
-    printf '- Overlay source commit: airplanes-live/image @ `%s`\n' "$overlay_sha"
+    printf -- '- Overlay source commit: airplanes-live/image @ `%s`\n' "$overlay_sha"
     if [[ -n "$RUN_URL" ]]; then
-        printf '- Workflow run: %s\n' "$RUN_URL"
+        printf -- '- Workflow run: %s\n' "$RUN_URL"
     fi
     printf '\n'
 
@@ -83,11 +85,11 @@ trap 'rm -f -- "$tmp"' EXIT
 
     printf '## Upstream licenses\n\n'
     printf 'See each upstream repository for license texts:\n\n'
-    printf '- readsb (wiedehopf fork): https://github.com/wiedehopf/readsb/blob/master/LICENSE\n'
-    printf '- dump978-fa: https://github.com/flightaware/dump978/blob/master/COPYING\n'
-    printf '- tar1090: https://github.com/wiedehopf/tar1090/blob/master/LICENSE\n'
-    printf '- tar1090-db: https://github.com/wiedehopf/tar1090-db/blob/master/LICENSE\n'
-    printf '- graphs1090: https://github.com/wiedehopf/graphs1090/blob/master/LICENSE\n'
+    printf -- '- readsb (wiedehopf fork): https://github.com/wiedehopf/readsb/blob/master/LICENSE\n'
+    printf -- '- dump978-fa: https://github.com/flightaware/dump978/blob/master/COPYING\n'
+    printf -- '- tar1090: https://github.com/wiedehopf/tar1090/blob/master/LICENSE\n'
+    printf -- '- tar1090-db: https://github.com/wiedehopf/tar1090-db/blob/master/LICENSE\n'
+    printf -- '- graphs1090: https://github.com/wiedehopf/graphs1090/blob/master/LICENSE\n'
     printf '\n'
 
     printf '## Verification\n\n'
