@@ -285,6 +285,17 @@ install -d -m 0755 \
 # runtime asset. Keep git-db/ — runtime aircraft DB lookups read from there.
 rm -rf -- "$SYSROOT$IPATH_ABS/git" || true
 
+# Drop git-db's .git/ metadata. The aircraft DB lookups read the working-tree
+# files; the .git/ dir is build-time clone artifact. We also repoint the
+# tar1090-db origin to a sink URL during the install, so on-device git ops
+# against this dir cannot succeed anyway — runtime DB updates flow through
+# the runtime-overlay release channel, not git pull. Strip it so the release
+# tarball stays small and SHA256SUMS doesn't list ~120 inert object files.
+rm -rf -- "$SYSROOT$IPATH_ABS/git-db/.git" || true
+# Same for the .gitignore that the upstream repo ships in git-db — also
+# pure source-tree metadata with no runtime role.
+rm -f -- "$SYSROOT$IPATH_ABS/git-db/.gitignore" || true
+
 cp -a "$SYSROOT$IPATH_ABS/." "$OUTPUT_DIR/share/tar1090/"
 
 # Capture the systemd unit.
