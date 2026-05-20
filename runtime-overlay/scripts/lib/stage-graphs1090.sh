@@ -190,6 +190,11 @@ ensure_mountpoint \
 # the host (stage 04 has the same pitfall — stage 07 reaps these in the
 # legacy build context). An isolated PID namespace makes the leaked
 # process die when bwrap tears down, no host-side reaper needed.
+#
+# SHIM_BIN sits under SCRATCH_DIR which is under /tmp; the --tmpfs /tmp
+# above masks it inside the sandbox. Bind it through so PATH lookup
+# against $SHIM_BIN resolves and the stubbed useradd/adduser/systemctl
+# actually run from the install.sh's perspective.
 bwrap \
     --unshare-pid \
     --ro-bind / / \
@@ -206,6 +211,7 @@ bwrap \
     --bind "$SYSROOT/var/lib/graphs1090"                   /var/lib/graphs1090 \
     --bind "$SYSROOT/var/lib/collectd"                     /var/lib/collectd \
     --bind "$SYSROOT/run/collectd"                         /run/collectd \
+    --ro-bind "$SHIM_BIN"                                  "$SHIM_BIN" \
     --bind "$BUILD_DIR"                                    "$BUILD_DIR" \
     --setenv PATH "$PATH_IN" \
     --chdir "$BUILD_DIR" \

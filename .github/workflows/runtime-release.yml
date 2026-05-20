@@ -38,6 +38,13 @@ on:
       # stages, top-level CI, docs) and shouldn't trigger a republish.
       - 'runtime-overlay/**'
       - '.github/workflows/runtime-release.yml'
+  pull_request:
+    # Also run on PRs touching the overlay or this workflow so build and
+    # gate failures surface before merge. The sign + publish jobs are
+    # gated below to skip on pull_request — PRs don't sign or publish.
+    paths:
+      - 'runtime-overlay/**'
+      - '.github/workflows/runtime-release.yml'
 
 permissions:
   contents: read
@@ -72,7 +79,11 @@ jobs:
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF: ${{ github.ref }}
-          GITHUB_SHA: ${{ github.sha }}
+          # On pull_request, github.sha is the synthetic merge SHA;
+          # github.event.pull_request.head.sha is the actual PR head
+          # commit, which is the one we want in the manifest.
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
           INPUT_CHANNEL: ${{ github.event.inputs.channel }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: bash runtime-overlay/scripts/release-workflow/resolve-channel-and-tags.sh
@@ -361,6 +372,10 @@ jobs:
   sign:
     name: Sign SHA256SUMS (minisign)
     needs: [resolve-channel-and-tags, verify]
+    # PRs don't sign — the minisign private key is a repo secret that
+    # shouldn't decrypt on pull_request events, and a PR run should not
+    # produce a signature that could be mistaken for an official one.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -428,6 +443,9 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     needs: [resolve-channel-and-tags, sign]
+    # PRs don't publish — needs an unskipped sign job, and a PR producing
+    # tags or releases would be obviously wrong.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

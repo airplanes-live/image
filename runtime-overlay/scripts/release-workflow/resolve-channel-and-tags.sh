@@ -131,6 +131,20 @@ case "$EVENT" in
             floating_tag="runtime-dev-latest"
         fi
         ;;
+    pull_request)
+        # PR runs are validation-only — the workflow's sign and publish
+        # jobs are gated to skip on pull_request. We still need a sane
+        # channel/version/immutable_tag so the build and verify jobs can
+        # render a manifest. Treat PR like a dev build keyed by PR number.
+        channel="dev"
+        base="$(latest_stable_version || true)"
+        [[ -n "$base" ]] || base="0.0.0"
+        pr_num="${GITHUB_PR_NUMBER:-0}"
+        version="${base}-dev-pr${pr_num}-${short_sha}"
+        immutable_tag="runtime-dev-pr${pr_num}-${short_sha}"
+        floating_tag=""
+        should_publish="false"
+        ;;
     *)
         die "unsupported event: $EVENT"
         ;;

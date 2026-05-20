@@ -235,6 +235,10 @@ ensure_mountpoint "$IPATH_ABS" /run/readsb
 # --unshare-pid: defense in depth — tar1090 install.sh is not known to
 # daemonize anything, but isolating the sandbox PID namespace means any
 # unexpected leak dies with bwrap exit instead of surviving on the host.
+# --tmpfs /tmp masks the host /tmp inside the sandbox, which would hide
+# both SCRATCH_DIR (containing SHIM_BIN) and BUILD_DIR. Bind them through
+# explicitly so PATH lookup against $SHIM_BIN resolves and install.sh
+# can reach its own source tree.
 bwrap \
     --unshare-pid \
     --ro-bind / / \
@@ -246,6 +250,7 @@ bwrap \
     --bind "$SYSROOT/etc/lighttpd"             /etc/lighttpd \
     --bind "$SYSROOT/etc/default"              /etc/default \
     --bind "$SYSROOT/run/readsb"               /run/readsb \
+    --ro-bind "$SHIM_BIN"                      "$SHIM_BIN" \
     --bind "$BUILD_DIR"                        "$BUILD_DIR" \
     --setenv PATH "$PATH_IN" \
     --chdir "$BUILD_DIR" \
