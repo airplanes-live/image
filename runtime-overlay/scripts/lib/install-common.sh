@@ -373,9 +373,11 @@ airplanes_runtime_verify_manifest_sha() {
 #
 # The release tarball expands to a tree of bin/, lib/, share/, systemd/,
 # etc/, migrations/ … and a manifest.json at the top. The tar's leading
-# directory is `v<version>/` (build-release.sh's contract). We extract it
-# WITHOUT --strip-components so the staging target carries the `v<version>/`
-# wrapper unaltered, then move it into place.
+# directory is `v<version>/` (build-release.sh's contract). We extract
+# with `--strip-components=1` so the staging target receives the inner
+# tree directly; the caller passes the absolute on-device release dir
+# (`/opt/airplanes-runtime/releases/v<version>/`) so the resulting layout
+# is the same as a hand-laid release.
 
 airplanes_runtime_extract_release_tarball() {
     local tarball="$1" target_dir="$2"
@@ -611,6 +613,15 @@ airplanes_runtime_backup_mutable_path() {
     install -d -m 700 "$preimage_dir"
     local enc
     enc="$(_airplanes_runtime_encode_path "$abs_path")"
+    # Write-once: if a preimage (or absent-marker) for this path already
+    # exists, leave it alone. Otherwise a second backup pass — from
+    # config_kv's per-migration preimage call running after the install
+    # pipeline's batch backup — would clobber the true original with an
+    # already-mutated intermediate state, leaving rollback unable to
+    # restore the file to its pre-install content.
+    if [[ -e "${preimage_dir}/${enc}" || -e "${preimage_dir}/${enc}.absent" ]]; then
+        return 0
+    fi
     local src="${target_root}${abs_path}"
     if [[ -e "$src" ]]; then
         cp -a -- "$src" "${preimage_dir}/${enc}"
@@ -677,6 +688,16 @@ _airplanes_runtime_applied_file_path() {
     printf '%s' "${target_root}/${AIRPLANES_RUNTIME_MIGRATIONS_APPLIED_REL}"
 }
 
+# Per-install-attempt completed list. Lives inside the new release dir so
+# it survives a helper restart but is scoped to this install attempt — a
+# rollback walks only this list, never the cross-install
+# /etc/airplanes/runtime-migrations.applied file (which records "ever
+# applied", not "applied in this attempt").
+_airplanes_runtime_attempt_file_path() {
+    local release_dir="$1"
+    printf '%s' "${release_dir}/.attempt-migrations.applied"
+}
+
 _airplanes_runtime_migration_recorded() {
     local target_root="$1" mid="$2"
     local f
@@ -685,28 +706,57 @@ _airplanes_runtime_migration_recorded() {
     grep -Fxq "$mid" "$f"
 }
 
+_airplanes_runtime_migration_attempted() {
+    local release_dir="$1" mid="$2"
+    local f
+    f="$(_airplanes_runtime_attempt_file_path "$release_dir")"
+    [[ -f "$f" ]] || return 1
+    grep -Fxq "$mid" "$f"
+}
+
 _airplanes_runtime_migration_record() {
-    local target_root="$1" mid="$2"
+    local target_root="$1" release_dir="$2" mid="$3"
     local f
     f="$(_airplanes_runtime_applied_file_path "$target_root")"
     install -d -m 755 "$(dirname "$f")"
     if ! _airplanes_runtime_migration_recorded "$target_root" "$mid"; then
         printf '%s\n' "$mid" >> "$f"
     fi
+    # Also record into the per-attempt file so rollback can walk just
+    # this attempt's completions.
+    local af
+    af="$(_airplanes_runtime_attempt_file_path "$release_dir")"
+    install -d -m 755 "$(dirname "$af")"
+    if ! _airplanes_runtime_migration_attempted "$release_dir" "$mid"; then
+        printf '%s\n' "$mid" >> "$af"
+    fi
 }
 
 _airplanes_runtime_migration_unrecord() {
-    local target_root="$1" mid="$2"
+    local target_root="$1" release_dir="$2" mid="$3"
     local f tmp
     f="$(_airplanes_runtime_applied_file_path "$target_root")"
-    [[ -f "$f" ]] || return 0
-    tmp="${f}.tmp.$$"
-    if ! grep -Fxv "$mid" "$f" > "$tmp"; then
-        # grep returns 1 when nothing matched after the inversion, i.e. the
-        # input was empty or every line was "$mid". Empty output is fine.
-        :
+    if [[ -f "$f" ]]; then
+        tmp="${f}.tmp.$$"
+        if ! grep -Fxv "$mid" "$f" > "$tmp"; then
+            # grep returns 1 when nothing matched after inversion, i.e.
+            # the input was empty or every line was "$mid". Empty output
+            # is fine.
+            :
+        fi
+        mv -Tf -- "$tmp" "$f"
     fi
-    mv -Tf -- "$tmp" "$f"
+    # Also strip from the per-attempt file so a re-run of rollback doesn't
+    # double-roll-back the same migration.
+    local af
+    af="$(_airplanes_runtime_attempt_file_path "$release_dir")"
+    if [[ -f "$af" ]]; then
+        tmp="${af}.tmp.$$"
+        if ! grep -Fxv "$mid" "$af" > "$tmp"; then
+            :
+        fi
+        mv -Tf -- "$tmp" "$af"
+    fi
 }
 
 # Apply a single migration forward. Returns 0 on success, non-zero on
@@ -756,7 +806,7 @@ _airplanes_runtime_migration_apply_forward() {
             ;;
     esac
 
-    _airplanes_runtime_migration_record "$target_root" "$mid"
+    _airplanes_runtime_migration_record "$target_root" "$release_dir" "$mid"
 }
 
 airplanes_runtime_run_migrations_forward() {
@@ -825,9 +875,15 @@ _airplanes_runtime_migration_apply_rollback() {
             ;;
     esac
 
-    _airplanes_runtime_migration_unrecord "$target_root" "$mid"
+    _airplanes_runtime_migration_unrecord "$target_root" "$release_dir" "$mid"
 }
 
+# Rollback walks the per-install-attempt completed list, not the
+# cross-install applied file. That distinction matters because some
+# migrations are `first_install_of_version` and were recorded as
+# "ever applied" on a previous successful install; we must NOT roll those
+# back when a later install attempt fails — that would undo work the
+# system depends on.
 airplanes_runtime_run_migrations_rollback() {
     local manifest="$1" release_dir="$2" target_root="$3"
     local count
@@ -836,7 +892,7 @@ airplanes_runtime_run_migrations_rollback() {
     for (( i = count - 1; i >= 0; i-- )); do
         local mid
         mid="$(jq -r ".migrations[$i].id" "$manifest")"
-        if _airplanes_runtime_migration_recorded "$target_root" "$mid"; then
+        if _airplanes_runtime_migration_attempted "$release_dir" "$mid"; then
             _airplanes_runtime_migration_apply_rollback "$manifest" "$i" "$release_dir" "$target_root" || return 1
         fi
     done
@@ -1007,28 +1063,53 @@ airplanes_runtime_relink_decoder_binaries() {
 # AIRPLANES_RUNTIME_PROBE_URL_BASE.
 
 # Returns 0 if URL responds 200 within the deadline. Polls every second.
+# Uses a wall-clock end timestamp and caps each curl's --max-time to the
+# remaining budget so a hanging socket can't extend total runtime far past
+# the declared deadline.
 _airplanes_runtime_probe_http_200() {
     local url="$1" deadline="$2"
-    local elapsed=0 code
-    while (( elapsed < deadline )); do
-        code="$(curl -fso /dev/null -w '%{http_code}' --max-time 5 "$url" || true)"
+    local end now code remaining curl_timeout
+    end=$(( $(date +%s) + deadline ))
+    while :; do
+        now="$(date +%s)"
+        remaining=$(( end - now ))
+        if (( remaining <= 0 )); then
+            echo "ERROR: HTTP probe never returned 200 within ${deadline}s: $url (last code=${code:-?})" >&2
+            return 1
+        fi
+        # Cap curl's per-call timeout to whatever budget is left, with a
+        # ceiling of 5s so a single slow probe can't burn the rest of the
+        # deadline.
+        curl_timeout=$(( remaining < 5 ? remaining : 5 ))
+        (( curl_timeout < 1 )) && curl_timeout=1
+        code="$(curl -fso /dev/null -w '%{http_code}' --max-time "$curl_timeout" "$url" || true)"
         if [[ "$code" == "200" ]]; then
             return 0
         fi
+        # Sleep up to 1s but never overshoot the deadline.
+        now="$(date +%s)"
+        remaining=$(( end - now ))
+        if (( remaining <= 0 )); then
+            echo "ERROR: HTTP probe never returned 200 within ${deadline}s: $url (last code=${code:-?})" >&2
+            return 1
+        fi
         sleep 1
-        elapsed=$(( elapsed + 1 ))
     done
-    echo "ERROR: HTTP probe never returned 200 within ${deadline}s: $url (last code=$code)" >&2
-    return 1
 }
 
 # Returns 0 if the file exists AND its mtime is within `max_age` seconds.
+# Wall-clock deadline (matching _airplanes_runtime_probe_http_200).
 _airplanes_runtime_probe_file_freshness() {
     local file="$1" max_age="$2" deadline="$3"
-    local elapsed=0 now mtime age
-    while (( elapsed < deadline )); do
+    local end now mtime age=0
+    end=$(( $(date +%s) + deadline ))
+    while :; do
+        now="$(date +%s)"
+        if (( now >= end )); then
+            echo "ERROR: $file did not become fresh within ${deadline}s (age=${age}s, max=${max_age}s)" >&2
+            return 1
+        fi
         if [[ -f "$file" ]]; then
-            now="$(date +%s)"
             mtime="$(stat -c %Y "$file" 2>/dev/null || echo 0)"
             age=$(( now - mtime ))
             if (( age <= max_age )); then
@@ -1036,10 +1117,7 @@ _airplanes_runtime_probe_file_freshness() {
             fi
         fi
         sleep 1
-        elapsed=$(( elapsed + 1 ))
     done
-    echo "ERROR: $file did not become fresh within ${deadline}s (age=${age:-?}s, max=${max_age}s)" >&2
-    return 1
 }
 
 # Parses a key-value state file (one `key=value` per line) and emits the
@@ -1070,8 +1148,14 @@ _airplanes_runtime_parse_state_kv() {
 # Anything else fails.
 _airplanes_runtime_probe_uat_state() {
     local file="$1" deadline="$2"
-    local elapsed=0 state reason
-    while (( elapsed < deadline )); do
+    local end now state="" reason=""
+    end=$(( $(date +%s) + deadline ))
+    while :; do
+        now="$(date +%s)"
+        if (( now >= end )); then
+            echo "ERROR: UAT state file never reached a valid (state, reason) combination within ${deadline}s: $file (state='${state}' reason='${reason}')" >&2
+            return 1
+        fi
         if [[ -f "$file" ]]; then
             state="$(_airplanes_runtime_parse_state_kv "$file" state)"
             reason="$(_airplanes_runtime_parse_state_kv "$file" reason)"
@@ -1082,10 +1166,7 @@ _airplanes_runtime_probe_uat_state() {
             esac
         fi
         sleep 1
-        elapsed=$(( elapsed + 1 ))
     done
-    echo "ERROR: UAT state file never reached a valid (state, reason) combination within ${deadline}s: $file (state='${state:-}' reason='${reason:-}')" >&2
-    return 1
 }
 
 # Runs every health gate, in declared order. Returns 0 only if every gate
@@ -1144,8 +1225,14 @@ import sys
 installed_str, range_str = sys.argv[1], sys.argv[2]
 
 def parse(s):
-    # Accept "X", "X.Y", "X.Y.Z" — return a 3-tuple.
-    m = re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?', s.strip())
+    # Accept "X", "X.Y", "X.Y.Z" — return a 3-tuple. Anchored at both ends
+    # so a string like "2.2.5-dev" does NOT satisfy a "<2.3.0" upper bound:
+    # the prerelease suffix on the installed version is a real ordering
+    # question (most semver pre-release rules sort prereleases BEFORE the
+    # same-triple stable). v1 treats anything with extra trailing junk as
+    # a parse error so the operator sees the mismatch instead of a silent
+    # downgrade or compat false-pass.
+    m = re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?$', s.strip())
     if not m:
         raise SystemExit(2)
     return tuple(int(g or 0) for g in m.groups())

@@ -102,3 +102,14 @@ JSON
     [ "$status" -ne 0 ]
     [[ "$output" == *"image base"* ]]
 }
+
+@test "installed version with trailing suffix does not silently satisfy" {
+    # The semver parser is anchored: '2.2.5-dev' must NOT silently match
+    # '2.2.5' against '<2.3.0'. We treat anything with extra trailing
+    # characters as a parse error so the operator sees the mismatch.
+    write_manifest_with_compat "$BATS_TEST_TMPDIR/manifest.json" \
+        '{ "requires_webconfig": ">=2.1.0,<2.3.0" }'
+    printf '{"version":"2.2.5-dev"}\n' > "$TARGET_ROOT/etc/airplanes/webconfig-release.json"
+    run airplanes_runtime_run_compat_preflight "$BATS_TEST_TMPDIR/manifest.json" "$TARGET_ROOT"
+    [ "$status" -ne 0 ]
+}

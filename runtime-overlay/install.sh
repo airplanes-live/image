@@ -79,10 +79,42 @@ fi
 RELEASE_VERSION="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$MANIFEST")"
 RELEASE_DIR_ABS="${TARGET_ROOT}/opt/airplanes-runtime/releases/v${RELEASE_VERSION}"
 
+# Compute PREV_RELEASE_DIR from the pre-flip current symlink. Empty if
+# there's no current yet (first install). The link target is always an
+# on-device-canonical path (`/opt/airplanes-runtime/releases/v<X>/`); for
+# downstream consumers under a build-mode rebase we surface it rebased so
+# shell migrations can stat it under TARGET_ROOT, while we compare the
+# link's literal target against the on-device equivalent of the new
+# release path.
+CURRENT_LINK="${TARGET_ROOT}/opt/airplanes-runtime/current"
+PREV_RELEASE_LINK_TARGET=""
+PREV_RELEASE_DIR=""
+if [[ -L "$CURRENT_LINK" ]]; then
+    PREV_RELEASE_LINK_TARGET="$(readlink "$CURRENT_LINK")"
+    if [[ -n "$TARGET_ROOT" ]]; then
+        PREV_RELEASE_DIR="${TARGET_ROOT}${PREV_RELEASE_LINK_TARGET}"
+    else
+        PREV_RELEASE_DIR="$PREV_RELEASE_LINK_TARGET"
+    fi
+fi
+export PREV_RELEASE_DIR
+
+# Same-version replay safety: if `current` already points at the dir we're
+# about to extract, refuse rather than rm -rf the live release. Compare
+# the link's literal target against the on-device equivalent of the new
+# release path (RELEASE_DIR_ABS stripped of TARGET_ROOT). The caller
+# (operator triage shell or B-2's helper) bumps the version or removes
+# `current` by hand to recover.
+NEW_RELEASE_ON_DEVICE="${RELEASE_DIR_ABS#"$TARGET_ROOT"}"
+if [[ -n "$PREV_RELEASE_LINK_TARGET" && "$PREV_RELEASE_LINK_TARGET" == "$NEW_RELEASE_ON_DEVICE" ]]; then
+    echo "ERROR: requested release ($NEW_RELEASE_ON_DEVICE) is the active 'current' target." >&2
+    echo "       Refusing to overwrite. Bump the version or remove 'current' first." >&2
+    exit 1
+fi
+
 if [[ -e "$RELEASE_DIR_ABS" ]]; then
-    # A prior incomplete install (or a deliberate re-run) of the same
-    # version: remove the staged dir so the extract is clean. Never touch
-    # `current` from here — that's the prior release the user is still on.
+    # A prior incomplete install of the same version that did NOT become
+    # current. Safe to remove and re-stage.
     rm -rf -- "$RELEASE_DIR_ABS"
 fi
 
