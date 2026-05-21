@@ -32,14 +32,21 @@ cp -a "${BASE_DIR}/runtime-overlay" "$RUNTIME_OVERLAY_SRC"
 # the subdir, not the repo — but belt-and-braces in case of submodule oddities).
 rm -rf -- "$RUNTIME_OVERLAY_SRC/.git"
 
-# Pubkey path override. install-common.sh defaults to
+# Pubkey path. install-common.sh defaults to
 # /usr/share/airplanes/runtime-release.pub which lives in the *target rootfs*,
 # not on the host where install.sh runs in build mode. Point it at the
 # in-repo copy that stage 00-prep installs into the rootfs from the same
-# file. The two paths are byte-identical (same source file on disk). Honour
-# a pre-set AIRPLANES_RUNTIME_MINISIGN_PUBKEY so the bats fixture (which
-# signs against a throwaway key) can swap it out without forking the stage.
-PUBKEY_HOST_PATH="${AIRPLANES_RUNTIME_MINISIGN_PUBKEY:-${BASE_DIR}/stage-airplanes/00-prep/files/usr/share/airplanes/runtime-release.pub}"
+# file (the two paths are byte-identical — same source file on disk).
+#
+# Test fixtures sign releases with a throwaway key and need an escape hatch.
+# Gate that escape hatch behind an explicit opt-in env var so a stray env
+# variable in CI cannot silently downgrade verification to a test key.
+PUBKEY_HOST_PATH="${BASE_DIR}/stage-airplanes/00-prep/files/usr/share/airplanes/runtime-release.pub"
+if [[ "${AIRPLANES_RUNTIME_BUILD_TEST_PUBKEY:-0}" == "1" \
+		&& -n "${AIRPLANES_RUNTIME_MINISIGN_PUBKEY:-}" ]]; then
+	PUBKEY_HOST_PATH="$AIRPLANES_RUNTIME_MINISIGN_PUBKEY"
+	echo "stage 02-install-runtime-overlay: TEST pubkey override active: $PUBKEY_HOST_PATH" >&2
+fi
 if [[ ! -r "$PUBKEY_HOST_PATH" ]]; then
 	echo "ERROR: runtime-release pubkey missing at $PUBKEY_HOST_PATH" >&2
 	exit 1

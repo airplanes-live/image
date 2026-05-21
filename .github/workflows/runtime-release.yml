@@ -270,6 +270,20 @@ jobs:
           # if no shell migrations are declared yet (current state).
           mkdir -p "$RUNNER_TEMP/staging/migrations"
 
+          # The on-device self-update helper (lib/runtime-self-update.sh) and
+          # the boot-time recovery oneshot (lib/airplanes-runtime-update-recover.sh)
+          # both source scripts/lib/install-common.sh by walking their pinned
+          # _self_dir; on a feeder the canonical location is
+          # /opt/airplanes-runtime/current/scripts/lib/install-common.sh. Ship
+          # the file in the release tarball so the symlink chain through
+          # `current` resolves it. The build-mode install path under stage
+          # 02-install-runtime-overlay uses the source-tree copy directly,
+          # not this packaged one — symptomatic of two different consumers
+          # of the same library.
+          mkdir -p "$RUNNER_TEMP/staging/scripts/lib"
+          cp -a runtime-overlay/scripts/lib/install-common.sh \
+              "$RUNNER_TEMP/staging/scripts/lib/install-common.sh"
+
       - name: Aggregate components.json
         run: |
           bash runtime-overlay/scripts/lib/aggregate-components-json.sh \

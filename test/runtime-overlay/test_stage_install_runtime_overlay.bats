@@ -145,6 +145,7 @@ teardown() {
         ARCH="$ARCH" \
         AIRPLANES_RUNTIME_OVERLAY_TAG="$REL_TAG" \
         AIRPLANES_RUNTIME_DOWNLOAD_BASE="http://127.0.0.1:$PORT" \
+        AIRPLANES_RUNTIME_BUILD_TEST_PUBKEY=1 \
         AIRPLANES_RUNTIME_MINISIGN_PUBKEY="$KEY_DIR/test.pub" \
         bash "$REPO_ROOT/stage-airplanes/02-install-runtime-overlay/00-run.sh"
 
@@ -196,6 +197,7 @@ teardown() {
         ROOTFS_DIR="$ROOTFS_DIR" \
         ARCH="$ARCH" \
         AIRPLANES_RUNTIME_DOWNLOAD_BASE="http://127.0.0.1:$PORT" \
+        AIRPLANES_RUNTIME_BUILD_TEST_PUBKEY=1 \
         AIRPLANES_RUNTIME_MINISIGN_PUBKEY="$KEY_DIR/test.pub" \
         bash "$REPO_ROOT/stage-airplanes/02-install-runtime-overlay/00-run.sh"
     [ "$status" -ne 0 ]
