@@ -1,0 +1,15 @@
+[Unit]
+Description=Resume an interrupted airplanes runtime overlay update
+DefaultDependencies=no
+After=local-fs.target
+Before=readsb.service airplanes-978.service dump978-fa.service airplanes-tar1090-uat-sync.service
+RequiresMountsFor=/opt /var/lib/airplanes-runtime-upgrade
+ConditionPathExists=/opt/airplanes-runtime/current/lib/airplanes-runtime-update-recover.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/airplanes-runtime/current/lib/airplanes-runtime-update-recover.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -103,8 +103,8 @@ export PREV_RELEASE_DIR
 # about to extract, refuse rather than rm -rf the live release. Compare
 # the link's literal target against the on-device equivalent of the new
 # release path (RELEASE_DIR_ABS stripped of TARGET_ROOT). The caller
-# (operator triage shell or B-2's helper) bumps the version or removes
-# `current` by hand to recover.
+# (operator triage shell or runtime-self-update.sh) bumps the version or
+# removes `current` by hand to recover.
 NEW_RELEASE_ON_DEVICE="${RELEASE_DIR_ABS#"$TARGET_ROOT"}"
 if [[ -n "$PREV_RELEASE_LINK_TARGET" && "$PREV_RELEASE_LINK_TARGET" == "$NEW_RELEASE_ON_DEVICE" ]]; then
     echo "ERROR: requested release ($NEW_RELEASE_ON_DEVICE) is the active 'current' target." >&2
