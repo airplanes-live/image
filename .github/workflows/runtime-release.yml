@@ -300,7 +300,7 @@ jobs:
         run: |
           bash runtime-overlay/scripts/release-workflow/pack-release-tarball.sh \
               --release-dir "$RUNNER_TEMP/release/v$VERSION" \
-              --output "$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz"
+              --output "$RUNNER_TEMP/release/$IMMUTABLE_TAG-arm64.tar.gz"
 
       - name: Compose publish-level SHA256SUMS
         # The release tree's internal SHA256SUMS (written by build-release.sh)
@@ -312,7 +312,7 @@ jobs:
         run: |
           set -euo pipefail
           publish_dir="$RUNNER_TEMP/release/v$VERSION"
-          tarball="$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz"
+          tarball="$RUNNER_TEMP/release/$IMMUTABLE_TAG-arm64.tar.gz"
           out="$RUNNER_TEMP/release/SHA256SUMS"
           tmp="$(mktemp)"
           # Use basename-only paths in the checksum file so consumers can
@@ -496,7 +496,7 @@ jobs:
               "$src/PROVENANCE.md" \
               "$dst/"
           cp -- \
-              "$RUNNER_TEMP/release/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+              "$RUNNER_TEMP/release/$IMMUTABLE_TAG-arm64.tar.gz" \
               "$RUNNER_TEMP/release/SHA256SUMS" \
               "$RUNNER_TEMP/release/SHA256SUMS.minisig" \
               "$dst/"
@@ -532,7 +532,7 @@ jobs:
                   --notes-file "$dst/PROVENANCE.md" \
                   --latest \
                   --target "$COMMIT_SHA" \
-                  "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+                  "$dst/$IMMUTABLE_TAG-arm64.tar.gz" \
                   "$dst/manifest.json" \
                   "$dst/SHA256SUMS" \
                   "$dst/SHA256SUMS.minisig" \
@@ -543,7 +543,7 @@ jobs:
                   --notes-file "$dst/PROVENANCE.md" \
                   --prerelease \
                   --target "$COMMIT_SHA" \
-                  "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+                  "$dst/$IMMUTABLE_TAG-arm64.tar.gz" \
                   "$dst/manifest.json" \
                   "$dst/SHA256SUMS" \
                   "$dst/SHA256SUMS.minisig" \
@@ -574,7 +574,7 @@ jobs:
               --notes-file "$dst/PROVENANCE.md" \
               --prerelease \
               --target "$COMMIT_SHA" \
-              "$dst/runtime-$IMMUTABLE_TAG-arm64.tar.gz" \
+              "$dst/$IMMUTABLE_TAG-arm64.tar.gz" \
               "$dst/manifest.json" \
               "$dst/SHA256SUMS" \
               "$dst/SHA256SUMS.minisig" \
