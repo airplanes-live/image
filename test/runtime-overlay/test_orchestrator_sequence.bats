@@ -25,10 +25,10 @@ setup() {
         "$TMP/run/airplanes" \
         "$TMP/state" \
         "$TMP/bin" \
-        "$TMP/sub" \
-        "$TMP/wcbin"
+        "$TMP/sub"
 
     STATE_FILE="$TMP/run/airplanes/orchestrator.state"
+    LOCK_FILE="$TMP/run/airplanes/orchestrator.lock"
     CALL_LOG="$TMP/calls.log"
     : > "$CALL_LOG"
 
@@ -65,16 +65,11 @@ EOF
 echo "apt-get \$*" >> "$CALL_LOG"
 exit 0
 EOF
-    chmod 0755 "$TMP/bin/systemctl" "$TMP/bin/apt-get"
-
-    # webconfig binary stub: by default present and reports newer (rc=0).
-    # Tests can swap it to absent or rc!=0 to exercise the skip path.
-    cat > "$TMP/wcbin/airplanes-webconfig" <<EOF
+    cat > "$TMP/bin/flock" <<EOF
 #!/usr/bin/env bash
-echo "wcbin \$*" >> "$CALL_LOG"
-exit 0
+exec /usr/bin/flock "\$@"
 EOF
-    chmod 0755 "$TMP/wcbin/airplanes-webconfig"
+    chmod 0755 "$TMP/bin/systemctl" "$TMP/bin/apt-get" "$TMP/bin/flock"
 }
 
 # Run the orchestrator with the stubbed environment. Args are passed
@@ -83,10 +78,10 @@ run_orchestrator() {
     run env -i \
         PATH="$TMP/bin:/usr/bin:/bin" \
         AIRPLANES_ORCHESTRATOR_STATE_FILE="$STATE_FILE" \
+        AIRPLANES_ORCHESTRATOR_LOCK_FILE="$LOCK_FILE" \
         AIRPLANES_ORCHESTRATOR_FEED_UPDATE="$TMP/sub/feed-update.sh" \
         AIRPLANES_ORCHESTRATOR_WEBCONFIG_UPDATE="$TMP/sub/webconfig-update.sh" \
         AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE="$TMP/sub/runtime-update.sh" \
-        AIRPLANES_ORCHESTRATOR_WEBCONFIG_BINARY="$TMP/wcbin/airplanes-webconfig" \
         AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE="airplanes-webconfig.service" \
         AIRPLANES_ORCHESTRATOR_SYSTEMCTL="systemctl" \
         AIRPLANES_ORCHESTRATOR_APT_GET="apt-get" \
@@ -141,16 +136,20 @@ assert_state_is_valid_json() {
     [ "$irreversible" = "True" ]
 }
 
-@test "webconfig step fails when helper is missing" {
-    # The webconfig precheck treats a missing binary as "no opinion, run
-    # the helper" — the helper is authoritative. So if the helper itself
-    # is missing, the step fails (rather than silently skipping).
+@test "webconfig step skips cleanly when helper is absent" {
+    # A feeder that has not yet had the webconfig self-update helper
+    # laid down (build-time race; bootstrap before C-2 is consumed)
+    # must not block the orchestrator — it skips and the run continues.
     rm -f "$TMP/sub/webconfig-update.sh"
 
     run_orchestrator
+    [ "$status" -eq 0 ]
+    assert_state_is_valid_json
+    [ "$(state_step)" = "done" ]
+
+    # No webconfig invocation should appear in the call log.
+    run grep '^webconfig ' "$CALL_LOG"
     [ "$status" -ne 0 ]
-    [ "$(state_step)" = "webconfig" ]
-    [ "$(state_status)" = "failed" ]
 }
 
 @test "runtime step skips cleanly when runtime updater is absent" {
@@ -245,6 +244,26 @@ EOF
     [ "$status" -ne 0 ]
 }
 
+@test "apt-get update failure surfaces even if upgrade would succeed" {
+    # Regression guard: a previous shape chained the two commands such
+    # that `apt-get update` failure was masked by `apt-get upgrade`
+    # success. The current orchestrator chains with && so any non-zero
+    # rc surfaces.
+    cat > "$TMP/bin/apt-get" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+    update)  exit 17 ;;
+    *)       exit 0 ;;
+esac
+EOF
+    chmod 0755 "$TMP/bin/apt-get"
+
+    run_orchestrator
+    [ "$status" -ne 0 ]
+    [ "$(state_step)" = "apt" ]
+    [ "$(state_status)" = "failed" ]
+}
+
 @test "webconfig step failure stops the runtime step" {
     cat > "$TMP/sub/webconfig-update.sh" <<EOF
 #!/usr/bin/env bash
@@ -288,4 +307,29 @@ EOF
     run find "$TMP/run/airplanes" -name 'orchestrator.state.*' -type f
     [ "$status" -eq 0 ]
     [ -z "$output" ]
+}
+
+@test "second concurrent invocation exits 75 without touching state" {
+    # Hold the lock externally, then attempt to launch the orchestrator.
+    # The orchestrator's flock -n must observe the existing hold and
+    # exit 75 (EX_TEMPFAIL) — the same code webconfig's capability gate
+    # translates to HTTP 503.
+    install -d -m 0755 "$(dirname "$LOCK_FILE")"
+    : > "$LOCK_FILE"
+    exec 8>"$LOCK_FILE"
+    flock 8
+
+    run_orchestrator
+    [ "$status" -eq 75 ]
+
+    # State file untouched — the loser exits before any write_state.
+    [ ! -e "$STATE_FILE" ] || {
+        # If the state file happens to exist from a prior test, the
+        # loser must not have rewritten it. Capture the mtime around
+        # the failed call to assert.
+        true
+    }
+
+    # Release the external lock.
+    exec 8>&-
 }

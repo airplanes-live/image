@@ -10,10 +10,14 @@
 #                   (/usr/local/share/airplanes/update.sh). After this step
 #                   succeeds, SIGHUP airplanes-webconfig so any feed-env
 #                   schema changes are picked up.
-#   3. webconfig  — invoke the webconfig self-update helper, but only when
-#                   its dry-run reports a newer release is available.
-#   4. runtime    — invoke the runtime-overlay self-update helper under the
-#                   same "only if newer" precheck.
+#   3. webconfig  — invoke the webconfig self-update helper. The helper is
+#                   the source of truth for "is anything newer" — it does
+#                   its own preflight against the release channel and
+#                   no-ops cleanly when nothing is pending. A coarse
+#                   "helper exists and is executable" gate skips the step
+#                   entirely on feeders that have not yet had it laid down.
+#   4. runtime    — same shape as webconfig: invoke unconditionally when
+#                   the helper is present; skip otherwise.
 #
 # Each step writes /run/airplanes/orchestrator.state atomically before and
 # after running so an HTTP poller (GET /api/orchestrator/state) can render
@@ -24,6 +28,16 @@
 # (the runtime step deliberately flips it) does not desync subsequent
 # logic — though this script does not source anything else from its own
 # directory, the pinning keeps logging output truthful.
+#
+# Sudoers / privilege boundary
+# ----------------------------
+# In production the orchestrator is invoked via a sudoers-pinned
+# `systemd-run --unit=airplanes-update-orchestrator.service ... start-orchestrator.sh`
+# (C-2 work, separate repo). sudoers' env_reset gives a clean environment
+# so the AIRPLANES_ORCHESTRATOR_* overrides below are not exploitable by
+# the unprivileged webconfig service account that triggers the start.
+# The overrides exist for bats-driven test isolation only; the defaults
+# are absolute paths so a production invocation never reads them.
 
 set -Eeuo pipefail
 
@@ -36,15 +50,32 @@ readonly _self_dir
 # ---------------------------------------------------------------------------
 
 : "${AIRPLANES_ORCHESTRATOR_STATE_FILE:=/run/airplanes/orchestrator.state}"
+: "${AIRPLANES_ORCHESTRATOR_LOCK_FILE:=/run/airplanes/orchestrator.lock}"
 : "${AIRPLANES_ORCHESTRATOR_FEED_UPDATE:=/usr/local/share/airplanes/update.sh}"
 : "${AIRPLANES_ORCHESTRATOR_WEBCONFIG_UPDATE:=/usr/local/lib/airplanes-webconfig/webconfig-self-update.sh}"
 : "${AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE:=/opt/airplanes-runtime/current/lib/runtime-self-update.sh}"
-: "${AIRPLANES_ORCHESTRATOR_WEBCONFIG_BINARY:=/usr/local/bin/airplanes-webconfig}"
 : "${AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE:=airplanes-webconfig.service}"
 : "${AIRPLANES_ORCHESTRATOR_SYSTEMCTL:=systemctl}"
 : "${AIRPLANES_ORCHESTRATOR_APT_GET:=apt-get}"
 
 readonly STATE_FILE="$AIRPLANES_ORCHESTRATOR_STATE_FILE"
+readonly LOCK_FILE="$AIRPLANES_ORCHESTRATOR_LOCK_FILE"
+
+# ---------------------------------------------------------------------------
+# Flock — acquired before any state-file write or sub-helper invocation so
+# two concurrent root invocations (e.g. a botched systemd-run that bypasses
+# the unit-name dedup, or a manual root retry alongside an in-flight run)
+# serialise rather than racing on apt and the per-component self-updaters.
+# A losing invocation exits 75 (EX_TEMPFAIL) without touching the state
+# file — the webconfig capability gate translates that to HTTP 503.
+# ---------------------------------------------------------------------------
+
+install -d -m 0755 "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "orchestrator: another update is in progress (lock held: $LOCK_FILE)" >&2
+    exit 75
+fi
 
 # ---------------------------------------------------------------------------
 # State file — JSON with atomic write via tmp + mv -f.
@@ -155,32 +186,15 @@ run_step() {
     return "$rc"
 }
 
-# webconfig_has_newer — best-effort precheck: only invoke the webconfig
-# self-updater when something is actually pending. The helper is safe to
-# run when nothing is newer (it no-ops cleanly), but skipping spares the
-# orchestrator the restart/health-probe noise on the common no-op path.
-#
-# Resolution heuristic: ask the webconfig binary itself via a one-shot
-# subcommand. If the binary is missing, or it doesn't support the probe,
-# treat that as "no opinion available, run the helper" — the helper is
-# the source of truth.
-webconfig_has_newer() {
-    if [[ ! -x "$AIRPLANES_ORCHESTRATOR_WEBCONFIG_BINARY" ]]; then
-        return 0
-    fi
-    if ! "$AIRPLANES_ORCHESTRATOR_WEBCONFIG_BINARY" --check-update >/dev/null 2>&1; then
-        # Treat probe failure or unknown subcommand as "run anyway"; the
-        # helper's own preflight is authoritative.
-        return 0
-    fi
-    return 0
-}
-
-# runtime_has_newer — same shape as webconfig_has_newer but for the
-# runtime overlay. The self-updater itself runs the comparison; the
-# precheck here is a coarse "is the helper even present" guard.
-runtime_has_newer() {
-    [[ -x "$AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE" ]]
+# helper_present <path> — coarse "skip this step entirely" gate for the
+# webconfig and runtime-overlay self-update helpers. Both helpers run
+# their own preflight against the release channel and no-op cleanly when
+# nothing is newer, so we do not attempt a separate dry-run here — the
+# helper is the source of truth. The gate exists so feeders that have
+# not yet had the helper laid down (build-time race; bootstrap before
+# C-2 is consumed) skip without surfacing a hard failure.
+helper_present() {
+    [[ -x "$1" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -192,18 +206,21 @@ runtime_has_newer() {
 
 # shellcheck disable=SC2317  # invoked indirectly via run_step
 step_apt() {
-    # Mark the irreversibility flag the moment we start the apt step. Any
-    # subsequent state writes mirror it.
-    APT_IRREVERSIBLE=1
-
     local apt_get="$AIRPLANES_ORCHESTRATOR_APT_GET"
     if ! command -v "$apt_get" >/dev/null 2>&1; then
+        # No apt-get on PATH — environment is degraded, but the apt step
+        # cannot do work and has not made any system mutations. Surface
+        # as a skip rather than a hard failure so the rest of the
+        # orchestrator can still run.
         echo "orchestrator: apt-get not found in PATH; skipping apt step" >&2
-        APT_IRREVERSIBLE=0
         return 0
     fi
-    DEBIAN_FRONTEND=noninteractive "$apt_get" update
-    DEBIAN_FRONTEND=noninteractive "$apt_get" -y upgrade
+    # Chain with && so any non-zero rc surfaces. APT_IRREVERSIBLE is
+    # raised BEFORE the first command so a hang or crash mid-run still
+    # records the right value in the next state-file write.
+    APT_IRREVERSIBLE=1
+    DEBIAN_FRONTEND=noninteractive "$apt_get" update \
+        && DEBIAN_FRONTEND=noninteractive "$apt_get" -y upgrade
 }
 
 # shellcheck disable=SC2317  # invoked indirectly via run_step
@@ -271,8 +288,11 @@ trap on_err ERR
 # fact running again.
 write_state idle running ""
 
-# apt — fatal on failure (irreversible). Continue if it succeeds.
+# apt — fatal on failure (irreversible). Raise APT_IRREVERSIBLE BEFORE
+# the `running` state-file write so a poller that lands during the apt
+# mutation window observes the correct flag.
 CURRENT_STEP="apt"
+APT_IRREVERSIBLE=1
 if ! run_step apt step_apt; then
     exit 1
 fi
@@ -285,11 +305,12 @@ if ! run_step feed step_feed; then
 fi
 step_feed_hup
 
-# webconfig — only invoke if something is newer. The helper is idempotent
-# but skipping its noise on the common no-op path matters for UX.
+# webconfig — skip when the helper has not been laid down yet; otherwise
+# invoke unconditionally and let the helper's own preflight decide
+# whether anything is actually newer.
 CURRENT_STEP="webconfig"
 STARTED_AT="$(iso8601_now)"
-if webconfig_has_newer; then
+if helper_present "$AIRPLANES_ORCHESTRATOR_WEBCONFIG_UPDATE"; then
     write_state webconfig running ""
     if ! step_webconfig; then
         write_state webconfig failed "webconfig self-update exited non-zero" "$(iso8601_now)"
@@ -304,7 +325,7 @@ STARTED_AT=""
 # runtime-overlay — same gating shape as webconfig.
 CURRENT_STEP="runtime"
 STARTED_AT="$(iso8601_now)"
-if runtime_has_newer; then
+if helper_present "$AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE"; then
     write_state runtime running ""
     if ! step_runtime; then
         write_state runtime failed "runtime self-update exited non-zero" "$(iso8601_now)"
