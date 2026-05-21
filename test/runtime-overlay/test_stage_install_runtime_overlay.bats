@@ -179,10 +179,14 @@ teardown() {
     [ -L "$ROOTFS_DIR/usr/bin/dump978-fa" ]
     [ "$(readlink "$ROOTFS_DIR/usr/bin/dump978-fa")" = "/opt/airplanes-runtime/current/bin/dump978-fa" ]
 
-    # Runtime-manifest pointer was wired even though build mode skips
-    # systemd/health/gc.
-    [ -L "$ROOTFS_DIR/etc/airplanes/runtime-manifest.json" ]
-    [ "$(readlink "$ROOTFS_DIR/etc/airplanes/runtime-manifest.json")" = "/opt/airplanes-runtime/current/manifest.json" ]
+    # Runtime-manifest pointer is a regular file copy in build mode so
+    # host-side consumers (scripts/manifest-generator.sh in stage 07) can
+    # read it. The first runtime self-update on-device replaces this with
+    # a symlink to current/manifest.json.
+    [ -f "$ROOTFS_DIR/etc/airplanes/runtime-manifest.json" ]
+    [ ! -L "$ROOTFS_DIR/etc/airplanes/runtime-manifest.json" ]
+    # Content is parseable JSON with a version field matching the release tag.
+    jq -e '.version' "$ROOTFS_DIR/etc/airplanes/runtime-manifest.json" >/dev/null
 
     # Build sentinel for the runtime overlay source SHA.
     [ -s "$ROOTFS_DIR/etc/airplanes/.build-runtime-overlay-sha" ]
