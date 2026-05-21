@@ -68,3 +68,17 @@ export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-master}"
 
 export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
 export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-master}"
+
+# Runtime overlay release tag pinned for the dev image build. Bumped by
+# hand when a new runtime release should bake into fresh dev image flashes.
+# On-device dev updaters consume the floating runtime-dev-latest tag and
+# don't care about this pin.
+export AIRPLANES_RUNTIME_OVERLAY_TAG="${AIRPLANES_RUNTIME_OVERLAY_TAG:-runtime-dev-20260521-395b9b8}"
+
+# Legacy decoder stages (02-install-decoder, 03-install-tar1090,
+# 04-install-graphs1090) stay in-tree but are SKIP'd in favour of stage
+# 02-install-runtime-overlay when this is 0. Flip to 1 to bisect a build
+# break by going back to the in-chroot compile path. Per-component pins
+# above stay consumed by both the legacy stages (when this flag is 1) and
+# the runtime-release workflow (always).
+export AIRPLANES_USE_LEGACY_DECODER_STAGES="${AIRPLANES_USE_LEGACY_DECODER_STAGES:-0}"

@@ -330,13 +330,25 @@ airplanes_runtime_verify_manifest_version() {
         echo "ERROR: manifest.json missing version field (path: $manifest)" >&2
         return 1
     fi
-    # The `runtime-dev-latest` floating tag has no version embedded in its
-    # name; accept any dev-formatted version when the resolved tag was the
-    # floating one. The immutable-tag variant carries an explicit version
-    # and is checked exactly.
+    # The floating `runtime-dev-latest` tag has no version in its name;
+    # accept any dev-formatted version. Immutable dev tags
+    # (`runtime-dev-YYYYMMDD-<sha>`) embed a date and short SHA but the
+    # manifest's `version` field still uses the schema's
+    # `MAJOR.MINOR.PATCH-dev-YYYYMMDD-<sha>` shape (currently
+    # `0.0.0-dev-YYYYMMDD-<sha>`), so a strict string compare would always
+    # fail. Map the tag suffix into the manifest's version suffix and
+    # accept any matching dev-formatted version.
     if [[ "$expected_tag" == "runtime-dev-latest" ]]; then
         if [[ ! "$got" =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev-[0-9]{8}-[0-9a-f]{7,40}$ ]]; then
             echo "ERROR: manifest.json version=$got is not a dev-formatted version for floating tag $expected_tag" >&2
+            return 1
+        fi
+        return 0
+    fi
+    if [[ "$expected_tag" =~ ^runtime-dev-([0-9]{8})-([0-9a-f]{7,40})$ ]]; then
+        local tag_date="${BASH_REMATCH[1]}" tag_sha="${BASH_REMATCH[2]}"
+        if [[ ! "$got" =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev-${tag_date}-${tag_sha}$ ]]; then
+            echo "ERROR: manifest.json version=$got does not match immutable dev tag $expected_tag (expected suffix -dev-${tag_date}-${tag_sha})" >&2
             return 1
         fi
         return 0
@@ -1441,10 +1453,15 @@ airplanes_runtime_run_install_steps() {
     airplanes_runtime_relink_decoder_binaries "$target_root" || return 1
     airplanes_runtime_apply_managed_paths "$manifest" "$release_dir" "$target_root" || return 1
 
+    # The runtime-manifest pointer is meaningful in both modes. At runtime
+    # it lets the orchestrator inspect the active release; at build time
+    # manifest-generator.sh reads component SHAs through it. Pure symlink
+    # update, no systemd or network — safe to run in build mode.
+    airplanes_runtime_record_runtime_manifest "$target_root" || return 1
+
     if ! airplanes_runtime_is_build_mode; then
         airplanes_runtime_apply_systemd_ops "$manifest" || return 1
         airplanes_runtime_run_health_gates "$target_root" || return 1
-        airplanes_runtime_record_runtime_manifest "$target_root" || return 1
         airplanes_runtime_gc_old_releases "$target_root" || return 1
     fi
 }

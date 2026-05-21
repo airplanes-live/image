@@ -76,3 +76,17 @@ export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-758ddafab66fb
 
 export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
 export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889de2a8f63f2b40133ea72a08537ce}"
+
+# Runtime overlay release tag pinned for the stable image build. Set to a
+# placeholder until the first runtime-vX.Y.Z release is cut; the stable
+# channel keeps the legacy in-chroot decoder path until the runtime overlay
+# soaks on dev. Bump to a concrete runtime-vX.Y.Z when the legacy stages
+# are removed.
+export AIRPLANES_RUNTIME_OVERLAY_TAG="${AIRPLANES_RUNTIME_OVERLAY_TAG:-runtime-v0.0.0-unreleased}"
+
+# Legacy decoder stages (02-install-decoder, 03-install-tar1090,
+# 04-install-graphs1090) build readsb / dump978 / tar1090 / graphs1090 in
+# the chroot. Stable keeps this path until the runtime overlay soaks on
+# dev; the runtime-overlay stage is SKIP'd at 1. Per-component pins above
+# remain consumed by both the legacy stages and the runtime-release workflow.
+export AIRPLANES_USE_LEGACY_DECODER_STAGES="${AIRPLANES_USE_LEGACY_DECODER_STAGES:-1}"
