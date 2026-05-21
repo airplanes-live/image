@@ -21,9 +21,18 @@
 # so install.sh's $_self_dir resolution does not point at a path inside the
 # staging chroot. We are airplanes-live/image — runtime-overlay/ in BASE_DIR
 # is the same source the runtime-release.yml workflow consumed to build the
-# pinned release. The scratch copy is unsigned/no-.git, so install.sh's
-# build-mode commit_sha cross-check skips cleanly; the
-# manifest-version ↔ release-tag check still pins tag↔manifest identity.
+# pinned release.
+#
+# Build-mode commit_sha cross-check: install.sh's `git -C "$_self_dir"
+# rev-parse HEAD` walks UP from the scratch dir, finding any ancestor .git
+# (including the image repo's own under BASE_DIR if the scratch path sits
+# inside it). The check then compares the image repo's HEAD to the
+# release's manifest commit_sha, which mismatches whenever the PR head
+# differs from the pinned-release commit. That's the normal state of any
+# PR. Set AIRPLANES_RUNTIME_SKIP_SOURCE_SHA_CHECK=1 to bypass — the
+# device installs the release tarball, not the in-tree source, so the
+# source-matches-release invariant isn't load-bearing here. Minisign +
+# manifest-version still pin tag↔manifest↔tarball.
 RUNTIME_OVERLAY_SRC="${ROOTFS_DIR}/var/tmp/airplanes-runtime-overlay-src"
 rm -rf -- "$RUNTIME_OVERLAY_SRC"
 install -d -m 755 "$(dirname "$RUNTIME_OVERLAY_SRC")"
@@ -69,6 +78,7 @@ env \
 	ARCH="$ARCH" \
 	AIRPLANES_RUNTIME_OVERLAY_TAG="$AIRPLANES_RUNTIME_OVERLAY_TAG" \
 	AIRPLANES_RUNTIME_MINISIGN_PUBKEY="$PUBKEY_HOST_PATH" \
+	AIRPLANES_RUNTIME_SKIP_SOURCE_SHA_CHECK=1 \
 	bash "$RUNTIME_OVERLAY_SRC/install.sh" --build-mode
 
 rm -rf -- "$RUNTIME_OVERLAY_SRC"

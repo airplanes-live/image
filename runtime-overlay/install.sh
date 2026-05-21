@@ -58,14 +58,27 @@ airplanes_runtime_verify_manifest_version "$MANIFEST" "$TAG"
 if airplanes_runtime_is_build_mode; then
     # The build-mode caller cloned this source tree at the same ref that
     # produced the binary; assert the release's manifest matches.
-    EXPECTED_SHA="$(git -C "$_self_dir" rev-parse HEAD 2>/dev/null || true)"
-    if [[ -n "$EXPECTED_SHA" ]]; then
-        airplanes_runtime_verify_manifest_sha "$MANIFEST" "$EXPECTED_SHA"
+    #
+    # AIRPLANES_RUNTIME_SKIP_SOURCE_SHA_CHECK=1 disables this assertion for
+    # in-tree usage where the cloned source IS the image repo (not a
+    # separate runtime-overlay clone) and the image build pins to an
+    # older published runtime-release tag than the image repo HEAD. The
+    # device installs the release tarball, not the in-tree source files,
+    # so the source-matches-release invariant is not load-bearing in that
+    # configuration. The minisign signature on SHA256SUMS plus the
+    # manifest-version cross-check still pin tag↔manifest↔tarball.
+    if [[ "${AIRPLANES_RUNTIME_SKIP_SOURCE_SHA_CHECK:-0}" == "1" ]]; then
+        echo "runtime-overlay install: AIRPLANES_RUNTIME_SKIP_SOURCE_SHA_CHECK=1; skipping commit_sha cross-check"
     else
-        # No git context (e.g. release tarball extracted into a non-git
-        # tree). Skip rather than refuse — the manifest-version cross-check
-        # already pinned the tag↔manifest mapping.
-        echo "runtime-overlay install: no git context under $_self_dir; skipping commit_sha cross-check"
+        EXPECTED_SHA="$(git -C "$_self_dir" rev-parse HEAD 2>/dev/null || true)"
+        if [[ -n "$EXPECTED_SHA" ]]; then
+            airplanes_runtime_verify_manifest_sha "$MANIFEST" "$EXPECTED_SHA"
+        else
+            # No git context (e.g. release tarball extracted into a non-git
+            # tree). Skip rather than refuse — the manifest-version cross-check
+            # already pinned the tag↔manifest mapping.
+            echo "runtime-overlay install: no git context under $_self_dir; skipping commit_sha cross-check"
+        fi
     fi
 fi
 
