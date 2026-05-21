@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 
-# Tests for stage-airplanes/06b-console-dashboard/00-run.sh gating the
-# render-status + ASCII assets + motd hook installs on
-# AIRPLANES_USE_LEGACY_DECODER_STAGES. The dashboard service unit and the
-# getty@tty1 override stay unconditional regardless of the flag.
+# Tests for stage-airplanes/06b-console-dashboard/00-run.sh's idempotent
+# install of render-status + ASCII assets + motd hook. The block installs
+# image-side UNLESS the runtime-overlay path already placed the files (via
+# stage-airplanes/02-install-runtime-overlay running ahead of 06b). The
+# dashboard service unit and getty@tty1 override stay unconditional.
 
 bats_require_minimum_version 1.5.0
 
@@ -17,32 +18,14 @@ setup() {
 }
 
 run_06b() {
-    # 06b's 00-run.sh runs in stage-airplanes/06b-console-dashboard/ via
-    # pi-gen's `(cd "$STAGE_DIR" && ./00-run.sh)` pattern.
     env \
         BASE_DIR="$REPO_ROOT" \
         ROOTFS_DIR="$ROOTFS_DIR" \
-        AIRPLANES_USE_LEGACY_DECODER_STAGES="$1" \
         bash -c "cd \"$REPO_ROOT/stage-airplanes/06b-console-dashboard\" && ./00-run.sh"
 }
 
-@test "flag=0 (overlay path): render-status + assets + motd hook NOT installed image-side" {
-    run run_06b 0
-    [ "$status" -eq 0 ]
-    [ ! -e "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" ]
-    [ ! -e "$ROOTFS_DIR/usr/local/share/airplanes/logo.txt" ]
-    [ ! -e "$ROOTFS_DIR/usr/local/share/airplanes/banner.txt" ]
-    [ ! -e "$ROOTFS_DIR/usr/local/share/airplanes/banner-narrow.txt" ]
-    [ ! -e "$ROOTFS_DIR/usr/local/share/airplanes/icon.txt" ]
-    [ ! -e "$ROOTFS_DIR/etc/update-motd.d/10-airplanes-status" ]
-
-    # Dashboard service + getty override are always image-owned.
-    [ -f "$ROOTFS_DIR/etc/systemd/system/airplanes-dashboard.service" ]
-    [ -f "$ROOTFS_DIR/etc/systemd/system/getty@tty1.service.d/override.conf" ]
-}
-
-@test "flag=1 (legacy path): render-status + assets + motd hook are installed" {
-    run run_06b 1
+@test "render-status absent: 06b installs the image-owned fallback" {
+    run run_06b
     [ "$status" -eq 0 ]
     [ -x "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" ]
     [ -f "$ROOTFS_DIR/usr/local/share/airplanes/logo.txt" ]
@@ -51,16 +34,47 @@ run_06b() {
     [ -f "$ROOTFS_DIR/usr/local/share/airplanes/icon.txt" ]
     [ -x "$ROOTFS_DIR/etc/update-motd.d/10-airplanes-status" ]
 
+    # Dashboard service + getty override are always image-owned.
     [ -f "$ROOTFS_DIR/etc/systemd/system/airplanes-dashboard.service" ]
     [ -f "$ROOTFS_DIR/etc/systemd/system/getty@tty1.service.d/override.conf" ]
 }
 
-@test "unset flag defaults to overlay (=0)" {
-    run env \
-        BASE_DIR="$REPO_ROOT" \
-        ROOTFS_DIR="$ROOTFS_DIR" \
-        bash -c "cd \"$REPO_ROOT/stage-airplanes/06b-console-dashboard\" && ./00-run.sh"
+@test "render-status already symlinked into runtime overlay: 06b skips it" {
+    # Simulate 02-install-runtime-overlay having run ahead of 06b.
+    install -d -m 755 "$ROOTFS_DIR/usr/local/lib/airplanes"
+    install -d -m 755 "$ROOTFS_DIR/opt/airplanes-runtime/current/lib/airplanes"
+    : > "$ROOTFS_DIR/opt/airplanes-runtime/current/lib/airplanes/render-status"
+    chmod 0755 "$ROOTFS_DIR/opt/airplanes-runtime/current/lib/airplanes/render-status"
+    ln -sf /opt/airplanes-runtime/current/lib/airplanes/render-status \
+        "$ROOTFS_DIR/usr/local/lib/airplanes/render-status"
+
+    run run_06b
     [ "$status" -eq 0 ]
-    [ ! -e "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" ]
+
+    # 06b should NOT have replaced the symlink with a regular file.
+    [ -L "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" ]
+    [ "$(readlink "$ROOTFS_DIR/usr/local/lib/airplanes/render-status")" \
+      = "/opt/airplanes-runtime/current/lib/airplanes/render-status" ]
+
+    # 06b should NOT have installed the image-owned ASCII assets either.
+    [ ! -e "$ROOTFS_DIR/usr/local/share/airplanes/logo.txt" ]
+    [ ! -e "$ROOTFS_DIR/etc/update-motd.d/10-airplanes-status" ]
+
+    # Dashboard service + getty override still land unconditionally.
     [ -f "$ROOTFS_DIR/etc/systemd/system/airplanes-dashboard.service" ]
+    [ -f "$ROOTFS_DIR/etc/systemd/system/getty@tty1.service.d/override.conf" ]
+}
+
+@test "render-status as plain file already present: 06b leaves it alone" {
+    # Defensive case: prior stage (not the overlay) put a real file there.
+    install -d -m 755 "$ROOTFS_DIR/usr/local/lib/airplanes"
+    printf '#!/bin/bash\necho prior\n' > "$ROOTFS_DIR/usr/local/lib/airplanes/render-status"
+    chmod 0755 "$ROOTFS_DIR/usr/local/lib/airplanes/render-status"
+    prior_sha=$(sha256sum "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" | cut -d' ' -f1)
+
+    run run_06b
+    [ "$status" -eq 0 ]
+
+    new_sha=$(sha256sum "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" | cut -d' ' -f1)
+    [ "$prior_sha" = "$new_sha" ]
 }
