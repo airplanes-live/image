@@ -44,6 +44,7 @@ jobs:
                    stage-airplanes/**/files/**/airplanes-first-run \
                    stage-airplanes/**/files/**/airplanes-grant-sudo \
                    runtime-overlay/src/lib/airplanes/render-status \
+                   runtime-overlay/src/lib/*.sh \
                    runtime-overlay/src/etc/update-motd.d/10-airplanes-status \
                    runtime-overlay/src/share/airplanes/*.sh \
                    test/*.sh; do
@@ -530,7 +531,15 @@ jobs:
               runtime-overlay/src/systemd/dump978-fa.service \
               runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.service \
               runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.path \
+              runtime-overlay/src/systemd/airplanes-runtime-update-recover.service \
               "$ROOT/etc/systemd/system/"
+          # The recover unit's ConditionPathExists / ExecStart resolve at
+          # runtime against /opt/airplanes-runtime/current/lib/...; stub
+          # those out so the unit's syntax verifies regardless of where
+          # the runtime overlay is shipped from.
+          mkdir -p "$ROOT/opt/airplanes-runtime/current/lib"
+          install -m 0755 /dev/null \
+              "$ROOT/opt/airplanes-runtime/current/lib/airplanes-runtime-update-recover.sh"
           install -m 0644 image-webconfig/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06c-grant-sudo/files/etc/systemd/system/*.service \
@@ -585,6 +594,7 @@ jobs:
               tar1090.service \
               airplanes-tar1090-uat-sync.service \
               airplanes-tar1090-uat-sync.path \
+              airplanes-runtime-update-recover.service \
               graphs1090.service \
               airplanes-webconfig.service \
               airplanes-webconfig-reset.service

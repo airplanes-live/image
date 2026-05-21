@@ -4,10 +4,10 @@
 # install/update path.
 #
 # Sourced by:
-#   - runtime-overlay/install.sh                       (build mode + runtime mode)
-#   - runtime-overlay/update.sh                        (runtime mode shim)
-#   - runtime-overlay/src/lib/runtime-self-update.sh   (state-machine wrapper around install.sh,
-#                                                       lands in a follow-up change)
+#   - runtime-overlay/install.sh                              (build mode + runtime mode)
+#   - runtime-overlay/update.sh                               (runtime mode shim)
+#   - runtime-overlay/src/lib/runtime-self-update.sh          (state-machine wrapper)
+#   - runtime-overlay/src/lib/airplanes-runtime-update-recover.sh (boot recovery oneshot)
 #
 # Naming: every function declared here is `airplanes_runtime_*`. Variables that
 # the caller may override (download base, repo URL, lock path, etc.) are
@@ -1447,4 +1447,167 @@ airplanes_runtime_run_install_steps() {
         airplanes_runtime_record_runtime_manifest "$target_root" || return 1
         airplanes_runtime_gc_old_releases "$target_root" || return 1
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Upgrade state file
+# ---------------------------------------------------------------------------
+#
+# Helpers consumed by the self-update orchestrator and the boot-time recovery
+# oneshot. The state file lives at
+# ${target_root}/var/lib/airplanes-runtime-upgrade/upgrade-state and persists
+# the position of an in-flight upgrade across a power loss so the boot-time
+# recovery script can finish or undo whatever the orchestrator started.
+#
+# Format: one key=value pair per line. Recognised keys:
+#   state         one of:
+#                   CLEAN | STARTED | PAYLOAD_EXTRACTED |
+#                   MIGRATIONS_FORWARD_DONE | SYMLINK_FLIPPED |
+#                   SYSTEMD_OPS_DONE | HEALTH_RUNNING | HEALTH_PASSED |
+#                   INSTALLED | FAILED_PRE_MUTATION | ROLLED_BACK_<from>_TO_<to>
+#   prev_release  absolute path the `current` symlink targeted at STARTED.
+#                 Preserved across the entire attempt so a recovery from
+#                 SYMLINK_FLIPPED still knows what to roll back to.
+#   new_release   absolute path of the release dir being installed.
+#   started_at    RFC3339 UTC timestamp the attempt was opened at.
+#   failure_reason optional free-text reason captured on terminal failure.
+
+# Path constants; uppercase so a caller can override per test (the test
+# fixture rebases STATE_DIR under BATS_TEST_TMPDIR).
+AIRPLANES_RUNTIME_STATE_DIR_REL="${AIRPLANES_RUNTIME_STATE_DIR_REL:-var/lib/airplanes-runtime-upgrade}"
+AIRPLANES_RUNTIME_STATE_FILE_NAME="${AIRPLANES_RUNTIME_STATE_FILE_NAME:-upgrade-state}"
+AIRPLANES_RUNTIME_LOCK_FILE="${AIRPLANES_RUNTIME_LOCK_FILE:-/run/airplanes/runtime-update.lock}"
+
+airplanes_runtime_state_dir() {
+    local target_root="$1"
+    printf '%s/%s' "${target_root%/}" "$AIRPLANES_RUNTIME_STATE_DIR_REL"
+}
+
+airplanes_runtime_state_file() {
+    local target_root="$1"
+    printf '%s/%s' "$(airplanes_runtime_state_dir "$target_root")" \
+        "$AIRPLANES_RUNTIME_STATE_FILE_NAME"
+}
+
+# Create the state directory with the documented mode. Idempotent.
+airplanes_runtime_ensure_state_dir() {
+    local target_root="$1"
+    install -d -m 755 "$(airplanes_runtime_state_dir "$target_root")"
+}
+
+# Read a single key from the state file. Echoes the value or empty string.
+# Caller distinguishes "key missing" from "value empty" via the broader
+# state-read which checks `state=` is present and recognised.
+airplanes_runtime_state_get() {
+    local target_root="$1" key="$2"
+    local f
+    f="$(airplanes_runtime_state_file "$target_root")"
+    [[ -r "$f" ]] || { printf ''; return 0; }
+    awk -F= -v k="$key" '
+        $0 ~ "^[[:space:]]*"k"=" {
+            sub("^[[:space:]]*"k"=", "")
+            sub("[[:space:]]*$", "")
+            print
+            exit
+        }
+    ' "$f"
+}
+
+# Read the state name. Echoes one of the documented state strings, or CLEAN
+# when the file is absent. A malformed/empty file echoes UNKNOWN so the
+# caller can fail-closed.
+airplanes_runtime_state_read() {
+    local target_root="$1"
+    local f
+    f="$(airplanes_runtime_state_file "$target_root")"
+    if [[ ! -e "$f" ]]; then
+        printf 'CLEAN'
+        return 0
+    fi
+    local s
+    s="$(airplanes_runtime_state_get "$target_root" state)"
+    if [[ -z "$s" ]]; then
+        printf 'UNKNOWN'
+        return 0
+    fi
+    printf '%s' "$s"
+}
+
+# Atomic state write. Re-uses any prev_release / new_release / started_at
+# values already present in the file unless the caller overrides them via
+# the optional named arguments. Layout (intentionally rigid so a partial
+# read mid-rename never sees a different shape):
+#
+#   state=<state>
+#   prev_release=<abs path or empty>
+#   new_release=<abs path or empty>
+#   started_at=<RFC3339 UTC>
+#   failure_reason=<free text, only when supplied>
+#
+# Usage:
+#   airplanes_runtime_state_write <target_root> <state> \
+#       [prev_release=<path>] [new_release=<path>] \
+#       [started_at=<rfc3339>] [failure_reason=<text>]
+airplanes_runtime_state_write() {
+    local target_root="$1" new_state="$2"; shift 2
+    airplanes_runtime_ensure_state_dir "$target_root"
+
+    local prev_release new_release started_at failure_reason
+    prev_release="$(airplanes_runtime_state_get "$target_root" prev_release)"
+    new_release="$(airplanes_runtime_state_get "$target_root"  new_release)"
+    started_at="$(airplanes_runtime_state_get  "$target_root"  started_at)"
+    failure_reason=""
+
+    local kv
+    for kv in "$@"; do
+        case "$kv" in
+            prev_release=*)   prev_release="${kv#prev_release=}" ;;
+            new_release=*)    new_release="${kv#new_release=}" ;;
+            started_at=*)     started_at="${kv#started_at=}" ;;
+            failure_reason=*) failure_reason="${kv#failure_reason=}" ;;
+            *)
+                echo "ERROR: airplanes_runtime_state_write: unknown kv pair: $kv" >&2
+                return 2
+                ;;
+        esac
+    done
+
+    local f tmp
+    f="$(airplanes_runtime_state_file "$target_root")"
+    tmp="${f}.tmp.$$"
+    if ! {
+        printf 'state=%s\n'        "$new_state"
+        printf 'prev_release=%s\n' "$prev_release"
+        printf 'new_release=%s\n'  "$new_release"
+        printf 'started_at=%s\n'   "$started_at"
+        if [[ -n "$failure_reason" ]]; then
+            printf 'failure_reason=%s\n' "$failure_reason"
+        fi
+    } > "$tmp"; then
+        echo "ERROR: airplanes_runtime_state_write: write to $tmp failed (state=$new_state)" >&2
+        rm -f -- "$tmp"
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    # sync the file's data so a power-loss between this and the rename
+    # commit on ext4 still sees the staged content. Non-fatal if -d is
+    # unsupported by the host (the directory sync below covers the rename).
+    sync -d "$tmp" 2>/dev/null || true
+    if ! mv -Tf -- "$tmp" "$f"; then
+        echo "ERROR: airplanes_runtime_state_write: rename $tmp -> $f failed (state=$new_state)" >&2
+        rm -f -- "$tmp"
+        return 1
+    fi
+    sync -d "$(airplanes_runtime_state_dir "$target_root")" 2>/dev/null || true
+    return 0
+}
+
+# Clear the state file (after a terminal good state has been acted on, or
+# before a fresh attempt). Removes the file rather than writing CLEAN — an
+# absent file is the canonical CLEAN representation.
+airplanes_runtime_state_clear() {
+    local target_root="$1"
+    local f
+    f="$(airplanes_runtime_state_file "$target_root")"
+    rm -f -- "$f"
 }

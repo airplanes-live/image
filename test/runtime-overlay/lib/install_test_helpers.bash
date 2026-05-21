@@ -61,6 +61,83 @@ mk_target_root() {
         "$r/usr/bin" \
         "$r/run/readsb" \
         "$r/run/airplanes-978" \
-        "$r/run/dump978-fa"
+        "$r/run/dump978-fa" \
+        "$r/var/lib/airplanes-runtime-upgrade" \
+        "$r/run/airplanes"
     printf '%s' "$r"
+}
+
+# Write a state file under <target_root> with the supplied state name and
+# optional `key=value` extras (prev_release=..., new_release=...,
+# started_at=..., failure_reason=...). Used by the recovery tests to
+# synthesise each row of the recovery matrix.
+mk_state_file() {
+    local target_root="$1" state="$2"; shift 2
+    local dir="$target_root/var/lib/airplanes-runtime-upgrade"
+    install -d -m 755 "$dir"
+    {
+        printf 'state=%s\n' "$state"
+        local kv
+        for kv in "$@"; do
+            printf '%s\n' "$kv"
+        done
+    } > "$dir/upgrade-state"
+    chmod 0644 "$dir/upgrade-state"
+}
+
+# Read the `state=` value from <target_root>'s upgrade-state file.
+read_state() {
+    local target_root="$1"
+    local f="$target_root/var/lib/airplanes-runtime-upgrade/upgrade-state"
+    [[ -r "$f" ]] || { printf ''; return 0; }
+    awk -F= '/^state=/ { sub(/^state=/, ""); print; exit }' "$f"
+}
+
+# Stage a synthetic release directory tree under <target_root> at
+# /opt/airplanes-runtime/releases/v<version>/. Writes a minimal manifest
+# the recovery + rollback paths can read. Echoes the absolute release dir.
+mk_target_release() {
+    local target_root="$1" version="$2"
+    local d="$target_root/opt/airplanes-runtime/releases/v$version"
+    install -d -m 755 \
+        "$d/bin" \
+        "$d/lib" \
+        "$d/share/airplanes" \
+        "$d/systemd" \
+        "$d/lib/airplanes" \
+        "$d/migrations" \
+        "$d/etc"
+    : > "$d/bin/readsb"
+    chmod 755 "$d/bin/readsb"
+    cat > "$d/manifest.json" <<JSON
+{
+    "version": "$version",
+    "channel": "stable",
+    "commit_sha": "0000000000000000000000000000000000000000",
+    "build_date": "2026-05-20T00:00:00Z",
+    "arches": ["arm64"],
+    "components": { "readsb_wiedehopf": "0000000" },
+    "managed_paths": [],
+    "mutable_paths": [],
+    "systemd": { "enable": [], "daemon_reload": true },
+    "migrations": []
+}
+JSON
+    printf '%s' "$d"
+}
+
+# Stage a systemctl shim that logs every invocation into <log> and exits
+# 0. Returns the directory the shim was placed in (caller prepends to
+# PATH).
+mk_systemctl_shim() {
+    local shim_dir="$1" log="$2"
+    install -d -m 755 "$shim_dir"
+    : > "$log"
+    cat > "$shim_dir/systemctl" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$log"
+exit 0
+EOF
+    chmod 755 "$shim_dir/systemctl"
+    printf '%s' "$shim_dir"
 }
