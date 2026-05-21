@@ -1,13 +1,21 @@
 #!/bin/bash -e
 
-# Legacy decoder path installs render-status + ASCII assets + the motd hook
-# here, image-owned. The runtime-overlay path owns them via the release
-# tarball's managed_paths and the symlink chain into
-# /opt/airplanes-runtime/current/, so this block sits behind the same flag
-# stage prerun.sh uses to gate stages 02/03/04. Dashboard service unit and
-# getty override below stay unconditional — they're version-stable
-# infrastructure that doesn't need runtime updates.
-if [[ "${AIRPLANES_USE_LEGACY_DECODER_STAGES:-0}" == "1" ]]; then
+# Install render-status + ASCII assets + motd hook image-owned UNLESS the
+# runtime-overlay path has already placed them. Presence-of-symlink-target
+# is the discriminator rather than an env flag, so any stage enumeration
+# that runs 06b without first running 02-install-runtime-overlay (e.g.
+# feed-overlay-smoke's docker container, which iterates stages without
+# honouring SKIP files) still gets a working dashboard. Under the new
+# path, 02-install-runtime-overlay already laid a symlink under
+# current/lib/airplanes/render-status before 06b runs, so this block is a
+# no-op. Dashboard service unit and getty override below stay unconditional
+# — they're version-stable infrastructure that doesn't need runtime updates.
+# -L checks for a symlink regardless of target validity (the overlay symlink
+# uses an absolute /opt/airplanes-runtime/... target that only resolves in
+# the live rootfs, not in chroot-time tests). -e covers a regular file
+# placed by some other stage. Either present → 06b is a no-op.
+if [[ ! -L "${ROOTFS_DIR}/usr/local/lib/airplanes/render-status" \
+      && ! -e "${ROOTFS_DIR}/usr/local/lib/airplanes/render-status" ]]; then
 	install -D -m 755 "${BASE_DIR:-.}/runtime-overlay/src/lib/airplanes/render-status" \
 	    "${ROOTFS_DIR}/usr/local/lib/airplanes/render-status"
 
