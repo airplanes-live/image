@@ -8,6 +8,14 @@ name: build-image
 #   push to dev — post-merge validation. Every merge to dev rebuilds.
 #   push to a stable/v* tag — release build with channel=stable. Cut a tag
 #       on main: `git tag stable/v0.1.0 && git push origin stable/v0.1.0`.
+#   pull_request — runs on PRs that touch image-build inputs (pi-gen stages,
+#       configs, build scripts, runtime overlay, this workflow). PR runs
+#       always build the dev channel; they upload the image as an artifact
+#       but never publish a release or push a tag. The paths filter keeps
+#       PRs that only touch tests, docs, or unrelated files from spending
+#       the multi-hour native-arm64 build budget. cancel-in-progress under
+#       the existing concurrency block tears down stale runs when a PR is
+#       updated, so only the latest commit's build holds a slot.
 
 on:
   workflow_dispatch:
@@ -24,6 +32,26 @@ on:
     # rulesets gate `stable/v*` tag creation on prior CI status.
     branches: [dev, main]
     tags: ['stable/v*']
+  pull_request:
+    # Only fire on PRs that actually affect what the image build produces.
+    # Excludes PRs that only touch tests, docs, .claude/, or the runtime-
+    # release workflow (which has its own pull_request trigger).
+    paths:
+      - 'stage-airplanes/**'
+      - 'stage0/**'
+      - 'stage1/**'
+      - 'stage2/**'
+      - 'config-dev'
+      - 'config-stable'
+      - 'runtime-overlay/**'
+      - 'scripts/**'
+      - 'depends'
+      - 'Dockerfile'
+      - 'build.sh'
+      - 'build-docker.sh'
+      - 'export-image/**'
+      - 'export-noobs/**'
+      - '.github/workflows/build-image.yml'
 
 permissions:
   contents: read
