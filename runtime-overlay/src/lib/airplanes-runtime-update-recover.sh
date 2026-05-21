@@ -48,6 +48,11 @@ STATE="$(airplanes_runtime_state_read "$TARGET_ROOT")"
 PREV="$(airplanes_runtime_state_get "$TARGET_ROOT" prev_release)"
 NEW="$(airplanes_runtime_state_get  "$TARGET_ROOT" new_release)"
 
+# Surfaced to shell rollback scripts so they can stat prior-release
+# files (mirroring runtime-self-update.sh's contract).
+PREV_RELEASE_DIR="$PREV"
+export PREV_RELEASE_DIR
+
 echo "runtime-update-recover: state=$STATE prev=$PREV new=$NEW"
 
 # Helper: flip current back to the prior release. If prev is empty (no
@@ -142,8 +147,14 @@ case "$STATE" in
         # was interrupted. Complete it: write the runtime manifest
         # pointer, GC old releases, mark INSTALLED. Do NOT roll back —
         # the live release is the good one.
-        airplanes_runtime_record_runtime_manifest "$TARGET_ROOT" || true
-        airplanes_runtime_gc_old_releases "$TARGET_ROOT" || true
+        if ! airplanes_runtime_record_runtime_manifest "$TARGET_ROOT"; then
+            echo "ERROR: runtime-update-recover: manifest pointer write failed; leaving HEALTH_PASSED for retry on next boot" >&2
+            exit 1
+        fi
+        # GC is best-effort; leaving an extra historical release is
+        # harmless. Failure here does not block marking INSTALLED.
+        airplanes_runtime_gc_old_releases "$TARGET_ROOT" || \
+            echo "WARN: runtime-update-recover: GC of old releases reported a failure (non-fatal)" >&2
         airplanes_runtime_state_write "$TARGET_ROOT" INSTALLED
         ;;
     INSTALLED|FAILED_PRE_MUTATION)

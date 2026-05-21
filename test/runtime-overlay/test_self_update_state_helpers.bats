@@ -91,3 +91,25 @@ setup() {
     run stat -c '%a' "$f"
     [ "$output" = "644" ]
 }
+
+@test "state_write returns non-zero when the parent dir is read-only" {
+    # Remove the state dir BEFORE locking the parent so ensure_state_dir's
+    # install -d fails. ensure_state_dir's `install -d -m 755` overrides
+    # any chmod we apply to the state dir directly, so we must break
+    # the next-higher level instead.
+    rm -rf "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade"
+    chmod 0555 "$TARGET_ROOT/var/lib"
+
+    run airplanes_runtime_state_write "$TARGET_ROOT" STARTED
+    rc=$status
+    chmod 0755 "$TARGET_ROOT/var/lib"
+
+    [ "$rc" -ne 0 ]
+}
+
+@test "state_write rejects unknown key=value pairs" {
+    run airplanes_runtime_state_write "$TARGET_ROOT" STARTED \
+        "unknown_key=value"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unknown kv pair"* ]]
+}

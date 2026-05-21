@@ -64,6 +64,19 @@ fi
 
 TARGET_ROOT="$(airplanes_runtime_target_root)"
 
+# Persist state or abort. A state-write failure means we cannot
+# distinguish forward-progress from rollback on the next boot — there
+# is no safe way to continue once we have lost write access to the
+# state file. The caller surfaces the failure (we are pre-mutation if
+# called before STARTED is reached, otherwise the in-flight rollback
+# walks back from whatever the LAST successful state-write was).
+_state_write_or_die() {
+    if ! airplanes_runtime_state_write "$TARGET_ROOT" "$@"; then
+        echo "FATAL: runtime-self-update: state-file write failed (args: $*); aborting" >&2
+        exit 1
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Refuse re-entry on a dirty state
 # ---------------------------------------------------------------------------
@@ -111,11 +124,14 @@ echo "runtime-self-update: arch=$ARCH_NAME channel=$CHANNEL tag=$TAG target_root
 
 # pre_mutation_fail — record FAILED_PRE_MUTATION and exit. No on-disk
 # mutation has happened yet; the next attempt clears this terminal state
-# and starts fresh.
+# and starts fresh. A failure to persist the terminal state itself is
+# surfaced (exit 1) but the next attempt will overwrite the prior file
+# anyway.
 pre_mutation_fail() {
     local reason="$1"
     airplanes_runtime_state_write "$TARGET_ROOT" FAILED_PRE_MUTATION \
-        "failure_reason=$reason"
+        "failure_reason=$reason" || \
+        echo "ERROR: pre_mutation_fail: could not persist FAILED_PRE_MUTATION" >&2
     exit 1
 }
 
@@ -170,7 +186,7 @@ fi
 # ---------------------------------------------------------------------------
 
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-airplanes_runtime_state_write "$TARGET_ROOT" STARTED \
+_state_write_or_die STARTED \
     "prev_release=$PREV_RELEASE_DIR" \
     "new_release=$RELEASE_DIR_ABS" \
     "started_at=$STARTED_AT"
@@ -287,7 +303,8 @@ roll_back_and_exit() {
     new_label="${new_label%/}"
     airplanes_runtime_state_write "$TARGET_ROOT" \
         "ROLLED_BACK_${new_label}_TO_${prev_label}" \
-        "failure_reason=$reason"
+        "failure_reason=$reason" || \
+        echo "ERROR: roll_back_and_exit: could not persist ROLLED_BACK terminal state" >&2
 
     exit "$rc"
 }
@@ -296,21 +313,32 @@ roll_back_and_exit() {
 # Forward walk
 # ---------------------------------------------------------------------------
 
-# PAYLOAD_EXTRACTED
+# State-write convention: every state checkpoint is written BEFORE the
+# operation it labels, so a power-loss after the state-write but before
+# the operation completes recovers through the same rollback path as one
+# where the operation finished. The .attempt-migrations.applied file
+# tracks per-migration completion so a partial migration set rolls back
+# cleanly regardless of where in MIGRATIONS_FORWARD_DONE we crashed.
+
+# PAYLOAD_EXTRACTED — write FIRST so a power-loss mid-extract (which
+# leaves a partial tree under RELEASE_DIR_ABS) recovers by removing the
+# scratch dir.
+_state_write_or_die PAYLOAD_EXTRACTED
 if ! airplanes_runtime_extract_release_tarball \
         "$WORK_DIR/${TAG}-${ARCH_NAME}.tar.gz" \
         "$RELEASE_DIR_ABS"; then
-    # Extract may have written a partial tree under RELEASE_DIR_ABS;
-    # walk through rollback so the partial tree is cleaned up.
-    airplanes_runtime_state_write "$TARGET_ROOT" PAYLOAD_EXTRACTED
     roll_back_and_exit 1 "extract_failed"
 fi
-airplanes_runtime_state_write "$TARGET_ROOT" PAYLOAD_EXTRACTED
 
 # The manifest in the release dir is the one downstream steps trust.
 RELEASE_MANIFEST="$RELEASE_DIR_ABS/manifest.json"
 
-# MIGRATIONS_FORWARD_DONE
+# MIGRATIONS_FORWARD_DONE — write BEFORE the first live-state mutation
+# (preimage backup + forward migrations). A crash in this window
+# recovers by running rollback against the per-attempt completion file
+# (which only contains migrations that fully forward-applied) and
+# restoring preimages.
+_state_write_or_die MIGRATIONS_FORWARD_DONE
 if ! airplanes_runtime_backup_all_mutable_paths \
         "$RELEASE_MANIFEST" "$RELEASE_DIR_ABS" "$TARGET_ROOT"; then
     roll_back_and_exit 1 "mutable_backup_failed"
@@ -319,9 +347,11 @@ if ! airplanes_runtime_run_migrations_forward \
         "$RELEASE_MANIFEST" "$RELEASE_DIR_ABS" "$TARGET_ROOT"; then
     roll_back_and_exit 1 "migrations_forward_failed"
 fi
-airplanes_runtime_state_write "$TARGET_ROOT" MIGRATIONS_FORWARD_DONE
 
-# SYMLINK_FLIPPED
+# SYMLINK_FLIPPED — write BEFORE flip_current so a crash mid-flip
+# recovers by reverting the symlink (which may or may not have been
+# moved, mv -Tf is atomic so it is in one of two valid states).
+_state_write_or_die SYMLINK_FLIPPED
 NEW_RELEASE_ON_DEVICE="${RELEASE_DIR_ABS#"$TARGET_ROOT"}"
 if ! airplanes_runtime_flip_current "$NEW_RELEASE_ON_DEVICE" "$TARGET_ROOT"; then
     roll_back_and_exit 1 "symlink_flip_failed"
@@ -333,26 +363,26 @@ if ! airplanes_runtime_apply_managed_paths \
         "$RELEASE_MANIFEST" "$RELEASE_DIR_ABS" "$TARGET_ROOT"; then
     roll_back_and_exit 1 "managed_paths_failed"
 fi
-airplanes_runtime_state_write "$TARGET_ROOT" SYMLINK_FLIPPED
 
-# SYSTEMD_OPS_DONE
+# SYSTEMD_OPS_DONE — write BEFORE daemon-reload+restart so a crash
+# mid-restart recovers through the stop-services-and-revert path.
+_state_write_or_die SYSTEMD_OPS_DONE
 if ! airplanes_runtime_apply_systemd_ops "$RELEASE_MANIFEST"; then
     roll_back_and_exit 1 "systemd_ops_failed"
 fi
-airplanes_runtime_state_write "$TARGET_ROOT" SYSTEMD_OPS_DONE
 
 # HEALTH_RUNNING → HEALTH_PASSED
-airplanes_runtime_state_write "$TARGET_ROOT" HEALTH_RUNNING
+_state_write_or_die HEALTH_RUNNING
 if ! airplanes_runtime_run_health_gates "$TARGET_ROOT"; then
     roll_back_and_exit 1 "health_gates_failed"
 fi
-airplanes_runtime_state_write "$TARGET_ROOT" HEALTH_PASSED
+_state_write_or_die HEALTH_PASSED
 
-# Cleanup → INSTALLED
+# Cleanup → INSTALLED. Both steps below run within HEALTH_PASSED; a
+# failure here leaves the state at HEALTH_PASSED so the recovery
+# oneshot finishes the cleanup pass on next boot. We deliberately do
+# NOT roll back here — health gates passed, the live release is good.
 if ! airplanes_runtime_record_runtime_manifest "$TARGET_ROOT"; then
-    # Manifest pointer write failed AFTER health passed; the live
-    # release is good. Leave HEALTH_PASSED in the state file so the
-    # recovery oneshot can finish the cleanup pass on next boot.
     echo "ERROR: runtime-self-update: failed to record runtime manifest pointer after HEALTH_PASSED" >&2
     exit 1
 fi
@@ -360,6 +390,6 @@ if ! airplanes_runtime_gc_old_releases "$TARGET_ROOT"; then
     echo "WARN: runtime-self-update: GC of old releases reported a failure (non-fatal)" >&2
 fi
 
-airplanes_runtime_state_write "$TARGET_ROOT" INSTALLED
+_state_write_or_die INSTALLED
 echo "runtime-self-update: done (state=INSTALLED)"
 exit 0

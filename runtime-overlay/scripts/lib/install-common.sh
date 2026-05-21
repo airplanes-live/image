@@ -1575,7 +1575,7 @@ airplanes_runtime_state_write() {
     local f tmp
     f="$(airplanes_runtime_state_file "$target_root")"
     tmp="${f}.tmp.$$"
-    {
+    if ! {
         printf 'state=%s\n'        "$new_state"
         printf 'prev_release=%s\n' "$prev_release"
         printf 'new_release=%s\n'  "$new_release"
@@ -1583,14 +1583,23 @@ airplanes_runtime_state_write() {
         if [[ -n "$failure_reason" ]]; then
             printf 'failure_reason=%s\n' "$failure_reason"
         fi
-    } > "$tmp"
+    } > "$tmp"; then
+        echo "ERROR: airplanes_runtime_state_write: write to $tmp failed (state=$new_state)" >&2
+        rm -f -- "$tmp"
+        return 1
+    fi
     chmod 0644 "$tmp" 2>/dev/null || true
-    # sync the file's data so a power-loss between mv and the rename
+    # sync the file's data so a power-loss between this and the rename
     # commit on ext4 still sees the staged content. Non-fatal if -d is
-    # unsupported.
+    # unsupported by the host (the directory sync below covers the rename).
     sync -d "$tmp" 2>/dev/null || true
-    mv -Tf -- "$tmp" "$f"
+    if ! mv -Tf -- "$tmp" "$f"; then
+        echo "ERROR: airplanes_runtime_state_write: rename $tmp -> $f failed (state=$new_state)" >&2
+        rm -f -- "$tmp"
+        return 1
+    fi
     sync -d "$(airplanes_runtime_state_dir "$target_root")" 2>/dev/null || true
+    return 0
 }
 
 # Clear the state file (after a terminal good state has been acted on, or
