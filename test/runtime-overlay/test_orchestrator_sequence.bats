@@ -342,6 +342,33 @@ EOF
     [ "$(state_status)" = "failed" ]
 }
 
+@test "stale same-version-replay state is NOT misclassified as success" {
+    # Regression: a previous run's terminal state file (still on disk)
+    # plus a current-run failure that exits without touching the state
+    # file (e.g. lock contention with rc=75) must surface as a real
+    # failure — not get translated to success because the orchestrator
+    # found a matching state from the prior run.
+    install -d -m 0755 "$TMP/var/lib/airplanes-runtime-upgrade"
+    cat > "$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" <<STATE
+state=FAILED_PRE_MUTATION
+failure_reason=same_version_replay_opt_airplanes-runtime_releases_v0.0.1
+STATE
+
+    # The runtime helper stub exits non-zero WITHOUT modifying the
+    # state file. Simulates lock contention against a prior same-version
+    # terminal state.
+    cat > "$TMP/sub/runtime-update.sh" <<EOF
+#!/usr/bin/env bash
+exit 75
+EOF
+    chmod 0755 "$TMP/sub/runtime-update.sh"
+
+    run_orchestrator
+    [ "$status" -ne 0 ]
+    [ "$(state_step)" = "runtime" ]
+    [ "$(state_status)" = "failed" ]
+}
+
 @test "state file is created atomically (no half-written reads)" {
     # The atomic-write pattern (tmp + mv -f) guarantees a reader always
     # sees a complete JSON object. We assert the property indirectly by

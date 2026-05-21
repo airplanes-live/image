@@ -265,25 +265,46 @@ step_runtime() {
         echo "orchestrator: runtime updater not found at $AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE" >&2
         return 1
     fi
+
+    # Snapshot the runtime self-updater's upgrade-state file BEFORE
+    # invocation so we can distinguish "this invocation wrote
+    # same_version_replay" from "a previous run's terminal state is
+    # still on disk". runtime-self-update.sh exits 75 on lock
+    # contention without touching the state file, so without this
+    # guard a stale prior-run terminal state would be translated to
+    # success on every subsequent run. mtime + inode together cover
+    # both in-place rewrites and rename-overwrites.
+    local state_file="$AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE"
+    local pre_signature=""
+    if [[ -e "$state_file" ]]; then
+        pre_signature="$(stat -c '%Y:%i' -- "$state_file" 2>/dev/null || true)"
+    fi
+
     local rc=0
     "$AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE" || rc=$?
     if [[ "$rc" -eq 0 ]]; then
         return 0
     fi
+
     # The runtime self-updater treats a same-version replay (no newer
     # release on the channel) as FAILED_PRE_MUTATION with a
     # failure_reason of `same_version_replay_<version>`. From the
     # orchestrator's "is anything newer" perspective that is a no-op,
-    # not a failure — translate it. Any other failure (download, verify,
-    # health gate) surfaces as a real step failure.
-    local state_file="$AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE"
+    # not a failure — translate it, but ONLY when this invocation
+    # actually wrote the state file. Any other failure (download,
+    # verify, health gate, lock contention) surfaces as a real step
+    # failure.
     if [[ -r "$state_file" ]]; then
-        local upg_state upg_reason
-        upg_state="$(awk -F= '/^state=/ { sub(/^state=/, ""); print; exit }' "$state_file" 2>/dev/null || true)"
-        upg_reason="$(awk -F= '/^failure_reason=/ { sub(/^failure_reason=/, ""); print; exit }' "$state_file" 2>/dev/null || true)"
-        if [[ "$upg_state" == "FAILED_PRE_MUTATION" && "$upg_reason" == same_version_replay_* ]]; then
-            echo "orchestrator: runtime self-updater reports no newer release ($upg_reason); treating as no-op" >&2
-            return 0
+        local post_signature
+        post_signature="$(stat -c '%Y:%i' -- "$state_file" 2>/dev/null || true)"
+        if [[ -n "$post_signature" && "$post_signature" != "$pre_signature" ]]; then
+            local upg_state upg_reason
+            upg_state="$(awk -F= '/^state=/ { sub(/^state=/, ""); print; exit }' "$state_file" 2>/dev/null || true)"
+            upg_reason="$(awk -F= '/^failure_reason=/ { sub(/^failure_reason=/, ""); print; exit }' "$state_file" 2>/dev/null || true)"
+            if [[ "$upg_state" == "FAILED_PRE_MUTATION" && "$upg_reason" == same_version_replay_* ]]; then
+                echo "orchestrator: runtime self-updater reports no newer release ($upg_reason); treating as no-op" >&2
+                return 0
+            fi
         fi
     fi
     return "$rc"
