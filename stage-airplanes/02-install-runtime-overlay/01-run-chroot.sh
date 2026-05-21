@@ -21,6 +21,31 @@ adduser readsb dialout || true
 # tar1090 reads it.
 install -d -m 0755 -o readsb -g readsb /var/globe_history
 
+# Seed mutable config files the runtime overlay's reconcile services
+# expect to find on first boot. The release tarball ships their package
+# defaults under share/tar1090/example_config_dont_edit and
+# etc/collectd/collectd.conf; these are declared mutable_paths so on
+# subsequent updates the on-device installer backs them up before any
+# overlay-driven mutation and respects user edits via if_key_unset
+# migrations. At image-build time the files do not exist yet — copy the
+# packaged defaults across.
+if [[ ! -e /etc/default/tar1090 ]]; then
+	install -d -m 0755 /etc/default
+	install -m 0644 /opt/airplanes-runtime/current/share/tar1090/example_config_dont_edit \
+		/etc/default/tar1090
+fi
+if [[ ! -e /etc/collectd/collectd.conf ]]; then
+	install -d -m 0755 /etc/collectd
+	install -m 0644 /opt/airplanes-runtime/current/etc/collectd/collectd.conf \
+		/etc/collectd/collectd.conf
+fi
+if [[ ! -e /etc/cron.d/collectd_to_disk \
+		&& -e /opt/airplanes-runtime/current/etc/cron.d/collectd_to_disk ]]; then
+	install -d -m 0755 /etc/cron.d
+	install -m 0644 /opt/airplanes-runtime/current/etc/cron.d/collectd_to_disk \
+		/etc/cron.d/collectd_to_disk
+fi
+
 # Enable the unit set the runtime overlay manifest declares. collectd.service
 # is apt-managed and the unit ships with collectd-core; the others are now
 # overlay-owned via the /etc/systemd/system/ → /opt/airplanes-runtime/current/
