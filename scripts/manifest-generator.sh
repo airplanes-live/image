@@ -85,19 +85,16 @@ FEED_SHA="$(read_sha_sentinel airplanes-feed "${SENTINEL_DIR}/.build-feed-sha")"
 READSB_SHA="$(read_sha_sentinel airplanes-readsb "${SENTINEL_DIR}/.build-airplanes-readsb-sha")"
 
 RUNTIME_MANIFEST="${SENTINEL_DIR}/runtime-manifest.json"
-if [[ -e "$RUNTIME_MANIFEST" ]]; then
-	DECODER_SHA="$(read_runtime_manifest_sha wiedehopf-readsb readsb_wiedehopf "$RUNTIME_MANIFEST")"
-	DUMP978_SHA="$(read_runtime_manifest_sha flightaware-dump978 dump978_fa "$RUNTIME_MANIFEST")"
-	TAR1090_SHA="$(read_runtime_manifest_sha wiedehopf-tar1090 tar1090 "$RUNTIME_MANIFEST")"
-	TAR1090_DB_SHA="$(read_runtime_manifest_sha wiedehopf-tar1090-db tar1090_db "$RUNTIME_MANIFEST")"
-	GRAPHS_SHA="$(read_runtime_manifest_sha wiedehopf-graphs1090 graphs1090 "$RUNTIME_MANIFEST")"
-else
-	DECODER_SHA="$(read_sha_sentinel wiedehopf-readsb "${SENTINEL_DIR}/.build-readsb-decoder-sha")"
-	DUMP978_SHA="$(read_sha_sentinel flightaware-dump978 "${SENTINEL_DIR}/.build-dump978-sha")"
-	TAR1090_SHA="$(read_sha_sentinel wiedehopf-tar1090 "${SENTINEL_DIR}/.build-tar1090-sha")"
-	TAR1090_DB_SHA="$(read_sha_sentinel wiedehopf-tar1090-db "${SENTINEL_DIR}/.build-tar1090-db-sha")"
-	GRAPHS_SHA="$(read_sha_sentinel wiedehopf-graphs1090 "${SENTINEL_DIR}/.build-graphs1090-sha")"
-fi
+[[ -e "$RUNTIME_MANIFEST" ]] || {
+	echo "ERROR: runtime manifest missing: $RUNTIME_MANIFEST" >&2
+	echo "       stage 02-install-runtime-overlay must produce this file in build mode" >&2
+	exit 1
+}
+DECODER_SHA="$(read_runtime_manifest_sha wiedehopf-readsb readsb_wiedehopf "$RUNTIME_MANIFEST")"
+DUMP978_SHA="$(read_runtime_manifest_sha flightaware-dump978 dump978_fa "$RUNTIME_MANIFEST")"
+TAR1090_SHA="$(read_runtime_manifest_sha wiedehopf-tar1090 tar1090 "$RUNTIME_MANIFEST")"
+TAR1090_DB_SHA="$(read_runtime_manifest_sha wiedehopf-tar1090-db tar1090_db "$RUNTIME_MANIFEST")"
+GRAPHS_SHA="$(read_runtime_manifest_sha wiedehopf-graphs1090 graphs1090 "$RUNTIME_MANIFEST")"
 
 SF_INVOC=""; SF_ENABLES=""; SF_TS=""
 parse_fingerprint "${SENTINEL_DIR}/.build-stub-fingerprint"

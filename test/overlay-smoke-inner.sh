@@ -26,33 +26,6 @@ echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (install.sh --build-m
 echo "==> stage-airplanes/01-install-feed/02-run.sh (cleanup staged feed)"
 ( cd /image/stage-airplanes/01-install-feed && bash 02-run.sh )
 
-echo "==> stage-airplanes/02-install-decoder/00-run.sh (clone readsb + dump978)"
-( cd /image/stage-airplanes/02-install-decoder && bash 00-run.sh )
-
-echo "==> stage-airplanes/02-install-decoder/01-run-chroot.sh (compile + install)"
-( cd /image/stage-airplanes/02-install-decoder && bash 01-run-chroot.sh )
-
-echo "==> stage-airplanes/02-install-decoder/02-run.sh (cleanup build dirs)"
-( cd /image/stage-airplanes/02-install-decoder && bash 02-run.sh )
-
-echo "==> stage-airplanes/03-install-tar1090/00-run.sh (clone tar1090 + tar1090-db)"
-( cd /image/stage-airplanes/03-install-tar1090 && bash 00-run.sh )
-
-echo "==> stage-airplanes/03-install-tar1090/01-run-chroot.sh (run tar1090 install)"
-( cd /image/stage-airplanes/03-install-tar1090 && bash 01-run-chroot.sh )
-
-echo "==> stage-airplanes/03-install-tar1090/02-run.sh (cleanup tar1090 build dir)"
-( cd /image/stage-airplanes/03-install-tar1090 && bash 02-run.sh )
-
-echo "==> stage-airplanes/04-install-graphs1090/00-run.sh (clone graphs1090)"
-( cd /image/stage-airplanes/04-install-graphs1090 && bash 00-run.sh )
-
-echo "==> stage-airplanes/04-install-graphs1090/01-run-chroot.sh (run graphs1090 install + 978 wiring)"
-( cd /image/stage-airplanes/04-install-graphs1090 && bash 01-run-chroot.sh )
-
-echo "==> stage-airplanes/04-install-graphs1090/02-run.sh (cleanup graphs1090 git dir)"
-( cd /image/stage-airplanes/04-install-graphs1090 && bash 02-run.sh )
-
 echo "==> stage-airplanes/05-install-webconfig/00-run.sh (clone image-webconfig and install)"
 # Stage 05 now clones airplanes-live/image-webconfig and pulls the release
 # binary + rootfs payload. Skip if the integration env vars are not set —
@@ -176,129 +149,13 @@ distro_dropin=/etc/cloud/cloud.cfg.d/99-airplanes-distro-debian.cfg
 grep -qE '^[[:space:]]*distro:[[:space:]]+debian[[:space:]]*$' "$distro_dropin" \
     || fail "$distro_dropin does not select debian distro"
 
-# Stage 02 outputs (decoder + 978).
-[[ -x /usr/bin/readsb ]] || fail "readsb binary missing"
-[[ -x /usr/bin/viewadsb ]] || fail "viewadsb binary missing"
-[[ -x /usr/bin/airplanes-978 ]] || fail "airplanes-978 binary missing"
-[[ -x /usr/bin/dump978-fa ]] || fail "dump978-fa binary missing"
-# airplanes-978 is a hardlink of readsb (same inode).
-[[ "$(stat -c %i /usr/bin/readsb)" == "$(stat -c %i /usr/bin/airplanes-978)" ]] \
-    || fail "airplanes-978 is not a hardlink of readsb"
-# No unresolved boost/soapy/usb libs at build time.
-if ldd /usr/bin/dump978-fa | grep -q 'not found'; then
-    ldd /usr/bin/dump978-fa | grep 'not found' >&2
-    fail "dump978-fa has unresolved shared libraries"
-fi
-[[ -x /usr/local/share/airplanes/readsb.sh ]] || fail "readsb.sh wrapper missing"
-[[ -x /usr/local/share/airplanes/airplanes-978.sh ]] || fail "airplanes-978.sh wrapper missing"
-[[ -x /usr/local/share/airplanes/dump978-fa.sh ]] || fail "dump978-fa.sh wrapper missing"
-[[ -f /etc/systemd/system/readsb.service ]] || fail "readsb.service missing"
-[[ -f /etc/systemd/system/dump978-fa.service ]] || fail "dump978-fa.service missing"
-[[ -f /etc/systemd/system/airplanes-978.service ]] || fail "airplanes-978.service missing"
-[[ -s /etc/airplanes/.build-readsb-decoder-sha ]] || fail ".build-readsb-decoder-sha missing or empty"
-[[ -s /etc/airplanes/.build-dump978-sha ]] || fail ".build-dump978-sha missing or empty"
-[[ ! -d /usr/local/src/airplanes-readsb-build ]] || fail "readsb build dir not cleaned up"
-[[ ! -d /usr/local/src/airplanes-dump978-build ]] || fail "dump978 build dir not cleaned up"
-# readsb + 978 units are all enabled at install. The 978 wrappers
-# self-disable when UAT_INPUT is empty (sleep + exit 0 so the unit stays
-# active, parallel to airplanes-mlat); invalid UAT_INPUT exits 64 and
-# surfaces as failed. UAT_INPUT lands in feed.env via webconfig — the
-# boot config no longer touches operational keys.
-have_enable_link readsb.service || fail "readsb.service enable symlink missing"
-have_enable_link dump978-fa.service \
-    || fail "dump978-fa.service should be enabled at install"
-have_enable_link airplanes-978.service \
-    || fail "airplanes-978.service should be enabled at install"
-
-# 978 unit-file directives. RestartPreventExitStatus=64 keeps systemd from
-# restart-looping the misconfigured-input branch; RuntimeDirectoryPreserve=yes
-# keeps the state file alive across wrapper re-runs so /api/status can
-# keep reading decision=disabled.
-grep -qE '^RestartPreventExitStatus=64$' /etc/systemd/system/dump978-fa.service \
-    || fail "dump978-fa.service missing RestartPreventExitStatus=64 (would restart-loop on UAT_INPUT invalid)"
-grep -qE '^RestartPreventExitStatus=64$' /etc/systemd/system/airplanes-978.service \
-    || fail "airplanes-978.service missing RestartPreventExitStatus=64"
-grep -qE '^RuntimeDirectoryPreserve=yes$' /etc/systemd/system/airplanes-978.service \
-    || fail "airplanes-978.service missing RuntimeDirectoryPreserve=yes"
-
-# Stage 02 fuller-features wiring (consumed by tar1090 heatmap/coverage).
-grep -q -- '--write-json-globe-index' /usr/local/share/airplanes/readsb.sh \
-    || fail "readsb.sh missing --write-json-globe-index"
-grep -q -- '--write-globe-history' /usr/local/share/airplanes/readsb.sh \
-    || fail "readsb.sh missing --write-globe-history"
-# Regression guard: --aircraft-update-interval is a flightaware/dump1090-fa
-# flag, not a wiedehopf/readsb flag. We pass --write-json-every instead.
-# Crashlooped readsb in a real-Pi flash test before this guard existed.
-grep -q -- '--write-json-every ' /usr/local/share/airplanes/readsb.sh \
-    || fail "readsb.sh missing --write-json-every"
-! grep -q -- '--aircraft-update-interval' /usr/local/share/airplanes/readsb.sh \
-    || fail "readsb.sh has --aircraft-update-interval (unsupported by wiedehopf/readsb)"
-# MLAT input port — mlat-client routes Beast results to 127.0.0.1:30104 so
-# tar1090/graphs1090 show MLAT planes locally. Anchor the grep at line
-# start + literal variable name so a trailing comment line can't satisfy
-# this check. The Bats test_readsb_wrapper.bats pins the runtime argv
-# shape; this smoke check just guards the deployed source.
-grep -Eq -- '^READSB_NET_OPTIONS=.*--net-bi-port 30004,30104' /usr/local/share/airplanes/readsb.sh \
-    || fail "readsb.sh missing default --net-bi-port 30004,30104 listener"
-[[ -d /var/globe_history ]] || fail "/var/globe_history not created"
-[[ "$(stat -c %U /var/globe_history)" == "readsb" ]] || fail "/var/globe_history not owned by readsb"
-
-# Stage 03 outputs (tar1090).
-[[ -d /usr/local/share/tar1090 ]] || fail "tar1090 install dir missing"
-[[ -f /usr/local/share/tar1090/html/index.html ]] || fail "tar1090 html/index.html missing"
-[[ -f /lib/systemd/system/tar1090.service ]] || fail "tar1090.service missing"
-[[ -f /etc/default/tar1090 ]] || fail "/etc/default/tar1090 missing"
-grep -q '^ENABLE_978=no' /etc/default/tar1090 \
-    || fail "/etc/default/tar1090 ENABLE_978 should default to no (toggled at runtime by airplanes-tar1090-uat-sync)"
-[[ -L /etc/lighttpd/conf-enabled/89-airplanes-978.conf ]] \
-    || fail "89-airplanes-978.conf not enabled"
-[[ -x /usr/local/share/airplanes/tar1090-uat-sync.sh ]] \
-    || fail "tar1090-uat-sync.sh missing or not executable"
-[[ -f /etc/systemd/system/airplanes-tar1090-uat-sync.service ]] \
-    || fail "airplanes-tar1090-uat-sync.service missing"
-[[ -f /etc/systemd/system/airplanes-tar1090-uat-sync.path ]] \
-    || fail "airplanes-tar1090-uat-sync.path missing"
-have_enable_link airplanes-tar1090-uat-sync.service \
-    || fail "airplanes-tar1090-uat-sync.service enable symlink missing"
-have_enable_link airplanes-tar1090-uat-sync.path \
-    || fail "airplanes-tar1090-uat-sync.path enable symlink missing"
-[[ ! -L /etc/lighttpd/conf-enabled/95-tar1090-otherport.conf ]] \
-    || fail "tar1090 otherport listener should be removed"
-[[ -s /etc/airplanes/.build-tar1090-sha ]] || fail ".build-tar1090-sha missing or empty"
-[[ -s /etc/airplanes/.build-tar1090-db-sha ]] || fail ".build-tar1090-db-sha missing or empty"
-# Pinning held: tar1090-db's actual HEAD matches the SHA we captured at fetch.
-[[ "$(git -C /usr/local/share/tar1090/git-db rev-parse HEAD)" \
-    == "$(cat /etc/airplanes/.build-tar1090-db-sha)" ]] \
-    || fail "tar1090-db SHA pinning was clobbered by upstream installer"
-[[ ! -d /usr/local/src/airplanes-tar1090-build ]] || fail "tar1090 build dir not cleaned up"
-have_enable_link tar1090.service || fail "tar1090.service enable symlink missing"
-
-# Stage 04 outputs (graphs1090).
-[[ -d /usr/share/graphs1090 ]] || fail "graphs1090 install dir missing"
-[[ -f /lib/systemd/system/graphs1090.service ]] || fail "graphs1090.service missing"
-[[ -f /etc/collectd/collectd.conf ]] || fail "collectd.conf missing"
-grep -E -q '^URL_978 "file:///usr/share/graphs1090/978-symlink"' /etc/collectd/collectd.conf \
-    || fail "collectd.conf URL_978 not patched"
-[[ -L /usr/share/graphs1090/978-symlink/data ]] || fail "978-symlink/data missing"
-[[ "$(readlink /usr/share/graphs1090/978-symlink/data)" == "/run/airplanes-978" ]] \
-    || fail "978-symlink/data points at wrong target"
-[[ -L /etc/lighttpd/conf-enabled/88-graphs1090.conf ]] \
-    || fail "graphs1090 lighttpd snippet not enabled"
-[[ ! -L /etc/lighttpd/conf-enabled/95-graphs1090-otherport.conf ]] \
-    || fail "graphs1090 otherport listener should be removed"
-[[ -s /etc/airplanes/.build-graphs1090-sha ]] || fail ".build-graphs1090-sha missing or empty"
-[[ ! -d /usr/share/graphs1090/git ]] || fail "graphs1090 git dir not cleaned up"
-have_enable_link graphs1090.service || fail "graphs1090.service enable symlink missing"
-have_enable_link collectd.service || fail "collectd.service enable symlink missing"
-# Interface lines normalized to canonical Pi names; no build-host leakage.
-grep -q 'Interface "eth0"' /etc/collectd/collectd.conf || fail "collectd missing Interface eth0"
-grep -q 'Interface "end0"' /etc/collectd/collectd.conf || fail "collectd missing Interface end0"
-grep -q 'Interface "wlan0"' /etc/collectd/collectd.conf || fail "collectd missing Interface wlan0"
-# Build-host interfaces (commonly eno*, ens*, enX*, wlxXX*) must not leak.
-if grep -E -q 'Interface "(eno|ens|wlx|enx)[^"]*"' /etc/collectd/collectd.conf; then
-    grep -E 'Interface "(eno|ens|wlx|enx)[^"]*"' /etc/collectd/collectd.conf >&2
-    fail "build-host network interface name leaked into collectd.conf"
-fi
+# Decoder, tar1090, and graphs1090 are produced by the runtime-overlay
+# stage (02-install-runtime-overlay), which requires signed release
+# downloads + verification. That stage is not run by this smoke; the full
+# image build (build-image.yml) covers it end-to-end. Build-sentinel files
+# for those components (.build-readsb-decoder-sha etc.) are likewise no
+# longer host-side artifacts — runtime-manifest.json is the canonical
+# source for those SHAs.
 
 # lighttpd config syntax check (catches broken alias.url snippets etc.)
 lighttpd -tt -f /etc/lighttpd/lighttpd.conf >/dev/null \
@@ -801,6 +658,26 @@ head -1 /usr/local/sbin/apl-feed | grep -qE '^#!/bin/sh' \
 [[ -x /usr/local/bin/apl-feed ]] || fail "/usr/local/bin/apl-feed missing (06d shouldn't touch it)"
 [[ "$(realpath /usr/local/sbin/apl-feed)" != "$(realpath /usr/local/bin/apl-feed)" ]] \
     || fail "/usr/local/sbin/apl-feed and /usr/local/bin/apl-feed resolve to the same file"
+
+# Stage 02-install-runtime-overlay is not exercised by this smoke; seed a
+# synthetic runtime-manifest.json so 07-finalize's manifest-generator.sh
+# has the runtime-component SHAs to fold into build-manifest.json. The
+# canonical runtime-manifest is produced by the runtime-overlay stage at
+# real-build time. SHAs below are placeholder 40-hex values.
+install -d -m 755 /etc/airplanes
+cat > /etc/airplanes/runtime-manifest.json <<'JSON'
+{
+    "version": "0.0.0-smoke",
+    "channel": "dev",
+    "components": {
+        "readsb_wiedehopf": "0000000000000000000000000000000000000000",
+        "dump978_fa":       "0000000000000000000000000000000000000000",
+        "tar1090":          "0000000000000000000000000000000000000000",
+        "tar1090_db":       "0000000000000000000000000000000000000000",
+        "graphs1090":       "0000000000000000000000000000000000000000"
+    }
+}
+JSON
 
 echo "==> stage-airplanes/07-finalize/00-run.sh (stub-check + manifest + cleanup)"
 ( cd /image/stage-airplanes/07-finalize && bash 00-run.sh )

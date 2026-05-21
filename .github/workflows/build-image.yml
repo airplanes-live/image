@@ -70,10 +70,8 @@ jobs:
       group: image-build-${{ github.event.inputs.channel || ((startsWith(github.ref, 'refs/tags/stable/') || github.ref == 'refs/heads/main') && 'stable') || 'dev' }}-${{ matrix.arch }}-${{ github.ref }}
       cancel-in-progress: true
     # Native arm64 runner: host arch matches our target arch, so the entire
-    # pi-gen build runs without qemu-user-aarch64 emulation. Eliminates the
-    # ~5-10x emulation overhead on stage-airplanes/02-install-decoder (readsb +
-    # dump978 compiles), where the bulk of build time used to live. Free for
-    # public repos on free-plan orgs as of GitHub's Jan 2025 announcement.
+    # pi-gen build runs without qemu-user-aarch64 emulation. Free for public
+    # repos on free-plan orgs as of GitHub's Jan 2025 announcement.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     env:

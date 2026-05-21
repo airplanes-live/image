@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # cross-compile-dump978.sh — clone flightaware's dump978, build the
 # `dump978-fa` target, and stage the resulting binary into a release-tree
-# shaped staging dir.
-#
-# This mirrors what `stage-airplanes/02-install-decoder/01-run-chroot.sh:30`
-# does in a pi-gen chroot. We only build dump978-fa (the 978 MHz demodulator
+# shaped staging dir. We only build dump978-fa (the 978 MHz demodulator
 # wrapper readsb's airplanes-978 unit consumes); skyaware978 is FA's
 # standalone dashboard and is not shipped.
 #
@@ -115,8 +112,7 @@ export SOURCE_DATE_EPOCH
 export CFLAGS="-ffile-prefix-map=$BUILD_DIR=. -fdebug-prefix-map=$BUILD_DIR=."
 export CXXFLAGS="$CFLAGS"
 
-# Match `stage-airplanes/02-install-decoder/01-run-chroot.sh:30` —
-# `make dump978-fa` only.
+# `make dump978-fa` only — skyaware978 not shipped.
 (
     cd "$BUILD_DIR"
     make -j"$(nproc)" dump978-fa
@@ -129,8 +125,8 @@ if [[ ! -f "$BUILD_DIR/dump978-fa" ]]; then
 fi
 install -m 0755 "$BUILD_DIR/dump978-fa" "$OUTPUT_DIR/bin/dump978-fa"
 
-# Identical unresolved-libs check the legacy stage runs. boost/soapy/usb
-# are the typical culprits when build-deps drift.
+# Unresolved-libs check — boost/soapy/usb are the typical culprits when
+# build-deps drift.
 if ldd "$OUTPUT_DIR/bin/dump978-fa" 2>&1 | grep -q 'not found'; then
     {
         echo "cross-compile-dump978: dump978-fa has unresolved shared libraries:"

@@ -10,7 +10,7 @@
 #
 # Scope is the inbound-decode stack only — readsb (wiedehopf), dump978-fa
 # (flightaware), tar1090 (wiedehopf), tar1090-db (wiedehopf), graphs1090
-# (wiedehopf). Mirrors the matching refs in the top-level config-dev.
+# (wiedehopf).
 #
 # Dev tracks upstream branch heads (moving target by design) so the runtime
 # overlay catches upstream drift early. Dev releases are intentionally not

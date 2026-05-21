@@ -12,11 +12,6 @@ setup() {
 	# Distinct SHAs per slot so a field swap shows up in the JSON.
 	SHA_FEED="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	SHA_READSB="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	SHA_DECODER="cccccccccccccccccccccccccccccccccccccccc"
-	SHA_DUMP978="dddddddddddddddddddddddddddddddddddddddd"
-	SHA_TAR1090="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	SHA_TAR1090_DB="ffffffffffffffffffffffffffffffffffffffff"
-	SHA_GRAPHS="1234567890123456789012345678901234567890"
 	SHA_PIGEN="abcdef0123456789abcdef0123456789abcdef01"
 	SHA_RUNTIME_DECODER="1111111111111111111111111111111111111111"
 	SHA_RUNTIME_DUMP978="2222222222222222222222222222222222222222"
@@ -31,11 +26,6 @@ write_sentinels() {
 	printf '%s\n' "$SHA_PIGEN" > "$SENT_DIR/.build-pi-gen-sha"
 	printf '%s\n' "$SHA_FEED" > "$SENT_DIR/.build-feed-sha"
 	printf '%s\n' "$SHA_READSB" > "$SENT_DIR/.build-airplanes-readsb-sha"
-	printf '%s\n' "$SHA_DECODER" > "$SENT_DIR/.build-readsb-decoder-sha"
-	printf '%s\n' "$SHA_DUMP978" > "$SENT_DIR/.build-dump978-sha"
-	printf '%s\n' "$SHA_TAR1090" > "$SENT_DIR/.build-tar1090-sha"
-	printf '%s\n' "$SHA_TAR1090_DB" > "$SENT_DIR/.build-tar1090-db-sha"
-	printf '%s\n' "$SHA_GRAPHS" > "$SENT_DIR/.build-graphs1090-sha"
 	printf 'invocations=12 enables=3 ts=2026-05-03T19:22:30Z\n' \
 		> "$SENT_DIR/.build-stub-fingerprint"
 }
@@ -60,6 +50,7 @@ write_runtime_manifest() {
 
 @test "happy path: writes manifest with all expected fields" {
 	write_sentinels
+	write_runtime_manifest
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -eq 0 ]
 	[ -f "$OUT" ]
@@ -69,11 +60,11 @@ write_runtime_manifest() {
 	[ "$(jq -r .pi_gen "$OUT")" = "$SHA_PIGEN" ]
 	[ "$(jq -r .components.airplanes_feed "$OUT")" = "$SHA_FEED" ]
 	[ "$(jq -r .components.airplanes_readsb "$OUT")" = "$SHA_READSB" ]
-	[ "$(jq -r .components.wiedehopf_readsb "$OUT")" = "$SHA_DECODER" ]
-	[ "$(jq -r .components.flightaware_dump978 "$OUT")" = "$SHA_DUMP978" ]
-	[ "$(jq -r .components.wiedehopf_tar1090 "$OUT")" = "$SHA_TAR1090" ]
-	[ "$(jq -r .components.wiedehopf_tar1090_db "$OUT")" = "$SHA_TAR1090_DB" ]
-	[ "$(jq -r .components.wiedehopf_graphs1090 "$OUT")" = "$SHA_GRAPHS" ]
+	[ "$(jq -r .components.wiedehopf_readsb "$OUT")" = "$SHA_RUNTIME_DECODER" ]
+	[ "$(jq -r .components.flightaware_dump978 "$OUT")" = "$SHA_RUNTIME_DUMP978" ]
+	[ "$(jq -r .components.wiedehopf_tar1090 "$OUT")" = "$SHA_RUNTIME_TAR1090" ]
+	[ "$(jq -r .components.wiedehopf_tar1090_db "$OUT")" = "$SHA_RUNTIME_TAR1090_DB" ]
+	[ "$(jq -r .components.wiedehopf_graphs1090 "$OUT")" = "$SHA_RUNTIME_GRAPHS" ]
 	[ "$(jq -r .stub_fingerprint.invocations "$OUT")" = "12" ]
 	[ "$(jq -r '.stub_fingerprint.invocations | type' "$OUT")" = "number" ]
 	[ "$(jq -r .stub_fingerprint.enables "$OUT")" = "3" ]
@@ -81,26 +72,7 @@ write_runtime_manifest() {
 	[ "$(jq -r .stub_fingerprint.ts "$OUT")" = "2026-05-03T19:22:30Z" ]
 }
 
-@test "runtime manifest path maps runtime components to build manifest keys" {
-	write_sentinels
-	write_runtime_manifest
-	rm "$SENT_DIR/.build-readsb-decoder-sha"
-	rm "$SENT_DIR/.build-dump978-sha"
-	rm "$SENT_DIR/.build-tar1090-sha"
-	rm "$SENT_DIR/.build-tar1090-db-sha"
-	rm "$SENT_DIR/.build-graphs1090-sha"
-	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
-	[ "$status" -eq 0 ]
-	[ "$(jq -r .components.airplanes_feed "$OUT")" = "$SHA_FEED" ]
-	[ "$(jq -r .components.airplanes_readsb "$OUT")" = "$SHA_READSB" ]
-	[ "$(jq -r .components.wiedehopf_readsb "$OUT")" = "$SHA_RUNTIME_DECODER" ]
-	[ "$(jq -r .components.flightaware_dump978 "$OUT")" = "$SHA_RUNTIME_DUMP978" ]
-	[ "$(jq -r .components.wiedehopf_tar1090 "$OUT")" = "$SHA_RUNTIME_TAR1090" ]
-	[ "$(jq -r .components.wiedehopf_tar1090_db "$OUT")" = "$SHA_RUNTIME_TAR1090_DB" ]
-	[ "$(jq -r .components.wiedehopf_graphs1090 "$OUT")" = "$SHA_RUNTIME_GRAPHS" ]
-}
-
-@test "runtime manifest path accepts component objects with commit_sha" {
+@test "runtime manifest accepts component objects with commit_sha" {
 	write_sentinels
 	jq -n \
 		--arg decoder "$SHA_RUNTIME_DECODER" \
@@ -126,20 +98,38 @@ write_runtime_manifest() {
 	[ "$(jq -r .components.wiedehopf_graphs1090 "$OUT")" = "$SHA_RUNTIME_GRAPHS" ]
 }
 
-@test "runtime manifest path ignores stale component sentinels" {
+@test "missing runtime manifest fails" {
 	write_sentinels
-	write_runtime_manifest
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
-	[ "$status" -eq 0 ]
-	[ "$(jq -r .components.wiedehopf_readsb "$OUT")" = "$SHA_RUNTIME_DECODER" ]
-	[ "$(jq -r .components.flightaware_dump978 "$OUT")" = "$SHA_RUNTIME_DUMP978" ]
-	[ "$(jq -r .components.wiedehopf_tar1090 "$OUT")" = "$SHA_RUNTIME_TAR1090" ]
-	[ "$(jq -r .components.wiedehopf_tar1090_db "$OUT")" = "$SHA_RUNTIME_TAR1090_DB" ]
-	[ "$(jq -r .components.wiedehopf_graphs1090 "$OUT")" = "$SHA_RUNTIME_GRAPHS" ]
+	[ "$status" -ne 0 ]
+	[ ! -e "$OUT" ]
+	[[ "$output" == *"runtime manifest missing"* ]]
+}
+
+@test "runtime manifest missing component fails" {
+	write_sentinels
+	# Manifest present but missing one of the required components.
+	jq -n \
+		--arg decoder "$SHA_RUNTIME_DECODER" \
+		--arg dump978 "$SHA_RUNTIME_DUMP978" \
+		--arg tar1090 "$SHA_RUNTIME_TAR1090" \
+		--arg tar1090_db "$SHA_RUNTIME_TAR1090_DB" \
+		'{
+			components: {
+				readsb_wiedehopf: $decoder,
+				dump978_fa: $dump978,
+				tar1090: $tar1090,
+				tar1090_db: $tar1090_db
+			}
+		}' > "$SENT_DIR/runtime-manifest.json"
+	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
+	[ "$status" -ne 0 ]
+	[ ! -e "$OUT" ]
 }
 
 @test "manifest mode is 0644" {
 	write_sentinels
+	write_runtime_manifest
 	run bash -c "CHANNEL=dev ARCH=arm64 bash '$SCRIPT' '$ROOT'"
 	[ "$status" -eq 0 ]
 	[ "$(stat -c %a "$OUT")" = "644" ]
@@ -147,6 +137,7 @@ write_runtime_manifest() {
 
 @test "build_timestamp matches ISO 8601 UTC" {
 	write_sentinels
+	write_runtime_manifest
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -eq 0 ]
 	ts="$(jq -r .build_timestamp "$OUT")"
@@ -155,6 +146,7 @@ write_runtime_manifest() {
 
 @test "pi-gen with -dirty suffix is preserved" {
 	write_sentinels
+	write_runtime_manifest
 	printf '%s-dirty\n' "$SHA_PIGEN" > "$SENT_DIR/.build-pi-gen-sha"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -eq 0 ]
@@ -163,6 +155,7 @@ write_runtime_manifest() {
 
 @test "pi-gen 'unknown' is accepted" {
 	write_sentinels
+	write_runtime_manifest
 	printf 'unknown\n' > "$SENT_DIR/.build-pi-gen-sha"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -eq 0 ]
@@ -171,6 +164,7 @@ write_runtime_manifest() {
 
 @test "missing pi-gen sentinel fails" {
 	write_sentinels
+	write_runtime_manifest
 	rm "$SENT_DIR/.build-pi-gen-sha"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
@@ -179,6 +173,7 @@ write_runtime_manifest() {
 
 @test "empty SHA sentinel fails" {
 	write_sentinels
+	write_runtime_manifest
 	: > "$SENT_DIR/.build-feed-sha"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
@@ -186,6 +181,7 @@ write_runtime_manifest() {
 
 @test "non-hex sentinel content fails" {
 	write_sentinels
+	write_runtime_manifest
 	printf 'dev\n' > "$SENT_DIR/.build-feed-sha"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
@@ -193,6 +189,7 @@ write_runtime_manifest() {
 
 @test "uppercase-hex sentinel fails" {
 	write_sentinels
+	write_runtime_manifest
 	printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n' > "$SENT_DIR/.build-feed-sha"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
@@ -200,6 +197,7 @@ write_runtime_manifest() {
 
 @test "short SHA sentinel fails" {
 	write_sentinels
+	write_runtime_manifest
 	printf 'aaaaaaa\n' > "$SENT_DIR/.build-feed-sha"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
@@ -207,30 +205,35 @@ write_runtime_manifest() {
 
 @test "missing CHANNEL env fails" {
 	write_sentinels
+	write_runtime_manifest
 	ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
 }
 
 @test "missing ARCH env fails" {
 	write_sentinels
+	write_runtime_manifest
 	CHANNEL=dev run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
 }
 
 @test "invalid CHANNEL value fails" {
 	write_sentinels
+	write_runtime_manifest
 	CHANNEL=prod ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
 }
 
 @test "invalid ARCH value fails" {
 	write_sentinels
+	write_runtime_manifest
 	CHANNEL=dev ARCH=x86_64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
 }
 
 @test "malformed stub fingerprint fails" {
 	write_sentinels
+	write_runtime_manifest
 	printf 'invocations=12\n' > "$SENT_DIR/.build-stub-fingerprint"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
@@ -243,6 +246,7 @@ write_runtime_manifest() {
 
 @test "atomic write: no lingering temp file on success" {
 	write_sentinels
+	write_runtime_manifest
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -eq 0 ]
 	if compgen -G "$SENT_DIR/build-manifest.json.tmp.*" > /dev/null; then
@@ -253,6 +257,7 @@ write_runtime_manifest() {
 
 @test "atomic write: failure leaves no manifest" {
 	write_sentinels
+	write_runtime_manifest
 	# Corrupt fingerprint after sentinels written so generator fails late.
 	printf 'garbage\n' > "$SENT_DIR/.build-stub-fingerprint"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
@@ -262,6 +267,7 @@ write_runtime_manifest() {
 
 @test "channel=stable arch=armhf passes" {
 	write_sentinels
+	write_runtime_manifest
 	CHANNEL=stable ARCH=armhf run bash "$SCRIPT" "$ROOT"
 	[ "$status" -eq 0 ]
 	[ "$(jq -r .channel "$OUT")" = "stable" ]
@@ -270,6 +276,7 @@ write_runtime_manifest() {
 
 @test "valid JSON output (jq parse)" {
 	write_sentinels
+	write_runtime_manifest
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -eq 0 ]
 	jq -e . "$OUT" > /dev/null

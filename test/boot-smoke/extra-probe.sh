@@ -251,13 +251,10 @@ _wcu_verify_persistence() {
 
 echo "image-probe: starting image-side assertions"
 
-# Runtime-overlay symlink chain assertions. When the image was built via the
-# runtime-overlay stage (AIRPLANES_USE_LEGACY_DECODER_STAGES=0) the decoder
-# units, render-status, decoder binaries, tar1090/graphs1090 surfaces and
+# Runtime-overlay symlink chain assertions. The decoder units,
+# render-status, decoder binaries, tar1090/graphs1090 surfaces and
 # lighttpd conf-available snippets all resolve through
-# /opt/airplanes-runtime/current/ → versioned release dir. Skip the block
-# cleanly when the legacy in-chroot path was used so config-stable's image
-# build stays green until B-3b.
+# /opt/airplanes-runtime/current/ → versioned release dir.
 if [[ -d /opt/airplanes-runtime ]]; then
     _runtime_link="$(readlink /etc/systemd/system/readsb.service 2>/dev/null || true)"
     [[ "$_runtime_link" == "/opt/airplanes-runtime/current/systemd/readsb.service" ]] \
