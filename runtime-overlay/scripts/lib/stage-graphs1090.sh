@@ -2,11 +2,9 @@
 # stage-graphs1090.sh — run graphs1090's install.sh against a scratch sysroot
 # and stage the produced files into a release-tree-shaped output dir.
 #
-# Mirrors `stage-airplanes/04-install-graphs1090/01-run-chroot.sh` modulo
-# the chroot context. We additionally apply the URL_978 + Interface
-# normalization edits to /etc/collectd/collectd.conf at staging time so the
-# release tarball ships the corrected file (legacy stage 04 applies these
-# edits in-chroot; runtime-overlay applies them here once, releases later).
+# We additionally apply the URL_978 + Interface normalization edits to
+# /etc/collectd/collectd.conf at staging time so the release tarball ships
+# the corrected file.
 #
 # Args:
 #   --repo <git-url>
@@ -274,29 +272,27 @@ cp -a "$LIGHTTPD_SRC/88-graphs1090.conf" \
 # --- apply collectd.conf edits at staging time -----------------------------
 
 # graphs1090's install.sh writes /etc/collectd/collectd.conf as a template.
-# Legacy stage 04 then sed-edits it in-chroot to (a) replace the commented
-# URL_978 line with a concrete file URL pointing at our 978-symlink, and
-# (b) normalize the <Plugin "interface"> block's Interface lines to the
-# canonical Pi set. Applying the edits at staging time means the release
-# tarball ships the already-corrected file — no per-install fixup needed.
+# Apply two edits at staging time so the release tarball ships the
+# already-corrected file: (a) replace the commented URL_978 line with a
+# concrete file URL pointing at our 978-symlink, and (b) normalize the
+# <Plugin "interface"> block's Interface lines to the canonical Pi set.
 #
-# Order is deterministic: URL_978 first, then Interface normalization.
-# Both operations are idempotent; running them in either order yields the
-# same output. The fixed sequence keeps the diff against the legacy stage
-# trivial to audit.
+# Order is deterministic: URL_978 first, then Interface normalization. Both
+# operations are idempotent; running them in either order yields the same
+# output.
 STAGED_COLLECTD="$OUTPUT_DIR/etc/collectd/collectd.conf"
 [[ -f "$SYSROOT/etc/collectd/collectd.conf" ]] \
     || die "graphs1090 install did not produce /etc/collectd/collectd.conf in sysroot"
 cp -a "$SYSROOT/etc/collectd/collectd.conf" "$STAGED_COLLECTD"
 
-# URL_978 edit. Match stage 04's sed exactly.
+# URL_978 edit.
 sed -i -E 's|^[[:space:]]*#[[:space:]]*URL_978 .*|URL_978 "file:///usr/share/graphs1090/978-symlink"|' \
     "$STAGED_COLLECTD"
 
-# Interface normalization. Match stage 04's awk exactly. The block-rewrite
-# pattern is: when entering the <Plugin "interface"> block, immediately
-# emit the three canonical Pi interface names; suppress any subsequent
-# Interface "..." lines until the closing </Plugin>.
+# Interface normalization. The block-rewrite pattern is: when entering the
+# <Plugin "interface"> block, immediately emit the three canonical Pi
+# interface names; suppress any subsequent Interface "..." lines until the
+# closing </Plugin>.
 COLLECTD_TMP="$SCRATCH_DIR/collectd.conf.new"
 awk '
 /^<Plugin "interface">$/ { in_block=1; print; print "    Interface \"eth0\""; print "    Interface \"end0\""; print "    Interface \"wlan0\""; next }
@@ -317,8 +313,8 @@ mv -f "$COLLECTD_TMP" "$STAGED_COLLECTD"
 #   /etc/systemd/system/collectd.service.d/malarky.conf  — tmpfs DataDir override
 #   /etc/cron.d/collectd_to_disk                         — nightly persist cron
 # Stage both so the on-device install can drop them at the same on-device
-# paths and the malarky behaviour (collectd writes to /run/collectd, persisted
-# nightly) carries over from the legacy stage 04 build verbatim.
+# paths and the malarky behaviour (collectd writes to /run/collectd,
+# persisted nightly) is preserved.
 MALARKY_DROP_IN="$SYSROOT/etc/systemd/system/collectd.service.d/malarky.conf"
 if [[ -f "$MALARKY_DROP_IN" ]]; then
     install -d -m 0755 "$OUTPUT_DIR/etc/systemd/system/collectd.service.d"

@@ -36,11 +36,6 @@ export ENABLE_SSH="${ENABLE_SSH:-1}"
 # Resolution helpers (run before bumping):
 #   gh api repos/airplanes-live/feed/commits/main --jq .sha
 #   gh api repos/airplanes-live/readsb/commits/dev --jq .sha
-#   gh api repos/wiedehopf/readsb/commits/dev --jq .sha
-#   gh api repos/flightaware/dump978/commits/master --jq .sha
-#   gh api repos/wiedehopf/tar1090/commits/master --jq .sha
-#   gh api repos/wiedehopf/tar1090-db/commits/master --jq .sha
-#   gh api repos/wiedehopf/graphs1090/commits/master --jq .sha
 
 export AIRPLANES_FEED_REPO="${AIRPLANES_FEED_REPO:-https://github.com/airplanes-live/feed.git}"
 export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-9318d02efd70488f831cbcb84ca3ec4cb9cc9ece}"
@@ -62,31 +57,9 @@ export AIRPLANES_WEBCONFIG_BRANCH="${AIRPLANES_WEBCONFIG_BRANCH:-v0.1.1}"
 export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
 export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-4d6c614d7940ce0117db61b1fa91c81fd9e67988}"
 
-export AIRPLANES_READSB_DECODER_REPO="${AIRPLANES_READSB_DECODER_REPO:-https://github.com/wiedehopf/readsb.git}"
-export AIRPLANES_READSB_DECODER_BRANCH="${AIRPLANES_READSB_DECODER_BRANCH:-caf2c5a6dccf1e079d0ae63d2b7dd45d568de265}"
-
-export AIRPLANES_DUMP978_REPO="${AIRPLANES_DUMP978_REPO:-https://github.com/flightaware/dump978.git}"
-export AIRPLANES_DUMP978_BRANCH="${AIRPLANES_DUMP978_BRANCH:-e827042420ac615f9b9993a21535fd7def21f974}"
-
-export AIRPLANES_TAR1090_REPO="${AIRPLANES_TAR1090_REPO:-https://github.com/wiedehopf/tar1090.git}"
-export AIRPLANES_TAR1090_BRANCH="${AIRPLANES_TAR1090_BRANCH:-c2ebe61910d2e06860c849a66077455d2635f9e9}"
-
-export AIRPLANES_TAR1090_DB_REPO="${AIRPLANES_TAR1090_DB_REPO:-https://github.com/wiedehopf/tar1090-db.git}"
-export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-758ddafab66fb997de2a81d2d5a317db55aaf9be}"
-
-export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
-export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889de2a8f63f2b40133ea72a08537ce}"
-
 # Runtime overlay release tag pinned for the stable image build. Set to a
 # placeholder until the first runtime-vX.Y.Z release is cut; the stable
-# channel keeps the legacy in-chroot decoder path until the runtime overlay
-# soaks on dev. Bump to a concrete runtime-vX.Y.Z when the legacy stages
-# are removed.
+# channel image build will fail until a concrete runtime tag exists. Bump
+# to a concrete runtime-vX.Y.Z once a stable runtime release has been
+# published.
 export AIRPLANES_RUNTIME_OVERLAY_TAG="${AIRPLANES_RUNTIME_OVERLAY_TAG:-runtime-v0.0.0-unreleased}"
-
-# Legacy decoder stages (02-install-decoder, 03-install-tar1090,
-# 04-install-graphs1090) build readsb / dump978 / tar1090 / graphs1090 in
-# the chroot. Stable keeps this path until the runtime overlay soaks on
-# dev; the runtime-overlay stage is SKIP'd at 1. Per-component pins above
-# remain consumed by both the legacy stages and the runtime-release workflow.
-export AIRPLANES_USE_LEGACY_DECODER_STAGES="${AIRPLANES_USE_LEGACY_DECODER_STAGES:-1}"

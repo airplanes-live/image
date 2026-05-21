@@ -169,10 +169,10 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Source channel config
-        # config-stable / config-dev export the upstream component pins
-        # (AIRPLANES_READSB_DECODER_REPO/BRANCH etc.) the build helpers
-        # consume. Persist them into $GITHUB_ENV so subsequent steps see
-        # them without re-sourcing.
+        # runtime-overlay/config-stable / runtime-overlay/config-dev export
+        # the upstream component pins (AIRPLANES_READSB_DECODER_REPO/BRANCH
+        # etc.) the build helpers consume. Persist them into $GITHUB_ENV so
+        # subsequent steps see them without re-sourcing.
         run: |
           set -a
           # shellcheck disable=SC1090

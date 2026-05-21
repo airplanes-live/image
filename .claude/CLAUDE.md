@@ -55,14 +55,14 @@ stage0  stage1  stage2          ← upstream pi-gen (base OS, boot files, networ
 stage-airplanes/                 ← fork-specific
   00-prep                        build deps + chroot hygiene (policy-rc.d, systemctl shim) + SSH posture + cloud-init/first-boot-wizard mask
   01-install-feed                clones airplanes-live/feed, installs apl-feed
-  02-install-decoder             builds readsb + dump978
-  03-install-tar1090             tar1090 + tar1090-db
-  04-install-graphs1090          graphs1090
+  02-install-runtime-overlay     downloads + verifies the signed runtime-overlay release tarball (readsb + dump978 + tar1090 + graphs1090 + render-status) and lays it at /opt/airplanes-runtime/releases/vX.Y.Z, flips `current`, and installs the managed_paths symlinks
   05-install-webconfig           clones airplanes-live/image-webconfig at the pinned ref and runs its install.sh --build-mode to lay the prebuilt binary + rootfs payload onto the image
   06-firstboot                   airplanes-first-run script + claim service/timer + boot config template
+  06a-run-tmpfs                  resize /run tmpfs + dedicated /run/collectd mount
   06b-console-dashboard          ASCII dashboard renderer + tty1 service
   06c-grant-sudo                 post-cloud-init NOPASSWD sudo grants per human user
-  07-finalize                    boot perms, build artifact cleanup
+  06d-cli-ergonomics             apl-feed sudo wrapper
+  07-finalize                    boot perms, build artifact cleanup, build-manifest.json
 export-image / export-noobs      pi-gen finalization (compresses rootfs into .img and optional NOOBS archive)
 ```
 
@@ -93,7 +93,7 @@ Go server lives in `airplanes-live/image-webconfig` (modules: `auth`, `feedenv`,
 | | `config-dev` | `config-stable` |
 |---|---|---|
 | `IMG_NAME` | `airplanes-feeder-dev-arm64` | `airplanes-feeder-stable-arm64` |
-| Component refs | branches (`dev` / `master`) | pinned SHAs for feed, readsb, readsb-decoder, dump978, tar1090, tar1090-db, graphs1090 |
+| Component refs | branches (`dev` / `master`) for feed + readsb; floating `runtime-dev-YYYYMMDD-<sha>` tag for runtime overlay | pinned SHAs for feed + readsb; concrete `runtime-vX.Y.Z` tag for runtime overlay (readsb-decoder, dump978, tar1090, tar1090-db, graphs1090 are pinned inside the runtime-overlay release) |
 | Compression | `xz -1` (fast rebuild) | `xz -6` (small artifact) |
 | `ENABLE_SSH` | `1` | `1` |
 

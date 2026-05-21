@@ -2,12 +2,11 @@
 # stage-tar1090.sh — run tar1090's install.sh against a scratch sysroot and
 # stage the produced files into a release-tree-shaped output dir.
 #
-# Mirrors `stage-airplanes/03-install-tar1090/01-run-chroot.sh` modulo the
-# chroot context: we run install.sh host-side under bubblewrap, with the
-# system paths install.sh writes to (/lib/systemd/system, /etc/lighttpd,
-# /etc/default, /run, the $ipath tree) bind-mounted from a scratch SYSROOT.
-# The relevant files are then copied out of SYSROOT into the staging tree
-# the runtime-overlay release tarball will package.
+# We run install.sh host-side under bubblewrap, with the system paths
+# install.sh writes to (/lib/systemd/system, /etc/lighttpd, /etc/default,
+# /run, the $ipath tree) bind-mounted from a scratch SYSROOT. The relevant
+# files are then copied out of SYSROOT into the staging tree the
+# runtime-overlay release tarball will package.
 #
 # Args:
 #   --repo <git-url>

@@ -8,9 +8,7 @@ set -e
 # install scripts call directly; legitimate enable/disable/mask pass through.
 export PATH="/usr/local/sbin:${PATH}"
 
-# readsb service account. Flags preserved verbatim from the legacy
-# 02-install-decoder stage so the on-disk uid/gid/home/shell shape is
-# byte-identical regardless of which install path produced the image.
+# readsb service account.
 if ! getent passwd readsb >/dev/null; then
 	adduser --system --group --home /usr/local/share/readsb --no-create-home --quiet readsb
 fi

@@ -18,8 +18,7 @@
 #
 # Stable pins are 40-hex commit SHAs so a stable runtime-overlay release is
 # reproducible from this file. Bump in lockstep with PRs that have already
-# been validated on the dev channel. The SHAs here mirror the matching pins
-# in the top-level config-stable.
+# been validated on the dev channel.
 
 export AIRPLANES_READSB_DECODER_REPO="${AIRPLANES_READSB_DECODER_REPO:-https://github.com/wiedehopf/readsb.git}"
 export AIRPLANES_READSB_DECODER_BRANCH="${AIRPLANES_READSB_DECODER_BRANCH:-caf2c5a6dccf1e079d0ae63d2b7dd45d568de265}"

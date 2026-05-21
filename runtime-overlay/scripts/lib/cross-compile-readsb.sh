@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 # cross-compile-readsb.sh — clone the wiedehopf readsb fork, compile, and
 # stage the produced binaries under a release-tree-shaped output directory.
-#
-# This helper re-implements what `stage-airplanes/02-install-decoder/`
-# (specifically `01-run-chroot.sh:22`) does for a pi-gen chroot, except the
-# output goes into a staging tree the runtime-overlay release tarball will
-# package — not into a chroot's /usr/bin. The build flags (AIRCRAFT_HASH_BITS,
-# RTLSDR=yes) and the `make -j$(nproc)` shape match the legacy stage so the
-# resulting binary is byte-identical to what stage 02 produces for an arm64
-# build (modulo timestamps).
+# The output is packaged into the runtime-overlay release tarball (not into
+# a chroot's /usr/bin). Build flags: AIRCRAFT_HASH_BITS, RTLSDR=yes, with
+# `make -j$(nproc)`.
 #
 # Args:
 #   --repo <git-url>         upstream git URL (e.g. wiedehopf readsb)
@@ -79,18 +74,15 @@ esac
 
 # `ref` is either a full 40-hex SHA (do a full clone + checkout — `git fetch`
 # at a SHA depends on server config) or a branch name (cheap --depth 1).
-# The legacy stage 02 always uses --depth 1 because config-stable still pins
-# via branch ref + companion SHA-record file. Match that shape but be tolerant
-# of a 40-hex SHA in case A-5 wires us up with concrete SHAs.
 is_full_sha() {
     [[ "$1" =~ ^[0-9a-f]{40}$ ]]
 }
 
 host_arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
 
-# Mirror the legacy stage's idempotent fetch shape: init + remote + fetch +
-# checkout FETCH_HEAD, so the working tree is always a clean checkout at the
-# requested ref regardless of whether the ref is a branch tip or a frozen SHA.
+# Idempotent fetch shape: init + remote + fetch + checkout FETCH_HEAD, so
+# the working tree is always a clean checkout at the requested ref
+# regardless of whether the ref is a branch tip or a frozen SHA.
 fetch_repo() {
     local dir="$1" repo="$2" ref="$3"
     rm -rf -- "$dir"
@@ -124,8 +116,7 @@ fetch_repo "$BUILD_DIR" "$REPO" "$REF"
 # pin to record in components.readsb_wiedehopf.sha.
 BUILT_SHA="$(git -C "$BUILD_DIR" rev-parse HEAD)"
 
-# Build. Matches `stage-airplanes/02-install-decoder/01-run-chroot.sh:22`
-# verbatim modulo armhf branch (rejected upstream of here for v1).
+# Build. armhf branch is rejected upstream of here for v1.
 if [[ "$host_arch" != "arm64" ]]; then
     die "host arch is '$host_arch' but --arch is arm64; cross-compile is not configured here — run on an arm64 host (CI uses ubuntu-24.04-arm)"
 fi

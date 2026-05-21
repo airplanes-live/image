@@ -477,11 +477,11 @@ jobs:
           ref: ${{ steps.webconfig-ref.outputs.ref }}
           path: image-webconfig
 
-      - name: Load tar1090/graphs1090 SHAs from config-dev
+      - name: Load tar1090/graphs1090 SHAs from runtime-overlay/config-dev
         run: |
           set -a
           # shellcheck disable=SC1091
-          . config-dev
+          . runtime-overlay/config-dev
           set +a
           {
             echo "AIRPLANES_TAR1090_REPO=$AIRPLANES_TAR1090_REPO"
