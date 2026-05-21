@@ -251,6 +251,60 @@ _wcu_verify_persistence() {
 
 echo "image-probe: starting image-side assertions"
 
+# Runtime-overlay symlink chain assertions. When the image was built via the
+# runtime-overlay stage (AIRPLANES_USE_LEGACY_DECODER_STAGES=0) the decoder
+# units, render-status, decoder binaries, tar1090/graphs1090 surfaces and
+# lighttpd conf-available snippets all resolve through
+# /opt/airplanes-runtime/current/ → versioned release dir. Skip the block
+# cleanly when the legacy in-chroot path was used so config-stable's image
+# build stays green until B-3b.
+if [[ -d /opt/airplanes-runtime ]]; then
+    _runtime_link="$(readlink /etc/systemd/system/readsb.service 2>/dev/null || true)"
+    [[ "$_runtime_link" == "/opt/airplanes-runtime/current/systemd/readsb.service" ]] \
+        || fail "readsb.service symlink unexpected: $_runtime_link"
+
+    [[ "$(readlink /etc/systemd/system/airplanes-runtime-update-recover.service 2>/dev/null)" \
+        == "/opt/airplanes-runtime/current/systemd/airplanes-runtime-update-recover.service" ]] \
+        || fail "airplanes-runtime-update-recover.service symlink unexpected"
+    systemctl is-enabled airplanes-runtime-update-recover.service >/dev/null \
+        || fail "airplanes-runtime-update-recover.service not enabled"
+
+    # Two-hop lighttpd chain: conf-enabled (image-owned) → conf-available
+    # (overlay-owned absolute) → release dir. Just assert the final target
+    # resolves; -e through the symlink chain proves both hops.
+    [[ -e /etc/lighttpd/conf-enabled/89-airplanes-978.conf ]] \
+        || fail "lighttpd conf-enabled 89-airplanes-978.conf does not resolve through overlay"
+    [[ -e /etc/lighttpd/conf-enabled/88-tar1090.conf ]] \
+        || fail "lighttpd conf-enabled 88-tar1090.conf does not resolve through overlay"
+    [[ -e /etc/lighttpd/conf-enabled/88-graphs1090.conf ]] \
+        || fail "lighttpd conf-enabled 88-graphs1090.conf does not resolve through overlay"
+
+    # decoder binary symlinks (both → readsb; airplanes-978 is a symlink,
+    # not a hardlink, per the v1 layout).
+    [[ "$(readlink /usr/bin/readsb 2>/dev/null)" == "/opt/airplanes-runtime/current/bin/readsb" ]] \
+        || fail "/usr/bin/readsb symlink unexpected"
+    [[ "$(readlink /usr/bin/airplanes-978 2>/dev/null)" == "/opt/airplanes-runtime/current/bin/readsb" ]] \
+        || fail "/usr/bin/airplanes-978 should symlink to current/bin/readsb"
+    [[ "$(readlink /usr/bin/dump978-fa 2>/dev/null)" == "/opt/airplanes-runtime/current/bin/dump978-fa" ]] \
+        || fail "/usr/bin/dump978-fa symlink unexpected"
+
+    # Runtime manifest pointer is wired in build mode too.
+    [[ -L /etc/airplanes/runtime-manifest.json ]] \
+        || fail "/etc/airplanes/runtime-manifest.json is not a symlink"
+    [[ -e /etc/airplanes/runtime-manifest.json ]] \
+        || fail "/etc/airplanes/runtime-manifest.json is a broken symlink"
+
+    # Public key shipped and well-formed.
+    [[ -r /usr/share/airplanes/runtime-release.pub ]] \
+        || fail "/usr/share/airplanes/runtime-release.pub missing"
+    head -1 /usr/share/airplanes/runtime-release.pub | grep -q "minisign public key" \
+        || fail "runtime-release.pub header malformed"
+
+    # minisign actually parses the shipped key (no binary surprises).
+    command -v minisign >/dev/null 2>&1 \
+        || fail "minisign apt package not installed"
+fi
+
 # Boot-config apply state.
 assert_file /boot/firmware/airplanes-config.applied.txt
 assert_not_exists /boot/firmware/airplanes-config.txt

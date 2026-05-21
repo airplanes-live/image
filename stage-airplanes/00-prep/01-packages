@@ -21,6 +21,7 @@ librtlsdr0
 libusb-1.0-0
 soapysdr-module-rtlsdr
 lighttpd
+minisign
 rrdtool
 collectd-core
 unzip
