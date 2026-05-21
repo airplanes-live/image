@@ -117,7 +117,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
               quilt parted debootstrap \
               zerofree zip dosfstools libarchive-tools libcap2-bin rsync \
-              xz-utils file bc qemu-utils kpartx gpg pigz xxd arch-test
+              xz-utils file bc qemu-utils kpartx gpg pigz xxd arch-test \
+              minisign
           sudo ln -sf /bin/true /usr/local/bin/qemu-arm
 
       - name: Build
