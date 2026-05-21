@@ -1378,7 +1378,36 @@ airplanes_runtime_record_runtime_manifest() {
     install -d -m 755 "$(dirname "$link")"
     local tmp="${link}.tmp.$$"
     rm -f -- "$tmp"
-    ln -s -- "/opt/airplanes-runtime/current/manifest.json" "$tmp"
+
+    if airplanes_runtime_is_build_mode; then
+        # Build mode: write a regular file copy so host-side consumers (like
+        # scripts/manifest-generator.sh running in stage 07-finalize, outside
+        # the chroot) can read the manifest content. The symlink form points
+        # at /opt/airplanes-runtime/current/manifest.json which the host
+        # cannot resolve when target_root != /. The first runtime self-update
+        # on-device replaces this file with the symlink via `mv -Tf`, so the
+        # auto-follow-current semantics take over once the device is live.
+        #
+        # The `current` symlink target is an absolute path rooted at the
+        # device's view of /, so resolve it manually against target_root
+        # rather than letting `readlink -f` follow it on the host.
+        local current="${target_root}/opt/airplanes-runtime/current"
+        local current_target
+        current_target="$(readlink -- "$current")" || {
+            echo "ERROR: ${current} is not a symlink (current pointer missing)" >&2
+            return 1
+        }
+        local manifest_src="${target_root}${current_target}/manifest.json"
+        if [[ ! -f "$manifest_src" ]]; then
+            echo "ERROR: current release manifest missing: $manifest_src" >&2
+            return 1
+        fi
+        cp -- "$manifest_src" "$tmp"
+        chmod 0644 "$tmp"
+    else
+        ln -s -- "/opt/airplanes-runtime/current/manifest.json" "$tmp"
+    fi
+
     mv -Tf -- "$tmp" "$link"
 }
 
