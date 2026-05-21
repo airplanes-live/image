@@ -322,6 +322,14 @@ assert_service_healthy lighttpd.service
 assert_service_healthy airplanes-webconfig.service
 assert_service_healthy ssh.service
 
+# Update-orchestrator launch path is image-owned (stage 06d) and must
+# exist on every image regardless of which runtime-overlay tag is baked
+# in. The trampoline exec()s the overlay-shipped orchestrator binary
+# after a capability check; webconfig's sudoers entry pins this path.
+assert_file /usr/local/lib/airplanes-webconfig/start-orchestrator.sh
+[[ -x /usr/local/lib/airplanes-webconfig/start-orchestrator.sh ]] \
+    || fail "/usr/local/lib/airplanes-webconfig/start-orchestrator.sh is not executable"
+
 # Tmpfs sizing oneshot ran (oneshot → inactive(dead) on success; not
 # "failed"). Then verify the actual on-disk effects.
 _runresize_state="$(systemctl show airplanes-run-resize.service \

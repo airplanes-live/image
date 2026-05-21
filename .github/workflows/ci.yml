@@ -27,7 +27,8 @@ jobs:
                  -o -name 'airplanes-first-run' \
                  -o -name 'airplanes-grant-sudo' \
                  -o -name 'render-status' \
-                 -o -name '10-airplanes-status' \) \
+                 -o -name '10-airplanes-status' \
+                 -o -name 'airplanes-update-orchestrator' \) \
               -print0
           )
           if (( ${#files[@]} == 0 )); then
@@ -44,6 +45,7 @@ jobs:
                    stage-airplanes/**/files/**/airplanes-first-run \
                    stage-airplanes/**/files/**/airplanes-grant-sudo \
                    runtime-overlay/src/lib/airplanes/render-status \
+                   runtime-overlay/src/lib/airplanes-update-orchestrator \
                    runtime-overlay/src/lib/*.sh \
                    runtime-overlay/src/etc/update-motd.d/10-airplanes-status \
                    runtime-overlay/src/share/airplanes/*.sh \
