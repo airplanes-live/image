@@ -288,11 +288,18 @@ if [[ -d /opt/airplanes-runtime ]]; then
     [[ "$(readlink /usr/bin/dump978-fa 2>/dev/null)" == "/opt/airplanes-runtime/current/bin/dump978-fa" ]] \
         || fail "/usr/bin/dump978-fa symlink unexpected"
 
-    # Runtime manifest pointer is wired in build mode too.
-    [[ -L /etc/airplanes/runtime-manifest.json ]] \
-        || fail "/etc/airplanes/runtime-manifest.json is not a symlink"
+    # Runtime manifest pointer. On a fresh-flashed image (before the first
+    # runtime self-update has fired) this is a regular-file copy of the
+    # baked release's manifest, written by install.sh --build-mode. After
+    # the first on-device runtime self-update it gets replaced (mv -Tf) by
+    # a symlink to /opt/airplanes-runtime/current/manifest.json so the
+    # pointer auto-follows current. Boot-smoke runs against a fresh image
+    # so the regular-file case is what we see here; we just need the file
+    # to be present and parseable.
     [[ -e /etc/airplanes/runtime-manifest.json ]] \
-        || fail "/etc/airplanes/runtime-manifest.json is a broken symlink"
+        || fail "/etc/airplanes/runtime-manifest.json missing"
+    jq -e '.version' /etc/airplanes/runtime-manifest.json >/dev/null 2>&1 \
+        || fail "/etc/airplanes/runtime-manifest.json is not parseable JSON with .version"
 
     # Public key shipped and well-formed.
     [[ -r /usr/share/airplanes/runtime-release.pub ]] \
