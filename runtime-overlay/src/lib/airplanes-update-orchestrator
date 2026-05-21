@@ -54,9 +54,10 @@ readonly _self_dir
 : "${AIRPLANES_ORCHESTRATOR_FEED_UPDATE:=/usr/local/share/airplanes/update.sh}"
 : "${AIRPLANES_ORCHESTRATOR_WEBCONFIG_UPDATE:=/usr/local/lib/airplanes-webconfig/webconfig-self-update.sh}"
 : "${AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE:=/opt/airplanes-runtime/current/lib/runtime-self-update.sh}"
+: "${AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE:=/var/lib/airplanes-runtime-upgrade/upgrade-state}"
 : "${AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE:=airplanes-webconfig.service}"
-: "${AIRPLANES_ORCHESTRATOR_SYSTEMCTL:=systemctl}"
-: "${AIRPLANES_ORCHESTRATOR_APT_GET:=apt-get}"
+: "${AIRPLANES_ORCHESTRATOR_SYSTEMCTL:=/usr/bin/systemctl}"
+: "${AIRPLANES_ORCHESTRATOR_APT_GET:=/usr/bin/apt-get}"
 
 readonly STATE_FILE="$AIRPLANES_ORCHESTRATOR_STATE_FILE"
 readonly LOCK_FILE="$AIRPLANES_ORCHESTRATOR_LOCK_FILE"
@@ -211,14 +212,17 @@ step_apt() {
         # No apt-get on PATH — environment is degraded, but the apt step
         # cannot do work and has not made any system mutations. Surface
         # as a skip rather than a hard failure so the rest of the
-        # orchestrator can still run.
+        # orchestrator can still run. APT_IRREVERSIBLE was raised by the
+        # caller before this step ran; reset it since no mutation
+        # happened.
         echo "orchestrator: apt-get not found in PATH; skipping apt step" >&2
+        APT_IRREVERSIBLE=0
         return 0
     fi
     # Chain with && so any non-zero rc surfaces. APT_IRREVERSIBLE is
-    # raised BEFORE the first command so a hang or crash mid-run still
-    # records the right value in the next state-file write.
-    APT_IRREVERSIBLE=1
+    # already set by the caller before this step started — that
+    # ensures any state-file write during the mutation window mirrors
+    # the right value even on a hang or crash.
     DEBIAN_FRONTEND=noninteractive "$apt_get" update \
         && DEBIAN_FRONTEND=noninteractive "$apt_get" -y upgrade
 }
@@ -246,6 +250,7 @@ step_feed_hup() {
         echo "orchestrator: SIGHUP to $AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE failed; continuing" >&2
 }
 
+# shellcheck disable=SC2317  # invoked indirectly
 step_webconfig() {
     if [[ ! -x "$AIRPLANES_ORCHESTRATOR_WEBCONFIG_UPDATE" ]]; then
         echo "orchestrator: webconfig updater not found at $AIRPLANES_ORCHESTRATOR_WEBCONFIG_UPDATE" >&2
@@ -254,12 +259,34 @@ step_webconfig() {
     "$AIRPLANES_ORCHESTRATOR_WEBCONFIG_UPDATE"
 }
 
+# shellcheck disable=SC2317  # invoked indirectly
 step_runtime() {
     if [[ ! -x "$AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE" ]]; then
         echo "orchestrator: runtime updater not found at $AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE" >&2
         return 1
     fi
-    "$AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE"
+    local rc=0
+    "$AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        return 0
+    fi
+    # The runtime self-updater treats a same-version replay (no newer
+    # release on the channel) as FAILED_PRE_MUTATION with a
+    # failure_reason of `same_version_replay_<version>`. From the
+    # orchestrator's "is anything newer" perspective that is a no-op,
+    # not a failure — translate it. Any other failure (download, verify,
+    # health gate) surfaces as a real step failure.
+    local state_file="$AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE"
+    if [[ -r "$state_file" ]]; then
+        local upg_state upg_reason
+        upg_state="$(awk -F= '/^state=/ { sub(/^state=/, ""); print; exit }' "$state_file" 2>/dev/null || true)"
+        upg_reason="$(awk -F= '/^failure_reason=/ { sub(/^failure_reason=/, ""); print; exit }' "$state_file" 2>/dev/null || true)"
+        if [[ "$upg_state" == "FAILED_PRE_MUTATION" && "$upg_reason" == same_version_replay_* ]]; then
+            echo "orchestrator: runtime self-updater reports no newer release ($upg_reason); treating as no-op" >&2
+            return 0
+        fi
+    fi
+    return "$rc"
 }
 
 # ---------------------------------------------------------------------------

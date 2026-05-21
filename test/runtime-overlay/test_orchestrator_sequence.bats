@@ -82,6 +82,7 @@ run_orchestrator() {
         AIRPLANES_ORCHESTRATOR_FEED_UPDATE="$TMP/sub/feed-update.sh" \
         AIRPLANES_ORCHESTRATOR_WEBCONFIG_UPDATE="$TMP/sub/webconfig-update.sh" \
         AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE="$TMP/sub/runtime-update.sh" \
+        AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE="$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" \
         AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE="airplanes-webconfig.service" \
         AIRPLANES_ORCHESTRATOR_SYSTEMCTL="systemctl" \
         AIRPLANES_ORCHESTRATOR_APT_GET="apt-get" \
@@ -293,6 +294,50 @@ EOF
     run_orchestrator
     [ "$status" -ne 0 ]
     assert_state_is_valid_json
+    [ "$(state_step)" = "runtime" ]
+    [ "$(state_status)" = "failed" ]
+}
+
+@test "runtime same-version-replay is treated as a no-op success" {
+    # The runtime self-updater writes FAILED_PRE_MUTATION with
+    # failure_reason=same_version_replay_<version> when invoked against
+    # the already-installed version. The orchestrator must translate
+    # that into step success — it is "no newer release available", not
+    # a real failure.
+    install -d -m 0755 "$TMP/var/lib/airplanes-runtime-upgrade"
+    cat > "$TMP/sub/runtime-update.sh" <<EOF
+#!/usr/bin/env bash
+cat > "$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" <<STATE
+state=FAILED_PRE_MUTATION
+failure_reason=same_version_replay_opt_airplanes-runtime_releases_v0.0.1
+STATE
+exit 1
+EOF
+    chmod 0755 "$TMP/sub/runtime-update.sh"
+
+    run_orchestrator
+    [ "$status" -eq 0 ]
+    assert_state_is_valid_json
+    [ "$(state_step)" = "done" ]
+    [ "$(state_status)" = "ok" ]
+}
+
+@test "runtime non-same-version FAILED_PRE_MUTATION still surfaces" {
+    # FAILED_PRE_MUTATION with a different failure_reason (download,
+    # verify, compat) is a real failure and must propagate.
+    install -d -m 0755 "$TMP/var/lib/airplanes-runtime-upgrade"
+    cat > "$TMP/sub/runtime-update.sh" <<EOF
+#!/usr/bin/env bash
+cat > "$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" <<STATE
+state=FAILED_PRE_MUTATION
+failure_reason=download_failed
+STATE
+exit 1
+EOF
+    chmod 0755 "$TMP/sub/runtime-update.sh"
+
+    run_orchestrator
+    [ "$status" -ne 0 ]
     [ "$(state_step)" = "runtime" ]
     [ "$(state_status)" = "failed" ]
 }
