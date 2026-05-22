@@ -138,6 +138,7 @@ pre_mutation_fail() {
 if ! airplanes_runtime_download_release "$TAG" "$ARCH_NAME" "$WORK_DIR"; then
     pre_mutation_fail "download_failed"
 fi
+TARBALL="$(airplanes_runtime_downloaded_tarball_path "$TAG" "$ARCH_NAME" "$WORK_DIR")"
 
 MANIFEST="$WORK_DIR/manifest.json"
 if ! airplanes_runtime_verify_manifest_version "$MANIFEST" "$TAG"; then
@@ -325,7 +326,7 @@ roll_back_and_exit() {
 # scratch dir.
 _state_write_or_die PAYLOAD_EXTRACTED
 if ! airplanes_runtime_extract_release_tarball \
-        "$WORK_DIR/${TAG}-${ARCH_NAME}.tar.gz" \
+        "$TARBALL" \
         "$RELEASE_DIR_ABS"; then
     roll_back_and_exit 1 "extract_failed"
 fi

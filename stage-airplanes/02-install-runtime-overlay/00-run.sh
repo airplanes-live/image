@@ -1,8 +1,9 @@
 #!/bin/bash -e
 
-# Host-side stage: invoke runtime-overlay/install.sh --build-mode against the
-# concrete release tag pinned in config-{dev,stable}. install.sh downloads,
-# verifies (sha256 + minisign), extracts the release tarball under
+# Host-side stage: invoke runtime-overlay/install.sh --build-mode against either
+# the signed runtime assets produced earlier in CI
+# (AIRPLANES_RUNTIME_RELEASE_ASSET_DIR) or the current channel's published
+# product release. install.sh verifies (sha256 + minisign), extracts the tarball under
 # ${ROOTFS_DIR}/opt/airplanes-runtime/releases/v<version>/, flips the
 # `current` symlink, relinks the /usr/bin/{readsb,airplanes-978,dump978-fa}
 # decoder binaries, and applies every managed_paths entry from the release
@@ -12,7 +13,6 @@
 # systemctl enable, and the conf-enabled lighttpd hop — everything that has to
 # run inside the target rootfs.
 
-: "${AIRPLANES_RUNTIME_OVERLAY_TAG:?must be set by config-stable/dev}"
 : "${ARCH:?must be set by pi-gen}"
 : "${ROOTFS_DIR:?must be set by pi-gen}"
 : "${BASE_DIR:?must be set by pi-gen}"
@@ -20,8 +20,8 @@
 # Copy the runtime-overlay source tree into a scratch dir outside the rootfs
 # so install.sh's $_self_dir resolution does not point at a path inside the
 # staging chroot. We are airplanes-live/image — runtime-overlay/ in BASE_DIR
-# is the same source the runtime-release.yml workflow consumed to build the
-# pinned release.
+# is the same source the product workflow consumed to build the runtime assets
+# passed in AIRPLANES_RUNTIME_RELEASE_ASSET_DIR.
 #
 # Build-mode commit_sha cross-check: install.sh's `git -C "$_self_dir"
 # rev-parse HEAD` walks UP from the scratch dir, finding any ancestor .git
@@ -76,7 +76,9 @@ env \
 	AIRPLANES_BUILD_MODE=1 \
 	ROOTFS_DIR="$ROOTFS_DIR" \
 	ARCH="$ARCH" \
-	AIRPLANES_RUNTIME_OVERLAY_TAG="$AIRPLANES_RUNTIME_OVERLAY_TAG" \
+	CHANNEL="${CHANNEL:-}" \
+	AIRPLANES_RUNTIME_OVERLAY_TAG="${AIRPLANES_RUNTIME_OVERLAY_TAG:-}" \
+	AIRPLANES_RUNTIME_RELEASE_ASSET_DIR="${AIRPLANES_RUNTIME_RELEASE_ASSET_DIR:-}" \
 	AIRPLANES_RUNTIME_MINISIGN_PUBKEY="$PUBKEY_HOST_PATH" \
 	AIRPLANES_RUNTIME_SKIP_SOURCE_SHA_CHECK=1 \
 	bash "$RUNTIME_OVERLAY_SRC/install.sh" --build-mode

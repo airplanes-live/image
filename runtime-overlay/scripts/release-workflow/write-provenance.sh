@@ -96,8 +96,8 @@ trap 'rm -f -- "$tmp"' EXIT
     printf 'Verify the release before installing:\n\n'
     printf '```\n'
     printf 'minisign -V -p /usr/share/airplanes/runtime-release.pub \\\n'
-    printf '         -x SHA256SUMS.minisig -m SHA256SUMS\n'
-    printf 'sha256sum -c SHA256SUMS\n'
+    printf '         -x runtime-SHA256SUMS.minisig -m runtime-SHA256SUMS\n'
+    printf 'sha256sum -c runtime-SHA256SUMS\n'
     printf '```\n'
 } > "$tmp"
 

@@ -6,17 +6,17 @@
 # runtime-overlay/scripts/lib/cross-compile-dump978.sh,
 # runtime-overlay/scripts/lib/stage-tar1090.sh,
 # runtime-overlay/scripts/lib/stage-graphs1090.sh) to pin the upstream
-# sources baked into runtime-overlay releases published on the stable
-# channel.
+# sources baked into runtime-overlay assets published inside stable product
+# releases.
 #
 # Scope is the inbound-decode stack only — readsb (wiedehopf), dump978-fa
 # (flightaware), tar1090 (wiedehopf), tar1090-db (wiedehopf), graphs1090
 # (wiedehopf). Everything else (feed, image-webconfig, the outbound
 # airplanes-live/readsb fork that produces the airplanes-feed binary) is
-# pinned in the image-level config-stable and is not republished through
-# runtime-overlay releases.
+# pinned in the image-level config-stable and is published by the same product
+# release workflow.
 #
-# Stable pins are 40-hex commit SHAs so a stable runtime-overlay release is
+# Stable pins are 40-hex commit SHAs so stable runtime-overlay assets are
 # reproducible from this file. Bump in lockstep with PRs that have already
 # been validated on the dev channel.
 

@@ -24,6 +24,7 @@
 AIRPLANES_RUNTIME_REPO="${AIRPLANES_RUNTIME_REPO:-https://github.com/airplanes-live/image.git}"
 AIRPLANES_RUNTIME_DOWNLOAD_BASE="${AIRPLANES_RUNTIME_DOWNLOAD_BASE:-https://github.com/airplanes-live/image/releases/download}"
 AIRPLANES_RUNTIME_RELEASES_API="${AIRPLANES_RUNTIME_RELEASES_API:-https://api.github.com/repos/airplanes-live/image/releases}"
+AIRPLANES_RUNTIME_RELEASE_ASSET_DIR="${AIRPLANES_RUNTIME_RELEASE_ASSET_DIR:-}"
 
 # Probe URL base for the in-process HTTP gates. The default targets the
 # loopback lighttpd reverse proxy on the feeder; the bats tests override it
@@ -137,20 +138,26 @@ airplanes_runtime_detect_arch() {
 # Channel and tag resolution
 # ---------------------------------------------------------------------------
 #
-# Build mode reads AIRPLANES_RUNTIME_OVERLAY_TAG (a concrete tag pinned by
-# the image config — `runtime-vX.Y.Z` for stable, `runtime-dev-YYYYMMDD-<sha>`
-# for dev). Runtime mode reads /etc/airplanes/release-channel; the file
-# doesn't exist during image build because stage 06 writes it after stage 02.
+# Build mode normally receives AIRPLANES_RUNTIME_RELEASE_ASSET_DIR from CI and
+# consumes a just-built signed runtime asset set before it is published. Local
+# builds can still set AIRPLANES_RUNTIME_OVERLAY_TAG to force a concrete
+# release tag. Runtime mode reads /etc/airplanes/release-channel.
 
 airplanes_runtime_resolve_channel() {
     if airplanes_runtime_is_build_mode; then
-        if [[ -z "${AIRPLANES_RUNTIME_OVERLAY_TAG:-}" ]]; then
-            echo "ERROR: AIRPLANES_RUNTIME_OVERLAY_TAG must be set in build mode (concrete tag pinned by the image config)" >&2
-            return 1
+        if [[ -n "${AIRPLANES_RUNTIME_OVERLAY_TAG:-}" || -n "${AIRPLANES_RUNTIME_RELEASE_ASSET_DIR:-}" ]]; then
+            printf '%s' "pinned"
+            return 0
         fi
-        # Build mode doesn't have a channel of its own — return what the
-        # caller pinned so the rest of the pipeline can echo it for clarity.
-        printf '%s' "pinned"
+        case "${CHANNEL:-}" in
+            stable|dev)
+                printf '%s' "$CHANNEL"
+                ;;
+            *)
+                echo "ERROR: build mode requires AIRPLANES_RUNTIME_RELEASE_ASSET_DIR, AIRPLANES_RUNTIME_OVERLAY_TAG, or CHANNEL=stable|dev" >&2
+                return 1
+                ;;
+        esac
         return 0
     fi
 
@@ -180,10 +187,9 @@ airplanes_runtime_resolve_channel() {
     esac
 }
 
-# Resolves a channel name into a concrete release tag. Identical pattern to
-# image-webconfig's resolver: stable picks the highest semver matching
-# `runtime-v[MAJOR].[MINOR].[PATCH]` exactly (no prereleases); dev returns
-# the floating `runtime-dev-latest` tag.
+# Resolves a channel name into a concrete product release tag. Stable picks the
+# highest published non-draft, non-prerelease vMAJOR.MINOR.PATCH release that
+# carries runtime assets. Dev returns the floating `dev-latest` prerelease.
 airplanes_runtime_resolve_tag() {
     local channel="$1"
     case "$channel" in
@@ -194,11 +200,16 @@ airplanes_runtime_resolve_tag() {
             airplanes_runtime_resolve_dev_latest_tag
             ;;
         pinned)
-            if [[ -z "${AIRPLANES_RUNTIME_OVERLAY_TAG:-}" ]]; then
-                echo "ERROR: pinned channel selected but AIRPLANES_RUNTIME_OVERLAY_TAG is empty" >&2
-                return 1
+            if [[ -n "${AIRPLANES_RUNTIME_OVERLAY_TAG:-}" ]]; then
+                printf '%s' "${AIRPLANES_RUNTIME_OVERLAY_TAG}"
+                return 0
             fi
-            printf '%s' "${AIRPLANES_RUNTIME_OVERLAY_TAG}"
+            if [[ -n "${AIRPLANES_RUNTIME_RELEASE_ASSET_DIR:-}" ]]; then
+                printf '%s' "local-assets"
+                return 0
+            fi
+            echo "ERROR: pinned channel selected but no runtime release source is set" >&2
+            return 1
             ;;
         *)
             printf '%s' "$channel"
@@ -206,75 +217,241 @@ airplanes_runtime_resolve_tag() {
     esac
 }
 
-# Strict match: runtime-vMAJOR.MINOR.PATCH, no leading zeroes, no prereleases.
-# Echoes the highest matching tag (semver-sort via `sort -V`).
+airplanes_runtime_release_has_product_runtime_assets_jq() {
+    cat <<'JQ'
+def has_asset($name): any(.assets[]?; .name == $name);
+[
+  .[]?
+  | select((.draft // false) | not)
+  | select((.prerelease // false) | not)
+  | select(.tag_name | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
+  | select(has_asset("runtime-overlay-arm64.tar.gz"))
+  | select(has_asset("runtime-manifest.json"))
+  | select(has_asset("runtime-SHA256SUMS"))
+  | select(has_asset("runtime-SHA256SUMS.minisig"))
+  | .tag_name
+]
+| sort_by(sub("^v"; "") | split(".") | map(tonumber))
+| last // ""
+JQ
+}
+
+# Strict match: vMAJOR.MINOR.PATCH, no leading zeroes, no prereleases. The
+# query uses the Releases API rather than raw git tags so a pushed tag does not
+# become available to devices before CI has published signed runtime assets.
 airplanes_runtime_resolve_latest_stable_tag() {
-    local refs latest=""
-    if ! refs="$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags --refs "$AIRPLANES_RUNTIME_REPO" 'refs/tags/runtime-v*' 2>/dev/null)"; then
-        echo "ERROR: could not query release tags from $AIRPLANES_RUNTIME_REPO (network/DNS/TLS failure)" >&2
-        return 2
-    fi
-    if [[ -z "$refs" ]]; then
-        echo "ERROR: stable channel selected but no runtime-v[MAJOR].[MINOR].[PATCH] tags exist at $AIRPLANES_RUNTIME_REPO" >&2
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "ERROR: required dependency 'jq' not found on PATH" >&2
         return 1
     fi
-    local _sha _refname _tag
-    while IFS=$'\t' read -r _sha _refname; do
-        _tag="${_refname#refs/tags/}"
-        if [[ "$_tag" =~ ^runtime-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            if [[ -z "$latest" ]]; then
-                latest="$_tag"
-            else
-                latest="$(printf '%s\n%s\n' "$latest" "$_tag" | sort -V | tail -n 1)"
-            fi
-        fi
-    done <<< "$refs"
-    if [[ -z "$latest" ]]; then
-        echo "ERROR: no runtime-v[MAJOR].[MINOR].[PATCH] tags at $AIRPLANES_RUNTIME_REPO" >&2
+
+    local url="${AIRPLANES_RUNTIME_RELEASES_API}?per_page=100"
+    local releases
+    if ! releases="$(curl -fsSL --max-time 120 "$url" 2>/dev/null)"; then
+        echo "ERROR: could not query product releases from $AIRPLANES_RUNTIME_RELEASES_API (network/DNS/TLS failure)" >&2
+        return 2
+    fi
+
+    local jq_filter latest
+    jq_filter="$(airplanes_runtime_release_has_product_runtime_assets_jq)"
+    if ! latest="$(jq -r "$jq_filter" <<<"$releases")"; then
+        echo "ERROR: could not parse product releases from $AIRPLANES_RUNTIME_RELEASES_API" >&2
+        return 1
+    fi
+    if [[ -z "$latest" || "$latest" == "null" ]]; then
+        echo "ERROR: stable channel selected but no published vX.Y.Z release with runtime assets exists at $AIRPLANES_RUNTIME_RELEASES_API" >&2
         return 1
     fi
     printf '%s' "$latest"
 }
 
-# Returns the floating dev tag literally. Resolution to the underlying commit
-# happens at download time when the release assets get fetched — the GitHub
-# release referenced by this tag carries the matching `manifest.json`
-# whose `version` field is cross-checked by airplanes_runtime_verify_manifest_version.
 airplanes_runtime_resolve_dev_latest_tag() {
-    printf '%s' "runtime-dev-latest"
+    printf '%s' "dev-latest"
+}
+
+airplanes_runtime_product_tarball_name() {
+    local arch="$1"
+    printf 'runtime-overlay-%s.tar.gz' "$arch"
+}
+
+airplanes_runtime_legacy_tarball_name() {
+    local tag="$1" arch="$2"
+    printf '%s-%s.tar.gz' "$tag" "$arch"
+}
+
+airplanes_runtime_downloaded_tarball_name_file() {
+    local dest_dir="$1"
+    printf '%s/.runtime-tarball-name' "$dest_dir"
+}
+
+airplanes_runtime_downloaded_manifest_name_file() {
+    local dest_dir="$1"
+    printf '%s/.runtime-manifest-name' "$dest_dir"
+}
+
+airplanes_runtime_downloaded_tarball_path() {
+    local tag="$1" arch="$2" dest_dir="$3"
+    local name_file name
+    name_file="$(airplanes_runtime_downloaded_tarball_name_file "$dest_dir")"
+    if [[ -r "$name_file" ]]; then
+        name="$(head -n1 "$name_file")"
+    else
+        name="$(airplanes_runtime_legacy_tarball_name "$tag" "$arch")"
+    fi
+    printf '%s/%s' "$dest_dir" "$name"
+}
+
+airplanes_runtime_stage_asset_set_from_dir() {
+    local src_dir="$1" tag="$2" arch="$3" dest_dir="$4" asset_style="$5"
+    local tarball_name manifest_name sums_name sig_name provenance_name
+
+    case "$asset_style" in
+        product)
+            tarball_name="$(airplanes_runtime_product_tarball_name "$arch")"
+            manifest_name="runtime-manifest.json"
+            sums_name="runtime-SHA256SUMS"
+            sig_name="runtime-SHA256SUMS.minisig"
+            provenance_name="runtime-PROVENANCE.md"
+            ;;
+        legacy)
+            tarball_name="$(airplanes_runtime_legacy_tarball_name "$tag" "$arch")"
+            manifest_name="manifest.json"
+            sums_name="SHA256SUMS"
+            sig_name="SHA256SUMS.minisig"
+            provenance_name="PROVENANCE.md"
+            ;;
+        *)
+            echo "ERROR: unknown runtime asset style: $asset_style" >&2
+            return 1
+            ;;
+    esac
+
+    local f
+    for f in "$tarball_name" "$manifest_name" "$sums_name" "$sig_name"; do
+        [[ -f "$src_dir/$f" ]] || return 1
+    done
+
+    cp -- "$src_dir/$tarball_name" "$dest_dir/$tarball_name"
+    cp -- "$src_dir/$manifest_name" "$dest_dir/$manifest_name"
+    cp -- "$src_dir/$sums_name" "$dest_dir/SHA256SUMS"
+    cp -- "$src_dir/$sig_name" "$dest_dir/SHA256SUMS.minisig"
+    if [[ -f "$src_dir/$provenance_name" ]]; then
+        cp -- "$src_dir/$provenance_name" "$dest_dir/PROVENANCE.md"
+    else
+        : > "$dest_dir/PROVENANCE.md"
+    fi
+
+    printf '%s\n' "$tarball_name" > "$(airplanes_runtime_downloaded_tarball_name_file "$dest_dir")"
+    printf '%s\n' "$manifest_name" > "$(airplanes_runtime_downloaded_manifest_name_file "$dest_dir")"
+}
+
+airplanes_runtime_download_asset_set_from_release() {
+    local tag="$1" arch="$2" dest_dir="$3" asset_style="$4"
+    local tarball_name manifest_name sums_name sig_name provenance_name
+
+    case "$asset_style" in
+        product)
+            tarball_name="$(airplanes_runtime_product_tarball_name "$arch")"
+            manifest_name="runtime-manifest.json"
+            sums_name="runtime-SHA256SUMS"
+            sig_name="runtime-SHA256SUMS.minisig"
+            provenance_name="runtime-PROVENANCE.md"
+            ;;
+        legacy)
+            tarball_name="$(airplanes_runtime_legacy_tarball_name "$tag" "$arch")"
+            manifest_name="manifest.json"
+            sums_name="SHA256SUMS"
+            sig_name="SHA256SUMS.minisig"
+            provenance_name="PROVENANCE.md"
+            ;;
+        *)
+            echo "ERROR: unknown runtime asset style: $asset_style" >&2
+            return 1
+            ;;
+    esac
+
+    local base="${AIRPLANES_RUNTIME_DOWNLOAD_BASE}/${tag}"
+    local tmp
+    tmp="$(mktemp -d "$dest_dir/.download.XXXXXX")"
+
+    local remote local_name
+    for remote in "$tarball_name" "$manifest_name" "$sums_name" "$sig_name"; do
+        local_name="$remote"
+        [[ "$remote" == "$sums_name" ]] && local_name="SHA256SUMS"
+        [[ "$remote" == "$sig_name" ]] && local_name="SHA256SUMS.minisig"
+        if ! curl -fsSL --max-time 120 -o "$tmp/$local_name" "$base/$remote"; then
+            rm -rf -- "$tmp"
+            return 1
+        fi
+    done
+
+    if ! curl -fsSL --max-time 120 -o "$tmp/PROVENANCE.md" "$base/$provenance_name"; then
+        : > "$tmp/PROVENANCE.md"
+    fi
+
+    mv -- "$tmp"/* "$dest_dir/"
+    rm -rf -- "$tmp"
+    printf '%s\n' "$tarball_name" > "$(airplanes_runtime_downloaded_tarball_name_file "$dest_dir")"
+    printf '%s\n' "$manifest_name" > "$(airplanes_runtime_downloaded_manifest_name_file "$dest_dir")"
 }
 
 # ---------------------------------------------------------------------------
 # Download + verify
 # ---------------------------------------------------------------------------
 #
-# A release is five files under
-# https://github.com/airplanes-live/image/releases/download/<tag>/ :
-#   <tag>-<arch>.tar.gz   — the per-arch payload (release dir tree)
-#   manifest.json         — declares paths, migrations, etc.
-#   SHA256SUMS            — sha256 over the above two files
-#   SHA256SUMS.minisig    — minisign signature over SHA256SUMS
-#   PROVENANCE.md         — build provenance, fetched but not verified by
-#                           the on-device installer (operator triage only).
+# Product releases publish fixed runtime asset names:
+#   runtime-overlay-<arch>.tar.gz
+#   runtime-manifest.json
+#   runtime-SHA256SUMS
+#   runtime-SHA256SUMS.minisig
+#   runtime-PROVENANCE.md
 #
-# Verification order: signature first (proves SHA256SUMS came from the
-# signing key holder), then sha256sum -c on the data files (proves the
-# tarball and manifest match what was signed). Any failure aborts.
-
+# Legacy runtime-only releases used tag-derived tarball names and unprefixed
+# metadata. The installer still accepts those names for operator triage and
+# the short dev migration bridge.
 airplanes_runtime_download_release() {
     local tag="$1" arch="$2" dest_dir="$3"
-    local base="${AIRPLANES_RUNTIME_DOWNLOAD_BASE}/${tag}"
-    local tarball_name="${tag}-${arch}.tar.gz"
 
     install -d -m 755 "$dest_dir"
 
-    local f
-    for f in "$tarball_name" "manifest.json" "SHA256SUMS" "SHA256SUMS.minisig" "PROVENANCE.md"; do
-        if ! curl -fsSL --max-time 120 -o "$dest_dir/$f" "$base/$f"; then
-            echo "ERROR: download failed: $base/$f" >&2
+    if [[ -n "${AIRPLANES_RUNTIME_RELEASE_ASSET_DIR:-}" ]]; then
+        if [[ ! -d "$AIRPLANES_RUNTIME_RELEASE_ASSET_DIR" ]]; then
+            echo "ERROR: AIRPLANES_RUNTIME_RELEASE_ASSET_DIR is not a directory: $AIRPLANES_RUNTIME_RELEASE_ASSET_DIR" >&2
             return 1
         fi
-    done
+        if ! airplanes_runtime_stage_asset_set_from_dir "$AIRPLANES_RUNTIME_RELEASE_ASSET_DIR" "$tag" "$arch" "$dest_dir" product; then
+            if ! airplanes_runtime_stage_asset_set_from_dir "$AIRPLANES_RUNTIME_RELEASE_ASSET_DIR" "$tag" "$arch" "$dest_dir" legacy; then
+                echo "ERROR: no complete runtime asset set found in $AIRPLANES_RUNTIME_RELEASE_ASSET_DIR" >&2
+                return 1
+            fi
+        fi
+    else
+        local primary_style="product" fallback_style="legacy"
+        case "$tag" in
+            runtime-*) primary_style="legacy"; fallback_style="product" ;;
+        esac
+        if ! airplanes_runtime_download_asset_set_from_release "$tag" "$arch" "$dest_dir" "$primary_style"; then
+            rm -f -- "$dest_dir"/* "$dest_dir"/.runtime-*-name 2>/dev/null || true
+            if ! airplanes_runtime_download_asset_set_from_release "$tag" "$arch" "$dest_dir" "$fallback_style"; then
+                echo "ERROR: download failed for runtime asset set under ${AIRPLANES_RUNTIME_DOWNLOAD_BASE}/${tag}" >&2
+                return 1
+            fi
+        fi
+    fi
+
+    local manifest_name
+    manifest_name="$(head -n1 "$(airplanes_runtime_downloaded_manifest_name_file "$dest_dir")")"
+    if [[ "$manifest_name" != "manifest.json" ]]; then
+        cp -- "$dest_dir/$manifest_name" "$dest_dir/manifest.json"
+    fi
+
+    local tarball_name
+    tarball_name="$(head -n1 "$(airplanes_runtime_downloaded_tarball_name_file "$dest_dir")")"
+
+    if [[ ! -f "$dest_dir/$tarball_name" || ! -f "$dest_dir/$manifest_name" ]]; then
+        echo "ERROR: staged runtime asset set is incomplete in $dest_dir" >&2
+        return 1
+    fi
 
     if ! command -v minisign >/dev/null 2>&1; then
         echo "ERROR: required dependency 'minisign' not found on PATH" >&2
@@ -294,19 +471,15 @@ airplanes_runtime_download_release() {
         return 1
     fi
 
-    # Filter SHA256SUMS to exactly the two files we want to verify (tarball
-    # + manifest) so a SUMS file missing either line is caught loudly. The
-    # signature file does not appear in its own SHA256SUMS — that's fine,
-    # signature integrity is established by the minisign verify above.
     local filtered="$dest_dir/SHA256SUMS.expected"
     {
         grep -E "  ${tarball_name}\$" "$dest_dir/SHA256SUMS" || true
-        grep -E "  manifest\.json\$"  "$dest_dir/SHA256SUMS" || true
+        grep -E "  ${manifest_name}\$" "$dest_dir/SHA256SUMS" || true
     } > "$filtered"
     local expected_lines
     expected_lines="$(wc -l < "$filtered")"
     if [[ "$expected_lines" -ne 2 ]]; then
-        echo "ERROR: SHA256SUMS missing one of $tarball_name / manifest.json" >&2
+        echo "ERROR: SHA256SUMS missing one of $tarball_name / $manifest_name" >&2
         cat "$dest_dir/SHA256SUMS" >&2
         return 1
     fi
@@ -319,9 +492,8 @@ airplanes_runtime_download_release() {
 
 airplanes_runtime_verify_manifest_version() {
     local manifest="$1" expected_tag="$2"
-    # The release tag is `runtime-vX.Y.Z` or `runtime-dev-YYYYMMDD-<sha>` /
-    # `runtime-dev-latest`; the manifest's `version` is `X.Y.Z` or
-    # `X.Y.Z-dev-YYYYMMDD-<sha>` per the schema. Map one to the other.
+    # The release tag is `vX.Y.Z`, `dev-latest`, or a legacy `runtime-*` tag;
+    # the manifest's `version` is `X.Y.Z` or `X.Y.Z-dev-YYYYMMDD-<sha>`.
     local expected_version="${expected_tag#runtime-}"   # strip "runtime-" prefix
     expected_version="${expected_version#v}"             # strip "v" if stable
     local got
@@ -330,7 +502,10 @@ airplanes_runtime_verify_manifest_version() {
         echo "ERROR: manifest.json missing version field (path: $manifest)" >&2
         return 1
     fi
-    # The floating `runtime-dev-latest` tag has no version in its name;
+    if [[ "$expected_tag" == "local-assets" ]]; then
+        return 0
+    fi
+    # The floating dev tags have no version in their names;
     # accept any dev-formatted version. Immutable dev tags
     # (`runtime-dev-YYYYMMDD-<sha>`) embed a date and short SHA but the
     # manifest's `version` field still uses the schema's
@@ -338,7 +513,7 @@ airplanes_runtime_verify_manifest_version() {
     # `0.0.0-dev-YYYYMMDD-<sha>`), so a strict string compare would always
     # fail. Map the tag suffix into the manifest's version suffix and
     # accept any matching dev-formatted version.
-    if [[ "$expected_tag" == "runtime-dev-latest" ]]; then
+    if [[ "$expected_tag" == "dev-latest" || "$expected_tag" == "runtime-dev-latest" ]]; then
         if [[ ! "$got" =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev-[0-9]{8}-[0-9a-f]{7,40}$ ]]; then
             echo "ERROR: manifest.json version=$got is not a dev-formatted version for floating tag $expected_tag" >&2
             return 1

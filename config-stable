@@ -56,10 +56,3 @@ export AIRPLANES_WEBCONFIG_BRANCH="${AIRPLANES_WEBCONFIG_BRANCH:-v0.1.1}"
 
 export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
 export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-4d6c614d7940ce0117db61b1fa91c81fd9e67988}"
-
-# Runtime overlay release tag pinned for the stable image build. Set to a
-# placeholder until the first runtime-vX.Y.Z release is cut; the stable
-# channel image build will fail until a concrete runtime tag exists. Bump
-# to a concrete runtime-vX.Y.Z once a stable runtime release has been
-# published.
-export AIRPLANES_RUNTIME_OVERLAY_TAG="${AIRPLANES_RUNTIME_OVERLAY_TAG:-runtime-v0.0.0-unreleased}"

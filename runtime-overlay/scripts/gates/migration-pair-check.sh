@@ -126,17 +126,16 @@ elif ! command -v gh >/dev/null 2>&1; then
     fail=1
 else
     # Resolve prior releases on the same channel. Stable channel = any
-    # release with a tag matching `runtime-vX.Y.Z`. Dev channel = any
-    # release with a tag matching `runtime-dev-*`. We do not consult
-    # `runtime-dev-latest` directly — its manifest equals one of the
-    # immutable dev tags so we'd double-count.
+    # product release with a tag matching `vX.Y.Z`. Dev channel = the single
+    # rolling `dev-latest` prerelease plus legacy immutable runtime-dev tags
+    # during the migration window.
     #
     # `gh release list` returns at most 30 by default; bump and rely on
     # --json filtering rather than paging since the channel namespaces
     # stay small for the v1 lifetime.
     case "$CHANNEL" in
-        stable) pattern='^runtime-v[0-9]+\.[0-9]+\.[0-9]+$' ;;
-        dev)    pattern='^runtime-dev-[0-9]{8}-[0-9a-f]{7,40}$' ;;
+        stable) pattern='^v[0-9]+\.[0-9]+\.[0-9]+$' ;;
+        dev)    pattern='^(dev-latest|runtime-dev-[0-9]{8}-[0-9a-f]{7,40})$' ;;
     esac
 
     if ! tag_list="$(gh release list -R "$REPO" --limit 100 --json tagName --jq '.[].tagName' 2>&1)"; then
@@ -156,18 +155,21 @@ else
             continue
         fi
         matched_any=1
-        # Pull manifest.json from each prior release. Tolerate fetch
-        # failure (release with broken asset set shouldn't permanently
-        # break this gate); log + continue.
+        # Pull the runtime manifest from each prior release. Tolerate fetch
+        # failure (release with broken asset set shouldn't permanently break
+        # this gate); log + continue. Legacy runtime-only releases used the
+        # unprefixed manifest.json asset name.
         tmp_manifest="$(mktemp)"
-        if gh release download "$tag" -R "$REPO" -p 'manifest.json' \
+        if gh release download "$tag" -R "$REPO" -p 'runtime-manifest.json' \
+                --output "$tmp_manifest" --clobber 2>/dev/null \
+            || gh release download "$tag" -R "$REPO" -p 'manifest.json' \
                 --output "$tmp_manifest" --clobber 2>/dev/null; then
             # Only collect ids whose run_when == first_install_of_version
             # — those are the ones whose semantics break if re-applied.
             jq -r '.migrations[]? | select((.run_when // "every_install") == "first_install_of_version") | .id' \
                 "$tmp_manifest" >> "$prior_ids_file" 2>/dev/null || true
         else
-            echo "migration-pair-check: skipping $tag (no manifest.json asset)" >&2
+            echo "migration-pair-check: skipping $tag (no runtime manifest asset)" >&2
         fi
         rm -f -- "$tmp_manifest"
     done <<< "$tag_list"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 # Tests for runtime-overlay/scripts/gates/*.sh — release gates that the
-# runtime-release.yml workflow runs against a built release tree. Each test
+# product release workflow runs against a built runtime release tree. Each test
 # synthesises the smallest release tree shape the gate looks at, deliberately
 # injects the failure mode, and asserts the gate rejects it.
 

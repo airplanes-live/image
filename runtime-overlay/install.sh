@@ -5,9 +5,10 @@
 #   --build-mode (or AIRPLANES_BUILD_MODE=1)
 #       Invoked from pi-gen's stage-airplanes/02-install-runtime-overlay/.
 #       ROOTFS_DIR points at the staging rootfs; ARCH is set by pi-gen;
-#       AIRPLANES_RUNTIME_OVERLAY_TAG names the concrete release tag the
-#       image config pinned (runtime-vX.Y.Z for stable, runtime-dev-YYYYMMDD-<sha>
-#       for dev). Downloads and verifies the release, extracts it under
+#       AIRPLANES_RUNTIME_RELEASE_ASSET_DIR points at the signed runtime assets
+#       produced earlier in the product-release workflow. Local builds may set
+#       AIRPLANES_RUNTIME_OVERLAY_TAG to install from a published product release.
+#       Downloads/copies and verifies the release, extracts it under
 #       ${ROOTFS_DIR}/opt/airplanes-runtime/releases/v<version>/, flips
 #       current, relinks decoder binaries, lays managed_paths. Skips
 #       systemd ops (handled by the chroot stage) and health gates (no
@@ -15,8 +16,8 @@
 #
 #   --runtime (the default)
 #       Invoked by the on-device self-update helper. Reads
-#       /etc/airplanes/release-channel, resolves stable (highest semver
-#       runtime-vX.Y.Z) or dev (runtime-dev-latest). Runs the full
+#       /etc/airplanes/release-channel, resolves stable (latest published
+#       vX.Y.Z product release) or dev (dev-latest). Runs the full
 #       install pipeline: download → verify → compat preflight →
 #       extract → migrations forward → flip → relink → managed_paths →
 #       systemd ops → health gates → record manifest pointer → GC.
@@ -51,6 +52,7 @@ else
 fi
 
 airplanes_runtime_download_release "$TAG" "$ARCH_NAME" "$WORK_DIR"
+TARBALL="$(airplanes_runtime_downloaded_tarball_path "$TAG" "$ARCH_NAME" "$WORK_DIR")"
 
 MANIFEST="$WORK_DIR/manifest.json"
 airplanes_runtime_verify_manifest_version "$MANIFEST" "$TAG"
@@ -132,7 +134,7 @@ if [[ -e "$RELEASE_DIR_ABS" ]]; then
 fi
 
 airplanes_runtime_extract_release_tarball \
-    "$WORK_DIR/${TAG}-${ARCH_NAME}.tar.gz" \
+    "$TARBALL" \
     "$RELEASE_DIR_ABS"
 
 # The manifest in the release dir is the one subsequent steps trust. The

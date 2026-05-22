@@ -47,6 +47,8 @@ jobs:
                    runtime-overlay/src/lib/airplanes/render-status \
                    runtime-overlay/src/lib/airplanes-update-orchestrator \
                    runtime-overlay/src/lib/*.sh \
+                   runtime-overlay/scripts/gates/*.sh \
+                   runtime-overlay/scripts/release-workflow/*.sh \
                    runtime-overlay/src/etc/update-motd.d/10-airplanes-status \
                    runtime-overlay/src/share/airplanes/*.sh \
                    test/*.sh; do

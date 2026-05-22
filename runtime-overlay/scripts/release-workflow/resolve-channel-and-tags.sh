@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# resolve-channel-and-tags.sh — derive the release identity (channel,
-# version, tag names) for a single runtime-release workflow run.
+# resolve-channel-and-tags.sh — derive the unified product release identity
+# (channel, version, release tag) for one workflow run.
 #
 # Reads the github-actions trigger context from environment variables (so
 # the script is testable outside CI) and emits a set of `key=value` lines
@@ -15,25 +15,23 @@
 # Optional env (workflow_dispatch path):
 #   INPUT_CHANNEL        stable | dev
 #   INPUT_VERSION        explicit semver to publish (stable) or full
-#                        semver+suffix (dev). Optional for dev; required
-#                        for stable.
+#                        semver+suffix (dev). Optional for dev.
 #
 # Outputs (written to $GITHUB_OUTPUT, also echoed on stdout):
 #   channel        stable | dev
 #   version        the semver string the manifest will carry
-#   floating_tag   runtime-dev-latest (dev) | "" (stable)
-#   immutable_tag  runtime-vX.Y.Z (stable) | runtime-dev-<YYYYMMDD>-<sha7> (dev)
+#   release_tag    vX.Y.Z (stable) | dev-latest (dev) | synthetic PR tag
+#   prerelease     true | false
 #   commit_sha     full 40-hex commit SHA
 #   should_publish true | false
 #
 # Behaviour matrix:
-#   - On `tags/runtime-v*` push:
-#       channel=stable, version=tag minus the runtime-v prefix,
-#       floating_tag="", immutable_tag=<tag>, should_publish=true.
+#   - On `tags/v*` push:
+#       channel=stable, version=tag minus the v prefix,
+#       release_tag=<tag>, prerelease=false, should_publish=true.
 #   - On `branches/dev` push:
 #       channel=dev, version=<latest-stable-or-0.0.0>-dev-<YYYYMMDD>-<sha7>,
-#       floating_tag=runtime-dev-latest,
-#       immutable_tag=runtime-dev-<YYYYMMDD>-<sha7>, should_publish=true.
+#       release_tag=dev-latest, prerelease=true, should_publish=true.
 #   - On workflow_dispatch:
 #       Honour INPUT_CHANNEL/INPUT_VERSION. Stable requires INPUT_VERSION.
 #       Dev can synthesise a version like the branches/dev path.
@@ -64,37 +62,45 @@ today="$(date -u +%Y%m%d)"
 
 channel=""
 version=""
-floating_tag=""
-immutable_tag=""
+release_tag=""
+prerelease="false"
 should_publish="true"
 
-# Look up the latest stable runtime tag to use as a version-string base for
+# Look up the latest stable product tag to use as a version-string base for
 # dev releases. Best-effort: a clean tree at v0.0.0 is fine for the first
 # few dev releases. We require `git` to be on PATH (CI installs it).
 latest_stable_version() {
-    git tag --list 'runtime-v*' --sort=-v:refname 2>/dev/null \
-        | grep -E '^runtime-v[0-9]+\.[0-9]+\.[0-9]+$' \
+    git tag --list 'v*' --sort=-v:refname 2>/dev/null \
+        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
         | head -n1 \
-        | sed 's/^runtime-v//'
+        | sed 's/^v//'
 }
 
 case "$EVENT" in
     push)
-        if [[ "$REF" == refs/tags/runtime-v* ]]; then
+        if [[ "$REF" == refs/tags/v* ]]; then
             tag="${REF#refs/tags/}"
-            if ! [[ "$tag" =~ ^runtime-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                die "stable tag not in runtime-vX.Y.Z form: $tag"
+            if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                die "stable tag not in vX.Y.Z form: $tag"
             fi
             channel="stable"
-            version="${tag#runtime-v}"
-            immutable_tag="$tag"
+            version="${tag#v}"
+            release_tag="$tag"
+            prerelease="false"
         elif [[ "$REF" == "refs/heads/dev" ]]; then
             channel="dev"
             base="$(latest_stable_version || true)"
             [[ -n "$base" ]] || base="0.0.0"
             version="${base}-dev-${today}-${short_sha}"
-            immutable_tag="runtime-dev-${today}-${short_sha}"
-            floating_tag="runtime-dev-latest"
+            release_tag="dev-latest"
+            prerelease="true"
+        elif [[ "$REF" == "refs/heads/main" ]]; then
+            channel="stable"
+            version="$(latest_stable_version || true)"
+            [[ -n "$version" ]] || version="0.0.0"
+            release_tag="main-validation-${short_sha}"
+            prerelease="false"
+            should_publish="false"
         else
             die "unsupported push ref: $REF"
         fi
@@ -112,39 +118,37 @@ case "$EVENT" in
                 die "workflow_dispatch stable version must be X.Y.Z (got: $INPUT_VERSION)"
             fi
             version="$INPUT_VERSION"
-            immutable_tag="runtime-v${INPUT_VERSION}"
+            release_tag="v${INPUT_VERSION}"
+            prerelease="false"
         else
             if [[ -n "$INPUT_VERSION" ]]; then
                 if ! [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev-[0-9]{8}-[0-9a-f]{7,40}$ ]]; then
                     die "workflow_dispatch dev version must be X.Y.Z-dev-YYYYMMDD-<sha> (got: $INPUT_VERSION)"
                 fi
                 version="$INPUT_VERSION"
-                # Derive the immutable tag from the supplied version.
-                suffix="${version#*-dev-}"
-                immutable_tag="runtime-dev-${suffix}"
             else
                 base="$(latest_stable_version || true)"
                 [[ -n "$base" ]] || base="0.0.0"
                 version="${base}-dev-${today}-${short_sha}"
-                immutable_tag="runtime-dev-${today}-${short_sha}"
             fi
-            floating_tag="runtime-dev-latest"
+            release_tag="dev-latest"
+            prerelease="true"
         fi
         ;;
     pull_request)
-        # PR runs are validation-only — the workflow's sign and publish
-        # jobs are gated to skip on pull_request. We still need a sane
-        # channel/version/immutable_tag so the build and verify jobs can
+        # PR runs are validation-only — publish jobs are gated to skip on
+        # pull_request, while signing uses a temporary test key. We still need a sane
+        # channel/version/release_tag so the build and verify jobs can
         # render a manifest. Treat PR like a dev build (same version
         # shape so build-release.sh's strict regex accepts it). PR
-        # number lives in the immutable_tag for log readability only —
+        # number lives in the release_tag for log readability only —
         # the tag is never published.
         channel="dev"
         base="$(latest_stable_version || true)"
         [[ -n "$base" ]] || base="0.0.0"
         version="${base}-dev-${today}-${short_sha}"
-        immutable_tag="runtime-dev-pr${GITHUB_PR_NUMBER:-0}-${short_sha}"
-        floating_tag=""
+        release_tag="pr-${GITHUB_PR_NUMBER:-0}-${short_sha}"
+        prerelease="true"
         should_publish="false"
         ;;
     *)
@@ -164,7 +168,7 @@ emit() {
 
 emit channel "$channel"
 emit version "$version"
-emit floating_tag "$floating_tag"
-emit immutable_tag "$immutable_tag"
+emit release_tag "$release_tag"
+emit prerelease "$prerelease"
 emit commit_sha "$SHA"
 emit should_publish "$should_publish"
