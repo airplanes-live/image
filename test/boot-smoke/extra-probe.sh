@@ -1161,28 +1161,31 @@ _orch_run_probe() {
         #      to $STATE_DIR/failure and called `systemctl poweroff;
         #      exit 1` — but `exit 1` exits the SUBSHELL, not run.sh,
         #      so we get here with sub_rc=1 and the failure file
-        #      already populated. Re-calling _orch_fail here would
-        #      overwrite the specific failure message with a generic
-        #      one. Don't do that — let the in-flight poweroff carry
-        #      the real message out.
+        #      already populated. We MUST stop run.sh's main flow
+        #      here: any later assertion in extra-probe.sh (or
+        #      run.sh) calling fail() would overwrite our specific
+        #      failure-file content with a generic message. `exit 1`
+        #      from a function defined in a sourced script exits the
+        #      sourcing shell (run.sh), which preserves our message
+        #      and lets the in-flight poweroff carry the VM out.
         #
         #   B. Something inside the subshell tripped set -e without
         #      going through _orch_fail (e.g. an unguarded pipefail
         #      or command substitution failure). The EXIT trap ran
         #      the dump, but no failure-file was written. Surface a
-        #      generic message via fail() in this case so the harness
-        #      doesn't silently report a successful smoke after the
-        #      missed assertion.
+        #      generic message via _orch_fail in this case so the
+        #      harness doesn't silently report a successful smoke
+        #      after the missed assertion.
         #
         # Detection: $STATE_DIR/failure exists iff fail() ran. We
         # don't need to read its content — its existence alone is
         # the signal.
         local failure_marker="${STATE_DIR:-/var/lib/airplanes-boot-smoke}/failure"
         if [[ -f "$failure_marker" ]]; then
-            # _orch_fail already routed through fail(); poweroff is
-            # in flight; nothing useful to add. Return so we don't
-            # clobber the existing message or trigger a second dump.
-            return 0
+            # _orch_fail already wrote $STATE_DIR/failure and called
+            # systemctl poweroff. Stop run.sh main flow so no later
+            # fail() can overwrite the message.
+            exit 1
         fi
         _orch_fail "orchestrator probe: subshell exited rc=$sub_rc unexpectedly (set -e tripped outside _orch_fail; see dump)"
     fi
