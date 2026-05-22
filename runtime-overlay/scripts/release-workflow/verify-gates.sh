@@ -11,10 +11,12 @@
 # Gates run, in order:
 #   1. validate-manifest.sh on <release-dir>/manifest.json
 #   2. systemd-verify.sh
-#   3. lighttpd-verify.sh
-#   4. migration-pair-check.sh
-#   5. shellcheck -x over staged share/airplanes/*.sh
-#   6. ldd over cross-compiled binaries — no `not found` lines
+#   3. exec-bit-check.sh — managed_paths + ExecStart= shape (mode + shebang)
+#   4. lighttpd-verify.sh
+#   5. migration-pair-check.sh
+#   6. shellcheck -x over staged shell files in share/airplanes/, lib/,
+#      and migrations/
+#   7. ldd over cross-compiled binaries — no `not found` lines
 
 set -euo pipefail
 
@@ -55,20 +57,34 @@ echo "verify-gates: validate-manifest"
 echo "verify-gates: systemd-verify"
 "$gates_dir/systemd-verify.sh" --release-dir "$RELEASE_DIR"
 
+echo "verify-gates: exec-bit-check"
+"$gates_dir/exec-bit-check.sh" --release-dir "$RELEASE_DIR"
+
 echo "verify-gates: lighttpd-verify"
 "$gates_dir/lighttpd-verify.sh" --release-dir "$RELEASE_DIR"
 
 echo "verify-gates: migration-pair-check"
 "$gates_dir/migration-pair-check.sh" --release-dir "$RELEASE_DIR" --channel "$CHANNEL"
 
-echo "verify-gates: shellcheck staged share/airplanes/*.sh"
+# Lint scope covers every shell file the release ships. The original
+# gate only covered share/airplanes/*.sh, which missed the self-update
+# + recovery helpers under lib/ and any shell migrations under
+# migrations/. Walk the tree so a future component-build helper that
+# drops a .sh elsewhere can't dodge the lint.
+echo "verify-gates: shellcheck staged shell files"
 shopt -s nullglob
-shell_files=("$RELEASE_DIR/share/airplanes"/*.sh)
+shell_files=()
+for dir in "$RELEASE_DIR/share/airplanes" "$RELEASE_DIR/lib" "$RELEASE_DIR/migrations"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r -d '' f; do
+        shell_files+=("$f")
+    done < <(find "$dir" -type f -name '*.sh' -print0)
+done
 shopt -u nullglob
 if [[ "${#shell_files[@]}" -gt 0 ]]; then
     shellcheck -x "${shell_files[@]}"
 else
-    echo "verify-gates: no share/airplanes/*.sh files to shellcheck (ok)"
+    echo "verify-gates: no shell files found to shellcheck (ok)"
 fi
 
 # `ldd`-based unresolved-library checks happen at staging time on the
