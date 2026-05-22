@@ -82,7 +82,15 @@ for dir in "$RELEASE_DIR/share/airplanes" "$RELEASE_DIR/lib" "$RELEASE_DIR/migra
 done
 shopt -u nullglob
 if [[ "${#shell_files[@]}" -gt 0 ]]; then
-    shellcheck -x "${shell_files[@]}"
+    # SC1091 (source resolution) is excluded for the staged-tree scope:
+    # `# shellcheck source=...` directives in lib/*.sh are written for
+    # the source-tree layout (runtime-overlay/src/lib/foo.sh sourcing
+    # runtime-overlay/scripts/lib/install-common.sh via ../../scripts/...),
+    # which doesn't match the staged tree's flatter v<X>/lib + v<X>/scripts
+    # layout. The source-tree shellcheck via the repo's shell-lint
+    # workflow keeps source-following honest for development; this gate's
+    # job is to surface bugs in the staged content itself.
+    shellcheck -x -e SC1091 "${shell_files[@]}"
 else
     echo "verify-gates: no shell files found to shellcheck (ok)"
 fi
