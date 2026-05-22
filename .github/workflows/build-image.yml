@@ -33,9 +33,15 @@ on:
     branches: [dev, main]
     tags: ['stable/v*']
   pull_request:
-    # Only fire on PRs that actually affect what the image build produces.
-    # Excludes PRs that only touch tests, docs, .claude/, or the runtime-
-    # release workflow (which has its own pull_request trigger).
+    # Fire on PRs that affect what the image build produces OR the
+    # boot-smoke / webconfig-upgrade-qemu test harness that consumes
+    # the built artifact. test/boot-smoke/ is included so changes to
+    # extra-probe.sh and friends are validated end-to-end against a
+    # freshly built image; without it a probe regression would only
+    # surface after the change merged and the next image-build PR ran.
+    # Other test/ paths (BATS suites) are intentionally excluded —
+    # they're covered by ci.yml's shell-tests job and don't need the
+    # multi-hour native-arm64 build budget.
     paths:
       - 'stage-airplanes/**'
       - 'stage0/**'
@@ -51,6 +57,7 @@ on:
       - 'build-docker.sh'
       - 'export-image/**'
       - 'export-noobs/**'
+      - 'test/boot-smoke/**'
       - '.github/workflows/build-image.yml'
 
 permissions:
