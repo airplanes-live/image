@@ -182,6 +182,11 @@ ensure_mountpoint() {
 ensure_mountpoint \
     "$IPATH_ABS" \
     /etc/collectd \
+    /etc/lighttpd \
+    /etc/default \
+    /etc/cron.d \
+    /etc/systemd/system \
+    /lib/systemd/system \
     /var/lib/graphs1090 \
     /var/lib/collectd \
     /run/collectd

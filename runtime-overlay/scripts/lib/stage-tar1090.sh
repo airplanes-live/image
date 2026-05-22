@@ -235,7 +235,12 @@ ensure_mountpoint() {
         sudo mkdir -p "$p" || die "could not create bind mountpoint $p (need root or sudo)"
     done
 }
-ensure_mountpoint "$IPATH_ABS" /run/readsb
+ensure_mountpoint \
+    "$IPATH_ABS" \
+    /run/readsb \
+    /etc/lighttpd \
+    /etc/default \
+    /lib/systemd/system
 
 # --unshare-pid: defense in depth — tar1090 install.sh is not known to
 # daemonize anything, but isolating the sandbox PID namespace means any
