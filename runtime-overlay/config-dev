@@ -6,7 +6,7 @@
 # runtime-overlay/scripts/lib/cross-compile-dump978.sh,
 # runtime-overlay/scripts/lib/stage-tar1090.sh,
 # runtime-overlay/scripts/lib/stage-graphs1090.sh) to pick the upstream
-# sources baked into runtime-overlay releases published on the dev channel.
+# sources baked into runtime-overlay assets published inside dev product releases.
 #
 # Scope is the inbound-decode stack only — readsb (wiedehopf), dump978-fa
 # (flightaware), tar1090 (wiedehopf), tar1090-db (wiedehopf), graphs1090

@@ -36,7 +36,7 @@ setup() {
         skip "minisign keypair generation failed"
     fi
 
-    REL_TAG="runtime-v0.0.1"
+    REL_TAG="v0.0.1"
     REL_VER="0.0.1"
     ARCH="arm64"
 
@@ -94,15 +94,15 @@ setup() {
 JSON
 
     install -d -m 755 "$HTTPD_DOC/$REL_TAG"
-    TARBALL_NAME="${REL_TAG}-${ARCH}.tar.gz"
+    TARBALL_NAME="runtime-overlay-${ARCH}.tar.gz"
     ( cd "$BATS_TEST_TMPDIR/rel-staging" && tar -czf "$HTTPD_DOC/$REL_TAG/$TARBALL_NAME" \
             --owner=0 --group=0 --numeric-owner --sort=name \
             "v$REL_VER" )
-    cp "$REL_STAGING/manifest.json" "$HTTPD_DOC/$REL_TAG/manifest.json"
-    : > "$HTTPD_DOC/$REL_TAG/PROVENANCE.md"
+    cp "$REL_STAGING/manifest.json" "$HTTPD_DOC/$REL_TAG/runtime-manifest.json"
+    : > "$HTTPD_DOC/$REL_TAG/runtime-PROVENANCE.md"
 
-    ( cd "$HTTPD_DOC/$REL_TAG" && sha256sum "$TARBALL_NAME" manifest.json > SHA256SUMS )
-    echo "" | minisign -Sm "$HTTPD_DOC/$REL_TAG/SHA256SUMS" \
+    ( cd "$HTTPD_DOC/$REL_TAG" && sha256sum "$TARBALL_NAME" runtime-manifest.json > runtime-SHA256SUMS )
+    echo "" | minisign -Sm "$HTTPD_DOC/$REL_TAG/runtime-SHA256SUMS" \
         -s "$KEY_DIR/test.sec" -W >/dev/null 2>&1
 
     python3 -u -c "
@@ -143,8 +143,7 @@ teardown() {
         BASE_DIR="$REPO_ROOT" \
         ROOTFS_DIR="$ROOTFS_DIR" \
         ARCH="$ARCH" \
-        AIRPLANES_RUNTIME_OVERLAY_TAG="$REL_TAG" \
-        AIRPLANES_RUNTIME_DOWNLOAD_BASE="http://127.0.0.1:$PORT" \
+        AIRPLANES_RUNTIME_RELEASE_ASSET_DIR="$HTTPD_DOC/$REL_TAG" \
         AIRPLANES_RUNTIME_BUILD_TEST_PUBKEY=1 \
         AIRPLANES_RUNTIME_MINISIGN_PUBKEY="$KEY_DIR/test.pub" \
         bash "$REPO_ROOT/stage-airplanes/02-install-runtime-overlay/00-run.sh"
@@ -195,17 +194,16 @@ teardown() {
     [ ! -d "$ROOTFS_DIR/var/tmp/airplanes-runtime-overlay-src" ]
 }
 
-@test "stage 02-install-runtime-overlay refuses without AIRPLANES_RUNTIME_OVERLAY_TAG" {
+@test "stage 02-install-runtime-overlay refuses without release source" {
     run env \
         BASE_DIR="$REPO_ROOT" \
         ROOTFS_DIR="$ROOTFS_DIR" \
         ARCH="$ARCH" \
-        AIRPLANES_RUNTIME_DOWNLOAD_BASE="http://127.0.0.1:$PORT" \
         AIRPLANES_RUNTIME_BUILD_TEST_PUBKEY=1 \
         AIRPLANES_RUNTIME_MINISIGN_PUBKEY="$KEY_DIR/test.pub" \
         bash "$REPO_ROOT/stage-airplanes/02-install-runtime-overlay/00-run.sh"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"AIRPLANES_RUNTIME_OVERLAY_TAG"* ]]
+    [[ "$output" == *"runtime release source"* || "$output" == *"build mode requires"* ]]
 }
 
 @test "stage 02-install-runtime-overlay refuses when host pubkey is missing" {
@@ -223,8 +221,7 @@ teardown() {
         BASE_DIR="$REPO_ROOT" \
         ROOTFS_DIR="$ROOTFS_DIR" \
         ARCH="$ARCH" \
-        AIRPLANES_RUNTIME_OVERLAY_TAG="$REL_TAG" \
-        AIRPLANES_RUNTIME_DOWNLOAD_BASE="http://127.0.0.1:$PORT" \
+        AIRPLANES_RUNTIME_RELEASE_ASSET_DIR="$HTTPD_DOC/$REL_TAG" \
         bash "$REPO_ROOT/stage-airplanes/02-install-runtime-overlay/00-run.sh"
 
     # Restore before asserting so a failing assertion doesn't leave the

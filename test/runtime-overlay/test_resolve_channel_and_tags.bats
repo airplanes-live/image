@@ -19,9 +19,9 @@ setup() {
     unset GITHUB_EVENT_NAME GITHUB_REF GITHUB_SHA INPUT_CHANNEL INPUT_VERSION
 }
 
-@test "stable tag push: channel=stable, version from tag, no floating tag" {
+@test "stable tag push: channel=stable, version from product tag" {
     export GITHUB_EVENT_NAME=push
-    export GITHUB_REF=refs/tags/runtime-v1.4.0
+    export GITHUB_REF=refs/tags/v1.4.0
     export GITHUB_SHA=1111111111111111111111111111111111111111
 
     run "$SCRIPT"
@@ -31,15 +31,15 @@ setup() {
     [ "$status" -eq 0 ]
     run grep -E '^version=1\.4\.0$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
-    run grep -E '^immutable_tag=runtime-v1\.4\.0$' "$GITHUB_OUTPUT"
+    run grep -E '^release_tag=v1\.4\.0$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
-    run grep -E '^floating_tag=$' "$GITHUB_OUTPUT"
+    run grep -E '^prerelease=false$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
     run grep -E '^should_publish=true$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
 }
 
-@test "dev branch push: channel=dev, immutable tag has YYYYMMDD-sha7, floating=runtime-dev-latest" {
+@test "dev branch push: channel=dev, release tag is dev-latest" {
     export GITHUB_EVENT_NAME=push
     export GITHUB_REF=refs/heads/dev
     export GITHUB_SHA=abcdef0123456789abcdef0123456789abcdef01
@@ -49,10 +49,9 @@ setup() {
 
     run grep -E '^channel=dev$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
-    run grep -E '^floating_tag=runtime-dev-latest$' "$GITHUB_OUTPUT"
+    run grep -E '^release_tag=dev-latest$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
-    # Immutable tag carries today (UTC) + the 7-char short SHA.
-    run grep -E '^immutable_tag=runtime-dev-[0-9]{8}-abcdef0$' "$GITHUB_OUTPUT"
+    run grep -E '^prerelease=true$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
     run grep -E '^version=[0-9]+\.[0-9]+\.[0-9]+-dev-[0-9]{8}-abcdef0$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
@@ -84,7 +83,7 @@ setup() {
     [ "$status" -eq 0 ]
     run grep -E '^version=2\.0\.0$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
-    run grep -E '^immutable_tag=runtime-v2\.0\.0$' "$GITHUB_OUTPUT"
+    run grep -E '^release_tag=v2\.0\.0$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
 }
 
@@ -99,15 +98,31 @@ setup() {
 
     run grep -E '^channel=dev$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
-    run grep -E '^floating_tag=runtime-dev-latest$' "$GITHUB_OUTPUT"
+    run grep -E '^release_tag=dev-latest$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
-    run grep -E '^immutable_tag=runtime-dev-[0-9]{8}-fedcba9$' "$GITHUB_OUTPUT"
+    run grep -E '^prerelease=true$' "$GITHUB_OUTPUT"
+    [ "$status" -eq 0 ]
+}
+
+@test "main branch push: validates stable channel without publishing" {
+    export GITHUB_EVENT_NAME=push
+    export GITHUB_REF=refs/heads/main
+    export GITHUB_SHA=2222222222222222222222222222222222222222
+
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+
+    run grep -E '^channel=stable$' "$GITHUB_OUTPUT"
+    [ "$status" -eq 0 ]
+    run grep -E '^release_tag=main-validation-2222222$' "$GITHUB_OUTPUT"
+    [ "$status" -eq 0 ]
+    run grep -E '^should_publish=false$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
 }
 
 @test "rejects malformed stable tag" {
     export GITHUB_EVENT_NAME=push
-    export GITHUB_REF=refs/tags/runtime-v1.4
+    export GITHUB_REF=refs/tags/v1.4
     export GITHUB_SHA=1111111111111111111111111111111111111111
 
     run "$SCRIPT"
@@ -116,7 +131,7 @@ setup() {
 
 @test "rejects unsupported push ref" {
     export GITHUB_EVENT_NAME=push
-    export GITHUB_REF=refs/heads/main
+    export GITHUB_REF=refs/heads/feature
     export GITHUB_SHA=1111111111111111111111111111111111111111
 
     run "$SCRIPT"
@@ -125,7 +140,7 @@ setup() {
 
 @test "rejects non-hex GITHUB_SHA" {
     export GITHUB_EVENT_NAME=push
-    export GITHUB_REF=refs/tags/runtime-v1.0.0
+    export GITHUB_REF=refs/tags/v1.0.0
     export GITHUB_SHA=ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ
 
     run "$SCRIPT"

@@ -10,7 +10,7 @@
 #
 # The systemctl shim is in-tree so the post-restart symlink-flip path
 # is exercised end-to-end. The release-channel file is pinned to a
-# fixture-served `runtime-vX.Y.Z` tag so the resolver never hits the
+# fixture-served pinned tag so the resolver never hits the
 # network.
 
 bats_require_minimum_version 1.5.0

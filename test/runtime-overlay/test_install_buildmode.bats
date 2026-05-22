@@ -31,7 +31,7 @@ setup() {
     fi
 
     # Stage the release tree.
-    REL_TAG="runtime-v0.0.1"
+    REL_TAG="v0.0.1"
     REL_VER="0.0.1"
     ARCH="arm64"
     REL_STAGING="$BATS_TEST_TMPDIR/rel-staging/v$REL_VER"
@@ -78,17 +78,17 @@ JSON
     # Tar up the release tree. The leading dir is `v$REL_VER`, which the
     # install helper strips via --strip-components=1 on extract.
     install -d -m 755 "$HTTPD_DOC/$REL_TAG"
-    TARBALL_NAME="${REL_TAG}-${ARCH}.tar.gz"
+    TARBALL_NAME="runtime-overlay-${ARCH}.tar.gz"
     ( cd "$BATS_TEST_TMPDIR/rel-staging" && tar -czf "$HTTPD_DOC/$REL_TAG/$TARBALL_NAME" \
             --owner=0 --group=0 --numeric-owner --sort=name \
             "v$REL_VER" )
-    cp "$REL_STAGING/manifest.json" "$HTTPD_DOC/$REL_TAG/manifest.json"
+    cp "$REL_STAGING/manifest.json" "$HTTPD_DOC/$REL_TAG/runtime-manifest.json"
     : > "$HTTPD_DOC/$REL_TAG/PROVENANCE.md"
 
     # SHA256SUMS covers tarball + manifest.
-    ( cd "$HTTPD_DOC/$REL_TAG" && sha256sum "$TARBALL_NAME" manifest.json > SHA256SUMS )
+    ( cd "$HTTPD_DOC/$REL_TAG" && sha256sum "$TARBALL_NAME" runtime-manifest.json > runtime-SHA256SUMS )
     # Sign SHA256SUMS with the test key. -W = no password prompt.
-    echo "" | minisign -Sm "$HTTPD_DOC/$REL_TAG/SHA256SUMS" \
+    echo "" | minisign -Sm "$HTTPD_DOC/$REL_TAG/runtime-SHA256SUMS" \
         -s "$KEY_DIR/test.sec" -W >/dev/null 2>&1
 
     # Spawn the http.server.
@@ -157,9 +157,9 @@ teardown() {
 
 @test "build mode rejects a tampered SHA256SUMS" {
     # Corrupt the SHA256SUMS file post-staging.
-    printf 'deadbeef  runtime-v0.0.1-arm64.tar.gz\n' > "$HTTPD_DOC/$REL_TAG/SHA256SUMS"
+    printf 'deadbeef  runtime-overlay-arm64.tar.gz\n' > "$HTTPD_DOC/$REL_TAG/runtime-SHA256SUMS"
     # Re-sign so the minisign verify passes but the sha check fails.
-    echo "" | minisign -Sm "$HTTPD_DOC/$REL_TAG/SHA256SUMS" \
+    echo "" | minisign -Sm "$HTTPD_DOC/$REL_TAG/runtime-SHA256SUMS" \
         -s "$KEY_DIR/test.sec" -W >/dev/null 2>&1
     run env \
         AIRPLANES_BUILD_MODE=1 ARCH="$ARCH" \
@@ -178,8 +178,8 @@ teardown() {
     local k2="$BATS_TEST_TMPDIR/keys2"
     install -d -m 700 "$k2"
     echo "" | minisign -G -p "$k2/test.pub" -s "$k2/test.sec" -W >/dev/null 2>&1
-    echo "" | minisign -Sm "$HTTPD_DOC/$REL_TAG/SHA256SUMS" \
-        -s "$k2/test.sec" -W -x "$HTTPD_DOC/$REL_TAG/SHA256SUMS.minisig" >/dev/null 2>&1
+    echo "" | minisign -Sm "$HTTPD_DOC/$REL_TAG/runtime-SHA256SUMS" \
+        -s "$k2/test.sec" -W -x "$HTTPD_DOC/$REL_TAG/runtime-SHA256SUMS.minisig" >/dev/null 2>&1
     run env \
         AIRPLANES_BUILD_MODE=1 ARCH="$ARCH" \
         ROOTFS_DIR="$ROOTFS_DIR" \

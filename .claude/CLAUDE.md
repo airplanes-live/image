@@ -36,7 +36,7 @@ CI (`.github/workflows/ci.yml`) runs on push to `main`/`dev` and on PRs:
 | `systemd-verify` | `systemd-analyze verify` against all `.service` files (with stubbed binaries and fetched upstream tar1090 / graphs1090 units) |
 | `feed-update-regression` | Checks out feed `dev`, runs `test/update-regression-smoke.sh` |
 
-Image builds run separately via `.github/workflows/build-image.yml` on `ubuntu-24.04-arm` (native arm64, no qemu) with per-channel artifact retention plus per-cell rootfs and first-run chroot smoke validation. After the build job, `boot-smoke` runs `feed/test/image-boot.sh` against the just-built artifact under QEMU and layers image-side probes (`test/boot-smoke/extra-probe.sh`) — boot-config apply state, lighttpd, webconfig HTTP via loopback, sshd — via the `AIRPLANES_BOOT_SMOKE_EXTRA_SETUP` hook on feed's boot-smoke script.
+Product builds run via `.github/workflows/build-image.yml` on `ubuntu-24.04-arm` (native arm64, no qemu). The workflow first builds and signs the runtime-overlay assets, then builds the image from those just-built local assets, then runs mounted-image, first-run chroot, boot-smoke, and webconfig-upgrade QEMU validation. Only after all checks pass does it publish: `dev-latest` as the rolling dev prerelease, or `vX.Y.Z` as a stable product release.
 
 Run a single bats file locally:
 
@@ -93,7 +93,7 @@ Go server lives in `airplanes-live/image-webconfig` (modules: `auth`, `feedenv`,
 | | `config-dev` | `config-stable` |
 |---|---|---|
 | `IMG_NAME` | `airplanes-feeder-dev-arm64` | `airplanes-feeder-stable-arm64` |
-| Component refs | branches (`dev` / `master`) for feed + readsb; floating `runtime-dev-YYYYMMDD-<sha>` tag for runtime overlay | pinned SHAs for feed + readsb; concrete `runtime-vX.Y.Z` tag for runtime overlay (readsb-decoder, dump978, tar1090, tar1090-db, graphs1090 are pinned inside the runtime-overlay release) |
+| Component refs | branches (`dev` / `master`) for feed + readsb; runtime overlay built from `runtime-overlay/config-dev` into the same `dev-latest` product prerelease | pinned SHAs for feed + readsb; runtime overlay built from `runtime-overlay/config-stable` into the same `vX.Y.Z` product release |
 | Compression | `xz -1` (fast rebuild) | `xz -6` (small artifact) |
 | `ENABLE_SSH` | `1` | `1` |
 
