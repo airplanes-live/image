@@ -414,6 +414,36 @@ jobs:
           name: release-assets-unsigned
           path: ${{ runner.temp }}/release
 
+      - name: Re-extract release tree from tarball (preserves file modes)
+        # actions/upload-artifact / download-artifact roundtrips loose
+        # files through a zip-style archive that strips Unix mode bits;
+        # build artefacts arrive at mode 0644 even though the build
+        # produced 0755 binaries and scripts. pack-release-tarball.sh
+        # produces a mode-preserving tar.gz under the same upload dir,
+        # so the modes can be recovered by extracting that tarball over
+        # the mode-stripped loose tree. The exec-bit-check gate fails
+        # without this, and any downstream verify steps that exec or
+        # mode-check files would silently see wrong shapes too.
+        env:
+          IMMUTABLE_TAG: ${{ needs.resolve-channel-and-tags.outputs.immutable_tag }}
+        run: |
+          set -euo pipefail
+          tarball="$RUNNER_TEMP/release/$IMMUTABLE_TAG-arm64.tar.gz"
+          if [[ ! -f "$tarball" ]]; then
+              echo "::error::expected tarball missing: $tarball" >&2
+              ls -la "$RUNNER_TEMP/release/" >&2
+              exit 1
+          fi
+          # Drop the mode-stripped tree before extracting, so we end
+          # up with exactly the tarball's contents rather than a mix.
+          rm -rf -- "$RUNNER_TEMP/release/v$VERSION"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP/release"
+          if [[ ! -d "$RUNNER_TEMP/release/v$VERSION" ]]; then
+              echo "::error::tarball did not produce expected v$VERSION dir" >&2
+              tar -tzf "$tarball" | head -20 >&2
+              exit 1
+          fi
+
       - name: Run release gates
         run: |
           bash runtime-overlay/scripts/release-workflow/verify-gates.sh \
