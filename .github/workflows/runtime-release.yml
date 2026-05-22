@@ -104,6 +104,14 @@ jobs:
     # the target distro removes the entire class.
     container:
       image: debian:trixie-slim
+      # bwrap (used by stage-tar1090.sh / stage-graphs1090.sh) calls
+      # clone(CLONE_NEWUSER) which the container's default seccomp +
+      # AppArmor profiles block on this Ubuntu host even though
+      # Debian's bubblewrap is setuid-root. --privileged lifts both.
+      # Acceptable trade-off here because this job carries no signing
+      # secrets (sign job runs separately, gated on != pull_request)
+      # and the runner is ephemeral.
+      options: --privileged
     timeout-minutes: 90
     # Inside `container:`, GH Actions's default shell is `sh`, not bash.
     # Existing steps use `[[ ... ]]` and bash arrays. Force bash so no
