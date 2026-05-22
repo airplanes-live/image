@@ -350,7 +350,31 @@ _orch_bind_stub() {
     if ! mount --bind "$stub" "$target"; then
         _orch_fail "orchestrator probe: mount --bind of $step stub onto $target failed"
     fi
+    # Bind mounts inherit the source mount's VFS flags. /run is
+    # mounted nosuid,nodev,noexec by stage 06a's fstab line (and
+    # trixie's default tmp.mount carries the same flags), so on
+    # modern kernels (>=2.6.20) `access(file, X_OK)` returns EACCES
+    # for a bind-mounted stub sourced from /run. The orchestrator
+    # gates each step on `[[ -x "$target" ]]` / `command -v
+    # "$target"` (both call access(X_OK)), so without this remount
+    # step_apt silently skips (its missing-path branch returns 0)
+    # and step_feed explicitly returns 1 — the exact failure shape
+    # boot-smoke surfaced on dev-arm64.
+    #
+    # Add target to _orch_active_binds BEFORE the remount so a
+    # failed remount still unwinds via _orch_restore (umount).
+    # Spell out nosuid,nodev,exec rather than relying on libmount
+    # preserving inherited nosuid/nodev while only clearing noexec:
+    # being explicit avoids surprises across util-linux versions.
+    # Follow up with a probe-side `[[ -x ]]` to catch a remount
+    # that returned 0 but failed to clear noexec for any reason.
     _orch_active_binds+=("$target")
+    if ! mount -o remount,bind,nosuid,nodev,exec "$target" 2>/dev/null; then
+        _orch_fail "orchestrator probe: mount -o remount,bind,nosuid,nodev,exec on $target failed (kernel rejected exec override; bind would inherit noexec from /run and step gate would fail)"
+    fi
+    if [[ ! -x "$target" ]]; then
+        _orch_fail "orchestrator probe: post-remount bind $target still reads as not-executable (noexec clear apparently silently no-op'd; access(X_OK) returns EACCES)"
+    fi
 }
 
 # _orch_restore — paired with _orch_bind_stub. Idempotent so the EXIT
@@ -467,7 +491,17 @@ _orch_dump_diagnostics() {
         { "$@" 2>&1 | tee /dev/fd/8 >&7; } || true
     }
 
+    # Periodic sync helper: each major section calls this so that even
+    # if init starts killing processes mid-dump, what's already on
+    # run.log is durable on the virtio-blk-backed .img file (the
+    # harness mounts the .img post-mortem to extract run.log). `sync`
+    # is cheap on a small file, and the dump targets a few KB total.
+    _orch_diag_flush() {
+        sync 2>/dev/null || true
+    }
+
     _orch_diag_emit "image-probe: orchestrator diagnostics ---"
+    _orch_diag_flush
 
     # State file.
     if [[ -n "${_orch_state_file:-}" && -f "${_orch_state_file:-}" ]]; then
@@ -476,6 +510,7 @@ _orch_dump_diagnostics() {
     else
         _orch_diag_emit "image-probe: state file absent (${_orch_state_file:-})"
     fi
+    _orch_diag_flush
 
     # Marker dir.
     if [[ -n "${_orch_marker_dir:-}" && -d "${_orch_marker_dir:-}" ]]; then
@@ -491,12 +526,14 @@ _orch_dump_diagnostics() {
     else
         _orch_diag_emit "image-probe: marker dir absent (${_orch_marker_dir:-})"
     fi
+    _orch_diag_flush
 
     # Sequence log.
     if [[ -n "${_orch_call_log:-}" && -f "${_orch_call_log:-}" ]]; then
         _orch_diag_emit "image-probe: sequence log:"
         _orch_diag_run cat "$_orch_call_log"
     fi
+    _orch_diag_flush
 
     # Bind-mount evidence: are the stubs visible to /this/ shell?
     # Each step's target is bind-mounted onto its absolute path; the
@@ -512,6 +549,7 @@ _orch_dump_diagnostics() {
         _orch_diag_run readlink -f "$_t"
         _orch_diag_run findmnt -T "$_t" -n -o TARGET,SOURCE,FSTYPE,OPTIONS
     done
+    _orch_diag_flush
 
     # Stub dir layout + content head (proves the bind-mount source is
     # actually a 0755 executable shell script, not e.g. a 0644 placeholder).
@@ -528,6 +566,7 @@ _orch_dump_diagnostics() {
     else
         _orch_diag_emit "image-probe: stub dir absent (${_orch_stub_dir:-})"
     fi
+    _orch_diag_flush
 
     # Mount-namespace check: probe-side vs PID1. systemd-run inherits
     # PID1's namespace; a mismatch here would explain bind-mounts being
@@ -538,6 +577,7 @@ _orch_dump_diagnostics() {
     _orch_diag_run readlink /proc/self/ns/mnt
     _orch_diag_run readlink /proc/1/ns/mnt
     _orch_diag_run findmnt -T /run -n -o TARGET,FSTYPE,OPTIONS
+    _orch_diag_flush
 
     # Re-run the same checks from inside a transient systemd-run unit
     # — same mechanism the orchestrator uses to start. If the bind-
@@ -575,6 +615,7 @@ _orch_dump_diagnostics() {
     # Echo a marker so the operator can see the transient-unit block
     # ended even if some commands inside it failed.
     _orch_diag_emit "image-probe: transient-unit perspective end"
+    _orch_diag_flush
 
     # Orchestrator unit + journal. Timeouts on every systemctl /
     # journalctl call: if dbus or journald itself is wedged, none of
@@ -589,6 +630,7 @@ _orch_dump_diagnostics() {
     _orch_diag_emit "image-probe: airplanes-update-orchestrator.service journal:"
     _orch_diag_run timeout 10s journalctl -u airplanes-update-orchestrator.service \
         --no-pager --since '10 min ago'
+    _orch_diag_flush
 
     _orch_diag_emit "image-probe: webconfig service journal (last 100):"
     _orch_diag_run timeout 10s journalctl -u airplanes-webconfig.service --no-pager -n 100
@@ -728,6 +770,12 @@ _orch_run_probe() {
 
         # Per-run unique paths. mktemp -d ensures a previous probe
         # attempt's markers can't satisfy our assertion trivially.
+        # All three live under /run (tmpfs, sized at 06a) — stage 06a
+        # mounts /run noexec, which we deal with via an explicit
+        # `mount -o remount,bind,exec` after each bind (see
+        # _orch_bind_stub). Both /run and the trixie default
+        # tmp.mount carry noexec, so picking a different parent
+        # filesystem wouldn't help; the remount is the universal fix.
         _orch_marker_dir="$(mktemp -d /run/airplanes/test-orchestrator-markers.XXXXXX)"
         _orch_stub_dir="$(mktemp -d /run/airplanes/test-orchestrator-stubs.XXXXXX)"
         _orch_call_log="$_orch_marker_dir/call-log.txt"
@@ -744,6 +792,69 @@ _orch_run_probe() {
         _orch_bind_stub "$_orch_feed_update"      feed
         _orch_bind_stub "$_orch_webconfig_update" webconfig
         _orch_bind_stub "$_orch_runtime_update"   runtime
+
+        # Cross-namespace visibility check: the orchestrator runs in a
+        # transient systemd unit, which today inherits PID1's mount
+        # namespace — but a future systemd or sudoers change that
+        # adds PrivateMounts/MountFlags would silently make our
+        # bind-mounts invisible. Capture each target's dev:ino as
+        # seen from this shell, then re-stat from inside ONE
+        # systemd-run --pipe --wait --collect bash (one round trip
+        # for all four targets, not four), and assert dev:ino match
+        # AND [[ -x ]] passes there. A mismatch surfaces an exact
+        # diagnostic before the POST instead of an opaque step
+        # failure 5–10 seconds later.
+        local _t expect_payload="" line
+        for _t in "$_orch_apt_get" "$_orch_feed_update" \
+                  "$_orch_webconfig_update" "$_orch_runtime_update"; do
+            line="$(stat -Lc '%d:%i' -- "$_t" 2>/dev/null || true)"
+            if [[ -z "$line" ]]; then
+                _orch_fail "orchestrator probe: cross-ns check: stat failed for $_t (bind-mount setup race?)"
+            fi
+            expect_payload+="$_t $line"$'\n'
+        done
+
+        local transient_payload
+        # shellcheck disable=SC2016  # $TARGETS expands inside the transient unit, not at quoting time.
+        transient_payload="$(timeout 15s systemd-run --pipe --wait --collect --quiet \
+            --setenv=TARGETS="$_orch_apt_get $_orch_feed_update $_orch_webconfig_update $_orch_runtime_update" \
+            /bin/bash -c '
+                set +e
+                for t in $TARGETS; do
+                    di="$(stat -Lc "%d:%i" -- "$t" 2>/dev/null || echo unknown)"
+                    if [[ -x "$t" ]]; then xok=1; else xok=0; fi
+                    printf "%s %s %s\n" "$t" "$di" "$xok"
+                done
+            ' 2>/dev/null || true)"
+        if [[ -z "$transient_payload" ]]; then
+            _orch_fail "orchestrator probe: cross-ns check: systemd-run transient unit returned no output (15s timeout? unit failed to start?)"
+        fi
+
+        # Parse both payloads and assert per-target. expect_payload
+        # has "path dev:ino" per line; transient_payload has
+        # "path dev:ino xok" per line. Match on path.
+        local exp_path exp_di
+        while read -r exp_path exp_di; do
+            [[ -z "$exp_path" ]] && continue
+            local got_di="" got_xok=""
+            local tp_path tp_di tp_xok
+            while read -r tp_path tp_di tp_xok; do
+                if [[ "$tp_path" == "$exp_path" ]]; then
+                    got_di="$tp_di"
+                    got_xok="$tp_xok"
+                    break
+                fi
+            done <<<"$transient_payload"
+            if [[ -z "$got_di" ]]; then
+                _orch_fail "orchestrator probe: cross-ns check on $exp_path: transient unit did not report this path (payload: $transient_payload)"
+            fi
+            if [[ "$got_di" != "$exp_di" ]]; then
+                _orch_fail "orchestrator probe: cross-ns check on $exp_path: probe-side dev:ino=$exp_di but transient unit sees $got_di (mount-namespace divergence — orchestrator will not see our stubs)"
+            fi
+            if [[ "$got_xok" != "1" ]]; then
+                _orch_fail "orchestrator probe: cross-ns check on $exp_path: transient unit reports [[ -x ]] false despite remount,exec (noexec carry-through; orchestrator step gate will reject this target)"
+            fi
+        done <<<"$expect_payload"
 
         # Stale-unit preflight. systemd-run --unit= fails if an
         # already-active unit with the same name exists; the API
