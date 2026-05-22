@@ -377,11 +377,11 @@ _orch_restore() {
 }
 
 # _orch_state_get FIELD — read FIELD from the orchestrator state JSON
-# and print its value. Empty for missing file or null field; on parse
-# failure returns rc=2 so callers in the poll loop can treat a partial
-# write as "not ready yet" rather than a hard fail. The orchestrator
-# writes atomically (tmp + mv -f), so a parse error during steady state
-# is genuinely abnormal — but during a poll we accept it and re-read.
+# and print its value. Always exits 0: empty string for missing file,
+# null field, or parse error. Parse errors during a poll mean the
+# orchestrator's atomic-write rename has not landed yet — treat as
+# not-ready-yet and re-poll. Under set -e a non-zero rc from the
+# python child would exit the subshell, so the swallow is required.
 _orch_state_get() {
     local field="$1"
     [[ -f "$_orch_state_file" ]] || { printf ''; return 0; }
@@ -391,7 +391,7 @@ try:
     with open(sys.argv[1]) as f:
         d = json.load(f)
 except Exception:
-    sys.exit(2)
+    sys.exit(0)
 v = d.get(sys.argv[2])
 print('' if v is None else v)
 PY
@@ -436,35 +436,51 @@ _orch_dump_diagnostics() {
     echo "image-probe: orchestrator diagnostics end ---"
 }
 
-# _orch_capability_check CHANNEL — fail when the orchestrator surface
-# is missing on a channel where it's expected. Returns 0 to skip
-# cleanly, 1 to fail-skip (caller should fail), 2 to proceed.
-# Encodes the channel asymmetry: on dev both pieces must be present;
-# on stable the runtime side is optional during the transition.
+# _orch_capability_decision CHANNEL — decide what to do when the
+# orchestrator surface is partial. Returns one of:
+#   proceed
+#   skip
+#   fail:trampoline-missing
+#   fail:overlay-binary-missing
+#   fail:unknown-channel
+#
+# Asymmetry:
+#   - Trampoline is image-owned (stage 06d), always present on every
+#     channel. Its absence is a hard regression regardless of channel.
+#   - Overlay binary ships in the runtime tag baked into the image.
+#     Dev: must be present (config-dev pins a runtime tag that carries
+#     the orchestrator). Stable: may be absent until a stable runtime
+#     release ships with it — skip cleanly.
+#   - Unknown channel (release-channel file missing/garbled): treat as
+#     hard fail; the file is image-owned and stage 06 enforces the
+#     allowlist {stable, dev}.
 _orch_capability_decision() {
     local channel="$1"
     local trampoline_present=0 binary_present=0
     [[ -x "$_orch_trampoline" ]] && trampoline_present=1
     [[ -x "$_orch_binary" ]] && binary_present=1
-    if (( trampoline_present == 1 && binary_present == 1 )); then
-        echo proceed; return 0
+
+    # Trampoline absence is always a fail — it's image-owned and
+    # always present after stage 06d, on every channel.
+    if (( trampoline_present == 0 )); then
+        echo "fail:trampoline-missing"; return 0
     fi
+
     case "$channel" in
         dev)
-            # Either piece missing on dev is a real regression. The
-            # caller fails with a specific diagnostic; we don't print
-            # one here since it doesn't know which piece is missing.
-            if (( trampoline_present == 0 )); then
-                echo "fail:trampoline-missing"
-            else
-                echo "fail:overlay-binary-missing"
+            if (( binary_present == 1 )); then
+                echo proceed; return 0
             fi
-            return 0
+            echo "fail:overlay-binary-missing"; return 0
             ;;
-        stable|*)
-            # Stable: skip if either is missing — the orchestrator
-            # hasn't reached this channel yet.
+        stable)
+            if (( binary_present == 1 )); then
+                echo proceed; return 0
+            fi
             echo skip; return 0
+            ;;
+        *)
+            echo "fail:unknown-channel"; return 0
             ;;
     esac
 }
@@ -487,7 +503,7 @@ _orch_run_probe() {
     case "$decision" in
         proceed) ;;
         skip)
-            echo "image-probe: orchestrator probe skipped (channel=$channel; trampoline-x=$([[ -x $_orch_trampoline ]] && echo y || echo n) binary-x=$([[ -x $_orch_binary ]] && echo y || echo n))"
+            echo "image-probe: orchestrator probe skipped (channel=$channel; overlay binary not yet present at $_orch_binary)"
             return 0
             ;;
         fail:trampoline-missing)
@@ -495,6 +511,9 @@ _orch_run_probe() {
             ;;
         fail:overlay-binary-missing)
             fail "orchestrator probe: overlay orchestrator binary missing on channel=$channel: $_orch_binary (runtime tag bumped without orchestrator? config-dev or runtime release missed it)"
+            ;;
+        fail:unknown-channel)
+            fail "orchestrator probe: /etc/airplanes/release-channel content '$channel' not in allowlist {stable, dev} (stage 06 should enforce this — file missing or corrupt?)"
             ;;
     esac
 
@@ -667,11 +686,16 @@ _orch_run_probe() {
         # (chaining bug, --no-upgrade flag) would still leave
         # apt.ok present but only carry one line — without this
         # assertion it'd pass.
+        # `grep -c` exits 1 on zero matches; `|| true` keeps the pipe
+        # rc clean so set -e doesn't trip, and grep's own '0' output
+        # is what we want without an extra echo 0 (which would emit
+        # `0\n0` and trip the (( )) check downstream).
         local apt_calls feed_calls webconfig_calls runtime_calls
-        apt_calls=$(grep -c '^[^ ]* apt ' "$_orch_call_log" 2>/dev/null || echo 0)
-        feed_calls=$(grep -c '^[^ ]* feed ' "$_orch_call_log" 2>/dev/null || echo 0)
-        webconfig_calls=$(grep -c '^[^ ]* webconfig ' "$_orch_call_log" 2>/dev/null || echo 0)
-        runtime_calls=$(grep -c '^[^ ]* runtime ' "$_orch_call_log" 2>/dev/null || echo 0)
+        apt_calls=$(grep -c '^[^ ]* apt ' "$_orch_call_log" 2>/dev/null || true)
+        feed_calls=$(grep -c '^[^ ]* feed ' "$_orch_call_log" 2>/dev/null || true)
+        webconfig_calls=$(grep -c '^[^ ]* webconfig ' "$_orch_call_log" 2>/dev/null || true)
+        runtime_calls=$(grep -c '^[^ ]* runtime ' "$_orch_call_log" 2>/dev/null || true)
+        : "${apt_calls:=0}" "${feed_calls:=0}" "${webconfig_calls:=0}" "${runtime_calls:=0}"
         if (( apt_calls != 2 )); then
             fail "orchestrator probe: apt was invoked $apt_calls times (want 2: 'update' + '-y upgrade')"
         fi
@@ -708,14 +732,16 @@ _orch_run_probe() {
         fi
 
         # Wait for the transient unit to drain (--collect should GC it
-        # within milliseconds; budget 30s for slow QEMU). Without
-        # this, the /health check below could race against the
-        # ExecStopPost HUP which fires AFTER the orchestrator process
-        # exits — orchestrator state=done is observable before
-        # ExecStopPost completes.
-        local unit_drain_deadline=$(( SECONDS + 30 ))
+        # within milliseconds; budget 30s for slow QEMU). Without this,
+        # the HTTP cross-check and /health probe below could race
+        # against the ExecStopPost HUP which fires AFTER the
+        # orchestrator process exits — orchestrator state=done is
+        # observable before ExecStopPost completes. Hard fail if the
+        # drain doesn't happen — a stuck unit means the post-orchestrator
+        # invariants the rest of the probe relies on are not
+        # established and any later assertion would be racing.
+        local unit_drain_deadline=$(( SECONDS + 30 )) unit_state=""
         while (( SECONDS < unit_drain_deadline )); do
-            local unit_state
             unit_state="$(systemctl show airplanes-update-orchestrator.service \
                 --property=ActiveState --value 2>/dev/null || true)"
             case "$unit_state" in
@@ -725,11 +751,22 @@ _orch_run_probe() {
             esac
             sleep 0.5
         done
+        case "$unit_state" in
+            ''|inactive|dead)
+                ;;
+            *)
+                fail "orchestrator probe: transient unit still ActiveState=$unit_state after 30s drain budget (ExecStopPost hung? --collect not honoured?)"
+                ;;
+        esac
 
         # Cross-check via the HTTP route — proves the airplanes-webconfig
         # service account can read /run/airplanes/orchestrator.state
         # (mode/owner regression) and that the route is wired. Direct
         # file read above used root; this is the production posture.
+        # The handler's contract is "forward the file body verbatim",
+        # so compare the response body byte-for-byte with the state
+        # file. cmp catches handler regressions that strip fields
+        # (apt_irreversible, started_at, error) or reformat the JSON.
         local state_http body_file
         body_file="$(mktemp)"
         state_http="$(curl --silent --show-error --output "$body_file" \
@@ -740,18 +777,34 @@ _orch_run_probe() {
             rm -f "$body_file"
             fail "orchestrator probe: GET /api/orchestrator/state returned $state_http (want 200; service-account read of state file broken?)"
         fi
-        local http_step
-        http_step="$(python3 -c '
-import json, sys
-print(json.load(open(sys.argv[1])).get("step", ""))' "$body_file" 2>/dev/null || true)"
-        rm -f "$body_file"
-        if [[ "$http_step" != "done" ]]; then
-            fail "orchestrator probe: /api/orchestrator/state reported step=$http_step (want done; HTTP/file divergence)"
+        if ! cmp -s "$body_file" "$_orch_state_file"; then
+            echo "image-probe: state file:"
+            cat "$_orch_state_file" 2>/dev/null || true
+            echo "image-probe: HTTP body:"
+            cat "$body_file" 2>/dev/null || true
+            rm -f "$body_file"
+            fail "orchestrator probe: /api/orchestrator/state body did not match state file byte-for-byte (handler regressed away from the verbatim-forward contract)"
         fi
+        rm -f "$body_file"
 
         # Webconfig is still responsive after the orchestrator's HUPs.
         _wcu_health_200 \
             || fail "orchestrator probe: /health did not return 200 after orchestrator finished + unit drained"
+
+        # SIGHUP proof: step_feed_hup in the orchestrator and the
+        # systemd-run ExecStopPost both send SIGHUP to webconfig. The
+        # schema cache reload logs an identifiable line on each HUP.
+        # Without this check, a regression that drops either HUP would
+        # still pass (webconfig keeps serving /health regardless). We
+        # don't pin the exact count — systemd ordering between the
+        # orchestrator's intra-run kill and ExecStopPost can collapse
+        # under tight timing — but at least one entry must land within
+        # the probe window.
+        if ! journalctl -u airplanes-webconfig.service \
+                --no-pager --since "@$post_start_epoch" 2>&1 \
+                | grep -qiE 'sighup|schema.*reload|reloading'; then
+            fail "orchestrator probe: webconfig journal shows no SIGHUP/schema-reload entries since orchestrator POST (feed-step HUP and/or ExecStopPost HUP did not fire?)"
+        fi
 
         # Tear down — paired with the trap above. Drop the trap
         # explicitly so the diagnostic dump only fires on failure.
