@@ -185,7 +185,8 @@ jobs:
               unzip \
               bash-builtins \
               rrdtool \
-              collectd-core
+              collectd-core \
+              libpython3.13
           # rfc3339-validator: best-effort. The validator falls back to a
           # regex when this is missing, which still gates the YYYY-MM-DDTHH:MM:SS
           # shape on build_date.
