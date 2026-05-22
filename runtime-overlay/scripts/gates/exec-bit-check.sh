@@ -98,21 +98,29 @@ _should_be_executable() {
 
 # Assert one staged-tree-relative file: present, regular, executable.
 # For .sh / scripts, also assert a valid `#!` on line 1 with no CRLF.
+# Returns 1 on failure with a diagnostic on stderr (does NOT `die`).
+# Earlier shape called `die` inside this function and exited the script
+# on the first failure; the calling site's `2>/tmp/...` stderr capture
+# meant the operator saw no error message in the GH Actions log. Returning
+# non-zero lets the caller aggregate failures and print every one.
 _assert_exec_file() {
     local rel="$1" referer="$2"
     local abs="$RELEASE_DIR/$rel"
     if [[ ! -e "$abs" ]]; then
-        die "missing file referenced by $referer: release_dir/$rel (does not exist)"
+        echo "exec-bit-check: missing file referenced by $referer: release_dir/$rel (does not exist)" >&2
+        return 1
     fi
     if [[ ! -f "$abs" ]]; then
-        die "$referer points at non-regular file: release_dir/$rel"
+        echo "exec-bit-check: $referer points at non-regular file: release_dir/$rel" >&2
+        return 1
     fi
     # `[[ -x ]]` fails when no execute bit is set. Cheaper than a
     # stat-and-mask, and accepts 0700/0750/0755/0775 alike.
     if [[ ! -x "$abs" ]]; then
         local mode
         mode="$(stat -c '%a' -- "$abs" 2>/dev/null || echo '???')"
-        die "$referer points at non-executable file: release_dir/$rel (mode=$mode; needs at least one execute bit)"
+        echo "exec-bit-check: $referer points at non-executable file: release_dir/$rel (mode=$mode; needs at least one execute bit)" >&2
+        return 1
     fi
     # Shebang + CRLF guard for shell scripts. A `0755` file with no
     # shebang fails execve identically to a 0644 file; this is the
@@ -128,7 +136,8 @@ _assert_exec_file() {
             local first_two
             first_two="$(LC_ALL=C head -c 2 -- "$abs" 2>/dev/null)"
             if [[ "$first_two" != "#!" ]]; then
-                die "$referer points at script without #! shebang on line 1: release_dir/$rel (first two bytes: $(printf '%q' "$first_two"))"
+                echo "exec-bit-check: $referer points at script without #! shebang on line 1: release_dir/$rel (first two bytes: $(printf '%q' "$first_two"))" >&2
+                return 1
             fi
             # CRLF in shebang line crashes execve with
             # ENOEXEC / "bad interpreter: no such file or directory"
@@ -137,10 +146,12 @@ _assert_exec_file() {
             local first_line
             first_line="$(LC_ALL=C head -n 1 -- "$abs" 2>/dev/null)"
             if [[ "$first_line" == *$'\r'* ]]; then
-                die "$referer shebang line contains CR (CRLF line ending): release_dir/$rel — kernel will reject execve"
+                echo "exec-bit-check: $referer shebang line contains CR (CRLF line ending): release_dir/$rel — kernel will reject execve" >&2
+                return 1
             fi
             ;;
     esac
+    return 0
 }
 
 # --- managed_paths shape gate --------------------------------------------
@@ -151,15 +162,12 @@ fail_count=0
 while IFS= read -r rel; do
     [[ -z "$rel" ]] && continue
     if _should_be_executable "$rel"; then
-        if ! _assert_exec_file "$rel" "managed_paths target" 2>/tmp/exec-bit-err.$$; then
-            cat /tmp/exec-bit-err.$$ >&2
-            rm -f /tmp/exec-bit-err.$$
+        if ! _assert_exec_file "$rel" "managed_paths target"; then
             fail_count=$((fail_count + 1))
         fi
     fi
 done < <(jq -r '.managed_paths[]? | select(.mode == "symlink") | .target' "$manifest" \
             | awk -v p="$CURRENT_PREFIX" 'index($0, p) == 1 { print substr($0, length(p) + 1) }')
-rm -f /tmp/exec-bit-err.$$
 
 # --- ExecStart references gate -------------------------------------------
 
@@ -200,12 +208,9 @@ if [[ -d "$systemd_dir" ]]; then
                 continue
             fi
 
-            if ! _assert_exec_file "$rel" "$unit_base Exec=$bin_path" 2>/tmp/exec-bit-err.$$; then
-                cat /tmp/exec-bit-err.$$ >&2
-                rm -f /tmp/exec-bit-err.$$
+            if ! _assert_exec_file "$rel" "$unit_base Exec=$bin_path"; then
                 fail_count=$((fail_count + 1))
             fi
-            rm -f /tmp/exec-bit-err.$$
         done < <(grep -hE '^[[:space:]]*Exec(Start|StartPre|StartPost|Stop|StopPost|Reload)=' \
                     "$unit" 2>/dev/null || true)
     done
