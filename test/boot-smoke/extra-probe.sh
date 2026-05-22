@@ -248,6 +248,540 @@ _wcu_verify_persistence() {
 }
 
 # ---------------------------------------------------------------------------
+# Update-orchestrator e2e probe — drives POST /api/orchestrator/start with
+# every sub-helper stubbed out at its absolute path so the orchestrator's
+# four-phase sequencing is exercised end-to-end without actually mutating
+# apt / feed / webconfig / runtime. The bats coverage at
+# test/runtime-overlay/test_orchestrator_sequence.bats exercises the
+# orchestrator script in isolation; this probe exercises the click-flow
+# (HTTP -> sudoers -> systemd-run -> orchestrator -> state-file) the SPA
+# uses, which the bats coverage cannot reach.
+#
+# Stubs are installed at the four absolute paths the orchestrator
+# invokes by default (no env override is possible because systemd-run's
+# sudoers-pinned argv uses env_reset and the production defaults are
+# hard-coded as absolute paths in the orchestrator script itself):
+#
+#   /usr/bin/apt-get                                            (bind-mount)
+#   /usr/local/share/airplanes/update.sh                        (move-aside)
+#   /usr/local/lib/airplanes-webconfig/webconfig-self-update.sh (move-aside)
+#   /opt/airplanes-runtime/current/lib/runtime-self-update.sh   (move-aside)
+#
+# Each stub writes a marker file under
+# /run/airplanes/test-orchestrator-markers/<step>.ok and sleeps briefly
+# so the state file actually progresses through running -> ok rather
+# than blurring straight to done. /run is tmpfs and stage 06a sizes it
+# generously; the marker dir lives there alongside the state file.
+# ---------------------------------------------------------------------------
+
+# Trampoline + overlay-shipped binary that must both be present and
+# executable for /api/orchestrator/start to return anything other than
+# 503. Mirrors defaultOrchestratorCapable in image-webconfig. The
+# capability gate is channel-asymmetric: on dev, a missing overlay
+# binary is a regression (the dev runtime tag is bumped explicitly to
+# carry the orchestrator); on stable, it's the expected transition
+# state until a stable runtime release ships with the orchestrator.
+# Channel sourced from /etc/airplanes/release-channel (written by
+# stage 06; allowlist {stable, dev}). The trampoline is image-owned
+# and always present on both channels — its absence is independently
+# asserted earlier in this probe at line ~329 — so we only use it as
+# a defensive belt-and-braces check here.
+_orch_trampoline=/usr/local/lib/airplanes-webconfig/start-orchestrator.sh
+_orch_binary=/opt/airplanes-runtime/current/lib/airplanes-update-orchestrator
+
+# Absolute paths the orchestrator (runtime-overlay/src/lib/airplanes-update-orchestrator)
+# invokes for each step. Kept in sync with the script's defaults block.
+_orch_apt_get=/usr/bin/apt-get
+_orch_feed_update=/usr/local/share/airplanes/update.sh
+_orch_webconfig_update=/usr/local/lib/airplanes-webconfig/webconfig-self-update.sh
+_orch_runtime_update=/opt/airplanes-runtime/current/lib/runtime-self-update.sh
+
+_orch_state_file=/run/airplanes/orchestrator.state
+# Per-run tmpfs paths assigned by _orch_run_probe via mktemp -d so a
+# stale path from a previous probe attempt (e.g. a re-entry on the
+# same boot) cannot satisfy our final marker assertion trivially.
+_orch_marker_dir=
+_orch_stub_dir=
+_orch_call_log=
+
+# Tracks which of the four bind-mounts are currently active so the
+# restore loop can umount only what was actually mounted, in reverse
+# order, and ignores failures. Each entry is a target path.
+_orch_active_binds=()
+
+# _orch_write_stub PATH STEP_NAME — write a marker-writing stub script
+# to PATH that records "<iso-ts> STEP argv" both to a per-step .ok
+# marker (presence assertion) and to the shared sequence log (count +
+# order assertions). sleep 1 so the orchestrator's state file passes
+# through running -> ok rather than racing straight to done.
+_orch_write_stub() {
+    local out="$1" step="$2"
+    cat > "$out" <<EOF
+#!/bin/bash
+# Boot-smoke orchestrator stub for ${step}.
+set -euo pipefail
+mkdir -p "${_orch_marker_dir}"
+ts="\$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+printf '%s %s %s\n' "\$ts" "${step}" "\$*" >> "${_orch_marker_dir}/${step}.ok"
+# Atomic append to the shared sequence log so concurrent invocations
+# (apt-get update + apt-get upgrade are back-to-back) don't interleave.
+{ printf '%s %s %s\n' "\$ts" "${step}" "\$*"; } >> "${_orch_call_log}"
+sleep 1
+exit 0
+EOF
+    chmod 0755 "$out"
+}
+
+# _orch_bind_stub TARGET STEP_NAME — install a stub for STEP_NAME and
+# bind-mount it over TARGET. Bind-mount (rather than mv-aside) for all
+# four paths so cleanup is a single strategy (umount); a kernel reboot
+# severs all bindss if the probe is killed mid-run, leaving /usr in its
+# original state.
+_orch_bind_stub() {
+    local target="$1" step="$2"
+    if [[ ! -e "$target" ]]; then
+        fail "orchestrator probe: stub target missing: $target (capability gate should have caught this)"
+    fi
+    local stub="$_orch_stub_dir/${step}.sh"
+    _orch_write_stub "$stub" "$step"
+    if ! mount --bind "$stub" "$target"; then
+        fail "orchestrator probe: mount --bind of $step stub onto $target failed"
+    fi
+    _orch_active_binds+=("$target")
+}
+
+# _orch_restore — paired with _orch_bind_stub. Idempotent so the EXIT
+# trap can call it safely even if installation failed partway through.
+# set +e for the duration so one failed umount doesn't prevent the rest
+# from being unmounted (each call is independent kernel state).
+_orch_restore() {
+    local saved_e=""
+    case "$-" in *e*) saved_e=1 ;; esac
+    set +e
+    local i target
+    # Reverse order — last mounted is first unmounted, mirroring a stack
+    # discipline so any nested bind (none today, but defensive) unwinds
+    # in the right direction.
+    for (( i = ${#_orch_active_binds[@]} - 1; i >= 0; i-- )); do
+        target="${_orch_active_binds[$i]}"
+        # Two-step: try a clean umount first; fall back to lazy if a
+        # process is still holding the mount (orchestrator should have
+        # exited, but the transient unit's --collect may lag).
+        umount "$target" 2>/dev/null \
+            || umount -l "$target" 2>/dev/null \
+            || true
+    done
+    _orch_active_binds=()
+    [[ -n "$saved_e" ]] && set -e
+    return 0
+}
+
+# _orch_state_get FIELD — read FIELD from the orchestrator state JSON
+# and print its value. Empty for missing file or null field; on parse
+# failure returns rc=2 so callers in the poll loop can treat a partial
+# write as "not ready yet" rather than a hard fail. The orchestrator
+# writes atomically (tmp + mv -f), so a parse error during steady state
+# is genuinely abnormal — but during a poll we accept it and re-read.
+_orch_state_get() {
+    local field="$1"
+    [[ -f "$_orch_state_file" ]] || { printf ''; return 0; }
+    python3 - "$_orch_state_file" "$field" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(2)
+v = d.get(sys.argv[2])
+print('' if v is None else v)
+PY
+}
+
+# _orch_dump_diagnostics — best-effort log dump on probe failure or
+# timeout. Inlines the state file, the marker dir, the sequence log,
+# and the orchestrator + webconfig unit journals into the boot-smoke
+# run log so the CI log artifact has enough to diagnose a regression
+# without re-running the smoke.
+_orch_dump_diagnostics() {
+    echo "image-probe: orchestrator diagnostics ---"
+    if [[ -n "$_orch_state_file" && -f "$_orch_state_file" ]]; then
+        echo "image-probe: state file ($_orch_state_file):"
+        cat "$_orch_state_file" 2>&1 || true
+        echo
+    else
+        echo "image-probe: state file absent"
+    fi
+    if [[ -n "$_orch_marker_dir" && -d "$_orch_marker_dir" ]]; then
+        echo "image-probe: marker dir contents:"
+        ls -la "$_orch_marker_dir" 2>&1 || true
+        local m
+        for m in "$_orch_marker_dir"/*.ok; do
+            [[ -f "$m" ]] || continue
+            echo "image-probe: --- $m ---"
+            cat "$m" 2>&1 || true
+        done
+    else
+        echo "image-probe: marker dir absent ($_orch_marker_dir)"
+    fi
+    if [[ -n "$_orch_call_log" && -f "$_orch_call_log" ]]; then
+        echo "image-probe: sequence log:"
+        cat "$_orch_call_log" 2>&1 || true
+    fi
+    echo "image-probe: airplanes-update-orchestrator.service status + journal:"
+    systemctl status airplanes-update-orchestrator.service --no-pager 2>&1 || true
+    journalctl -u airplanes-update-orchestrator.service \
+        --no-pager --since '10 min ago' 2>&1 || true
+    echo "image-probe: webconfig service journal (last 100):"
+    journalctl -u airplanes-webconfig.service --no-pager -n 100 2>&1 || true
+    echo "image-probe: orchestrator diagnostics end ---"
+}
+
+# _orch_capability_check CHANNEL — fail when the orchestrator surface
+# is missing on a channel where it's expected. Returns 0 to skip
+# cleanly, 1 to fail-skip (caller should fail), 2 to proceed.
+# Encodes the channel asymmetry: on dev both pieces must be present;
+# on stable the runtime side is optional during the transition.
+_orch_capability_decision() {
+    local channel="$1"
+    local trampoline_present=0 binary_present=0
+    [[ -x "$_orch_trampoline" ]] && trampoline_present=1
+    [[ -x "$_orch_binary" ]] && binary_present=1
+    if (( trampoline_present == 1 && binary_present == 1 )); then
+        echo proceed; return 0
+    fi
+    case "$channel" in
+        dev)
+            # Either piece missing on dev is a real regression. The
+            # caller fails with a specific diagnostic; we don't print
+            # one here since it doesn't know which piece is missing.
+            if (( trampoline_present == 0 )); then
+                echo "fail:trampoline-missing"
+            else
+                echo "fail:overlay-binary-missing"
+            fi
+            return 0
+            ;;
+        stable|*)
+            # Stable: skip if either is missing — the orchestrator
+            # hasn't reached this channel yet.
+            echo skip; return 0
+            ;;
+    esac
+}
+
+# _orch_run_probe COOKIEJAR — drive the orchestrator end-to-end. Caller
+# provides a cookie jar already authenticated against webconfig (via
+# the SSE probe's /api/setup). The probe body runs in a subshell so
+# the EXIT trap we install doesn't leak into the sourced extra-probe
+# parent shell. Channel-asymmetric capability gate: dev fails on a
+# missing overlay binary (the dev runtime tag is bumped to carry it);
+# stable skips cleanly until a runtime release ships with the
+# orchestrator.
+_orch_run_probe() {
+    local cookiejar="$1"
+    local channel
+    channel="$(cat /etc/airplanes/release-channel 2>/dev/null || echo unknown)"
+
+    local decision
+    decision="$(_orch_capability_decision "$channel")"
+    case "$decision" in
+        proceed) ;;
+        skip)
+            echo "image-probe: orchestrator probe skipped (channel=$channel; trampoline-x=$([[ -x $_orch_trampoline ]] && echo y || echo n) binary-x=$([[ -x $_orch_binary ]] && echo y || echo n))"
+            return 0
+            ;;
+        fail:trampoline-missing)
+            fail "orchestrator probe: trampoline missing on channel=$channel: $_orch_trampoline (image regression — stage 06d should always lay this down)"
+            ;;
+        fail:overlay-binary-missing)
+            fail "orchestrator probe: overlay orchestrator binary missing on channel=$channel: $_orch_binary (runtime tag bumped without orchestrator? config-dev or runtime release missed it)"
+            ;;
+    esac
+
+    echo "image-probe: orchestrator e2e probe starting (channel=$channel)"
+
+    # Run the actual probe body in a subshell. extra-probe.sh is
+    # sourced by run.sh, so a `trap ... EXIT` set in this process
+    # would replace any EXIT trap in the caller and fire at run.sh's
+    # exit. The subshell isolates the trap and the exit-on-fail
+    # semantics; on subshell exit fail() inside it has already poweroffd
+    # the VM so propagation isn't load-bearing, but defensively we
+    # check rc and bail if the subshell exits non-zero for any other
+    # reason.
+    (
+        # Per-run unique paths. mktemp -d ensures a previous probe
+        # attempt's markers can't satisfy our assertion trivially.
+        _orch_marker_dir="$(mktemp -d /run/airplanes/test-orchestrator-markers.XXXXXX)"
+        _orch_stub_dir="$(mktemp -d /run/airplanes/test-orchestrator-stubs.XXXXXX)"
+        _orch_call_log="$_orch_marker_dir/call-log.txt"
+        : > "$_orch_call_log"
+
+        # Wipe the on-disk state file so any previous run's terminal
+        # state can't pass our final assertion trivially. /run is
+        # tmpfs and disappears across reboots; this guard protects
+        # against a re-entry on the same boot (none today, but cheap
+        # belt+braces).
+        rm -f -- "$_orch_state_file"
+
+        # Arm the restore trap before any bind-mount so a fail() during
+        # setup unwinds cleanly. Subshell-scoped — won't leak.
+        trap '_orch_restore; _orch_dump_diagnostics' EXIT
+
+        _orch_bind_stub "$_orch_apt_get"          apt
+        _orch_bind_stub "$_orch_feed_update"      feed
+        _orch_bind_stub "$_orch_webconfig_update" webconfig
+        _orch_bind_stub "$_orch_runtime_update"   runtime
+
+        # Stale-unit preflight. systemd-run --unit= fails if an
+        # already-active unit with the same name exists; the API
+        # would translate that to 409 (already_running), and we'd
+        # report it but want a specific diagnostic here so the
+        # operator knows the unit lingered from a prior run.
+        local pre_state
+        pre_state="$(systemctl show airplanes-update-orchestrator.service \
+            --property=ActiveState --value 2>/dev/null || true)"
+        case "$pre_state" in
+            ''|inactive|dead)
+                ;;
+            *)
+                fail "orchestrator probe: airplanes-update-orchestrator.service in unexpected pre-state '$pre_state' (--collect should have GC'd it; previous run leaked?)"
+                ;;
+        esac
+
+        # Capture wall-clock window so the final-state mtime check
+        # rejects any state file that predates our POST.
+        local post_start_epoch
+        post_start_epoch="$(date +%s)"
+        local started=$SECONDS deadline=$(( SECONDS + 60 ))
+
+        local start_code
+        start_code="$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' --max-time 10 \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'Origin: http://127.0.0.1' \
+            -b "$cookiejar" \
+            --data '{}' \
+            http://127.0.0.1/api/orchestrator/start)"
+        case "$start_code" in
+            202|200)
+                ;;
+            401|403)
+                fail "orchestrator probe: /api/orchestrator/start returned $start_code (session cookie not honoured)"
+                ;;
+            409)
+                fail "orchestrator probe: /api/orchestrator/start returned 409 (maintenanceUnits guard or unit-exists race — see diagnostics)"
+                ;;
+            503)
+                fail "orchestrator probe: /api/orchestrator/start returned 503 (capability gate reported unavailable, but our pre-check above passed)"
+                ;;
+            *)
+                fail "orchestrator probe: /api/orchestrator/start returned $start_code (want 202/200)"
+                ;;
+        esac
+
+        # Poll the on-disk state file for up to 60s. Reading the file
+        # is faster than HTTP polling and avoids any session-cookie
+        # complications if the orchestrator's intra-run SIGHUP races
+        # with a state-file read. We still re-validate the same view
+        # via /api/orchestrator/state once after termination, below.
+        # 60s budget: floor is roughly 5s (4 sleeps + apt double-call
+        # overhead + per-step state writes); 60s gives ~12x slack.
+        local step status
+        while (( SECONDS < deadline )); do
+            if [[ ! -f "$_orch_state_file" ]]; then
+                sleep 0.5
+                continue
+            fi
+            step="$(_orch_state_get step)"
+            # _orch_state_get exits 2 on parse error — treat as
+            # not-ready-yet and re-poll. The orchestrator writes
+            # atomically (tmp + mv -f), but a poll racing the rename
+            # could theoretically observe a missing target for one
+            # cycle; the retry covers it without false-failing.
+            case "$step" in
+                done|failed)
+                    break
+                    ;;
+            esac
+            sleep 0.5
+        done
+        local elapsed=$(( SECONDS - started ))
+
+        # Final state read for assertions. Re-read so any post-loop
+        # atomic-write is visible.
+        step="$(_orch_state_get step)"
+        status="$(_orch_state_get status)"
+        local err apt_irreversible
+        err="$(_orch_state_get error)"
+        apt_irreversible="$(_orch_state_get apt_irreversible)"
+
+        # Mtime check: the state file must have been written after our
+        # POST. Defends against a stale terminal state from a previous
+        # run satisfying our assertions trivially (a missing wipe at
+        # the top of this run would otherwise be invisible).
+        if [[ -f "$_orch_state_file" ]]; then
+            local state_mtime
+            state_mtime="$(stat -c '%Y' -- "$_orch_state_file" 2>/dev/null || echo 0)"
+            if (( state_mtime < post_start_epoch )); then
+                fail "orchestrator probe: state file mtime=$state_mtime predates POST start=$post_start_epoch (stale state — wipe failed?)"
+            fi
+        fi
+
+        if [[ "$step" != "done" ]]; then
+            fail "orchestrator probe: terminal step=$step status=$status err=$err elapsed=${elapsed}s (want step=done within 60s)"
+        fi
+        if [[ "$status" != "ok" ]]; then
+            fail "orchestrator probe: terminal status=$status (want ok)"
+        fi
+        if [[ -n "$err" ]]; then
+            fail "orchestrator probe: terminal error field set: $err"
+        fi
+        # The apt step ran (the orchestrator chains apt-get update &&
+        # upgrade and our stub returns 0 twice), so apt_irreversible
+        # MUST be true in the final state. False here means the apt
+        # step was either skipped (regression) or its irreversibility
+        # flag wasn't recorded (state-file write order regression).
+        # Python prints capitalised booleans through our shim — match
+        # both common spellings to stay tolerant.
+        case "$apt_irreversible" in
+            true|True) ;;
+            *) fail "orchestrator probe: apt_irreversible=$apt_irreversible in terminal state (want true; apt step skipped or flag not persisted?)" ;;
+        esac
+
+        # Per-phase marker files prove each stub was actually invoked
+        # — the state file alone could (in theory) terminate at
+        # step=done without all phases having run if a future refactor
+        # short-circuits the sequencer.
+        local missing="" s
+        for s in apt feed webconfig runtime; do
+            [[ -f "$_orch_marker_dir/${s}.ok" ]] || missing+=" $s"
+        done
+        if [[ -n "$missing" ]]; then
+            fail "orchestrator probe: missing per-step marker(s):${missing}"
+        fi
+
+        # Call-count assertions on the sequence log. apt-get is
+        # invoked twice (update, then upgrade); feed/webconfig/runtime
+        # once each. A regression that drops one apt invocation
+        # (chaining bug, --no-upgrade flag) would still leave
+        # apt.ok present but only carry one line — without this
+        # assertion it'd pass.
+        local apt_calls feed_calls webconfig_calls runtime_calls
+        apt_calls=$(grep -c '^[^ ]* apt ' "$_orch_call_log" 2>/dev/null || echo 0)
+        feed_calls=$(grep -c '^[^ ]* feed ' "$_orch_call_log" 2>/dev/null || echo 0)
+        webconfig_calls=$(grep -c '^[^ ]* webconfig ' "$_orch_call_log" 2>/dev/null || echo 0)
+        runtime_calls=$(grep -c '^[^ ]* runtime ' "$_orch_call_log" 2>/dev/null || echo 0)
+        if (( apt_calls != 2 )); then
+            fail "orchestrator probe: apt was invoked $apt_calls times (want 2: 'update' + '-y upgrade')"
+        fi
+        if (( feed_calls != 1 )); then
+            fail "orchestrator probe: feed stub was invoked $feed_calls times (want 1)"
+        fi
+        if (( webconfig_calls != 1 )); then
+            fail "orchestrator probe: webconfig stub was invoked $webconfig_calls times (want 1)"
+        fi
+        if (( runtime_calls != 1 )); then
+            fail "orchestrator probe: runtime stub was invoked $runtime_calls times (want 1)"
+        fi
+
+        # Sequence assertion: apt before feed before webconfig before
+        # runtime. The bats coverage pins this for the orchestrator
+        # script in isolation; we re-check here because a regression
+        # in the trampoline or systemd-run plumbing could in principle
+        # reorder the actual execution.
+        local apt_first feed_first wc_first rt_first
+        apt_first=$(grep -n '^[^ ]* apt update$' "$_orch_call_log" | head -1 | cut -d: -f1)
+        feed_first=$(grep -n '^[^ ]* feed ' "$_orch_call_log" | head -1 | cut -d: -f1)
+        wc_first=$(grep -n '^[^ ]* webconfig ' "$_orch_call_log" | head -1 | cut -d: -f1)
+        rt_first=$(grep -n '^[^ ]* runtime ' "$_orch_call_log" | head -1 | cut -d: -f1)
+        if [[ -z "$apt_first" || -z "$feed_first" || -z "$wc_first" || -z "$rt_first" ]]; then
+            fail "orchestrator probe: sequence log missing one of apt/feed/webconfig/runtime entries (log: $(cat "$_orch_call_log"))"
+        fi
+        if ! (( apt_first < feed_first && feed_first < wc_first && wc_first < rt_first )); then
+            fail "orchestrator probe: step order wrong — apt=$apt_first feed=$feed_first webconfig=$wc_first runtime=$rt_first (want strict ascending)"
+        fi
+
+        # Runtime sanity bound. See the budget comment above.
+        if (( elapsed > 60 )); then
+            fail "orchestrator probe: elapsed=${elapsed}s exceeded 60s bound"
+        fi
+
+        # Wait for the transient unit to drain (--collect should GC it
+        # within milliseconds; budget 30s for slow QEMU). Without
+        # this, the /health check below could race against the
+        # ExecStopPost HUP which fires AFTER the orchestrator process
+        # exits — orchestrator state=done is observable before
+        # ExecStopPost completes.
+        local unit_drain_deadline=$(( SECONDS + 30 ))
+        while (( SECONDS < unit_drain_deadline )); do
+            local unit_state
+            unit_state="$(systemctl show airplanes-update-orchestrator.service \
+                --property=ActiveState --value 2>/dev/null || true)"
+            case "$unit_state" in
+                ''|inactive|dead)
+                    break
+                    ;;
+            esac
+            sleep 0.5
+        done
+
+        # Cross-check via the HTTP route — proves the airplanes-webconfig
+        # service account can read /run/airplanes/orchestrator.state
+        # (mode/owner regression) and that the route is wired. Direct
+        # file read above used root; this is the production posture.
+        local state_http body_file
+        body_file="$(mktemp)"
+        state_http="$(curl --silent --show-error --output "$body_file" \
+            --write-out '%{http_code}' --max-time 10 \
+            -b "$cookiejar" http://127.0.0.1/api/orchestrator/state)"
+        if [[ "$state_http" != "200" ]]; then
+            echo "image-probe: /api/orchestrator/state body: $(cat "$body_file" 2>/dev/null)"
+            rm -f "$body_file"
+            fail "orchestrator probe: GET /api/orchestrator/state returned $state_http (want 200; service-account read of state file broken?)"
+        fi
+        local http_step
+        http_step="$(python3 -c '
+import json, sys
+print(json.load(open(sys.argv[1])).get("step", ""))' "$body_file" 2>/dev/null || true)"
+        rm -f "$body_file"
+        if [[ "$http_step" != "done" ]]; then
+            fail "orchestrator probe: /api/orchestrator/state reported step=$http_step (want done; HTTP/file divergence)"
+        fi
+
+        # Webconfig is still responsive after the orchestrator's HUPs.
+        _wcu_health_200 \
+            || fail "orchestrator probe: /health did not return 200 after orchestrator finished + unit drained"
+
+        # Tear down — paired with the trap above. Drop the trap
+        # explicitly so the diagnostic dump only fires on failure.
+        _orch_restore
+        # Verify cleanup landed — a leaked bind on /usr/bin/apt-get
+        # would break the next apt operation on this VM.
+        local leaked=""
+        for s in "$_orch_apt_get" "$_orch_feed_update" \
+                 "$_orch_webconfig_update" "$_orch_runtime_update"; do
+            if mountpoint -q "$s" 2>/dev/null; then
+                leaked+=" $s"
+            fi
+        done
+        if [[ -n "$leaked" ]]; then
+            fail "orchestrator probe: bind mount(s) leaked after restore:${leaked}"
+        fi
+        trap - EXIT
+
+        echo "image-probe: orchestrator e2e probe passed (elapsed=${elapsed}s, all 4 markers + sequence + HTTP cross-check)"
+    )
+    local sub_rc=$?
+    if (( sub_rc != 0 )); then
+        # The subshell already poweroffd via fail() on any explicit
+        # check failure. A non-zero rc without a fail() prior means
+        # something exited non-zero unexpectedly — surface it.
+        fail "orchestrator probe: subshell exited rc=$sub_rc unexpectedly (no fail() called)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 
 echo "image-probe: starting image-side assertions"
 
@@ -399,6 +933,7 @@ sse_body='{"password":"ProbePw1234XX"}'
 sse_cookiejar="$(mktemp)"
 sse_state_out="$(mktemp)"
 sse_stream_out="$(mktemp)"
+sse_first_pass=0
 
 curl --silent --show-error --max-time 5 \
     http://127.0.0.1/api/state > "$sse_state_out" || true
@@ -409,6 +944,7 @@ curl --silent --show-error --max-time 5 \
 # longer applicable. Skip it cleanly — the persistence path below probes
 # /health and the running service, which is what matters for a second pass.
 if grep -q '"state":"uninitialized"' "$sse_state_out"; then
+    sse_first_pass=1
     # /api/setup auto-logs-in on success — capture the session cookie for the
     # follow-up SSE GET. Origin == Host satisfies the POST-mutation origin guard.
     sse_setup_code="$(curl --silent --show-error --output /dev/null \
@@ -436,6 +972,17 @@ else
     echo "image-probe: SSE probe skipped (state=$(cat "$sse_state_out")) — already initialized, second pass"
 fi
 rm -f "$sse_state_out" "$sse_stream_out"
+
+# Orchestrator e2e — only on the first pass (when the SSE setup just
+# initialised the device and the cookie jar holds a fresh session).
+# Skipping on the second pass avoids racing against a possibly-restarted
+# webconfig from the upgrade variant, and there's no coverage gain
+# repeating the same check across a reboot. The probe self-gates on
+# trampoline + overlay-binary presence so a stable boot whose pinned
+# runtime predates the orchestrator stays green.
+if (( sse_first_pass == 1 )); then
+    _orch_run_probe "$sse_cookiejar"
+fi
 
 # Webconfig-upgrade variant — gated on the marker file the boot-smoke pre-boot
 # setup writes when AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE=1. The marker
