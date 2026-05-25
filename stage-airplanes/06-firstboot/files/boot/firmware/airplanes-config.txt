@@ -17,11 +17,6 @@
 # Optional keys are commented out; uncomment and set the value to apply.
 # Active lines must NOT carry inline comments — '#' only starts a comment at
 # the start of a line.
-#
-# If you leave the file as airplanes-config.txt (don't rename to .applied.txt
-# after a successful apply), FEED_HOST keeps re-deriving MLATSERVER/TARGET
-# in /etc/airplanes/feed.env on every boot. The other four keys are
-# idempotent — same input, same effect.
 
 # Override the network hostname so you can reach this Pi as <hostname>.local
 # instead of raspberrypi.local. Useful if you run multiple Pis on the same
