@@ -6,6 +6,7 @@
   <a href="https://github.com/airplanes-live/image/actions/workflows/ci.yml"><img src="https://github.com/airplanes-live/image/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
   <a href="https://github.com/airplanes-live/image/actions/workflows/build-image.yml"><img src="https://github.com/airplanes-live/image/actions/workflows/build-image.yml/badge.svg?branch=dev" alt="Build image"></a>
   <a href="https://github.com/airplanes-live/image/releases"><img src="https://img.shields.io/github/v/release/airplanes-live/image?include_prereleases&display_name=tag&label=release" alt="Latest release"></a>
+  <a href="https://github.com/airplanes-live/image/releases"><img src="https://img.shields.io/github/downloads/airplanes-live/image/total?label=downloads" alt="Downloads"></a>
 </p>
 
 # airplanes.live feeder image
