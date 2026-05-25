@@ -18,17 +18,11 @@ setup() {
     fi
 
     # systemctl shim so the runtime path's systemd ops are no-ops the test
-    # can inspect.
+    # can inspect. The shared shim also answers `show … --value` with healthy
+    # defaults so the unit-health gate in run_health_gates passes.
     SHIM_DIR="$BATS_TEST_TMPDIR/shim"
-    install -d -m 755 "$SHIM_DIR"
     SYSCTL_LOG="$BATS_TEST_TMPDIR/systemctl.log"
-    : > "$SYSCTL_LOG"
-    cat > "$SHIM_DIR/systemctl" <<EOF
-#!/usr/bin/env bash
-printf '%s\\n' "\$*" >> "$SYSCTL_LOG"
-exit 0
-EOF
-    chmod 755 "$SHIM_DIR/systemctl"
+    mk_systemctl_shim "$SHIM_DIR" "$SYSCTL_LOG" >/dev/null
     PATH="$SHIM_DIR:$PATH"
 
     # Synthetic root.
@@ -133,6 +127,7 @@ run_install_runtime() {
         AIRPLANES_RUNTIME_MINISIGN_PUBKEY="$KEY_DIR/test.pub" \
         AIRPLANES_RUNTIME_PROBE_URL_BASE="http://127.0.0.1:$PORT" \
         AIRPLANES_RUNTIME_HEALTH_DEADLINE=5 \
+        AIRPLANES_RUNTIME_UNIT_WINDOW_CUSHION=0 \
         AIRPLANES_RUNTIME_OVERLAY_TAG="$REL_TAG" \
         PATH="$SHIM_DIR:$PATH" \
         bash "$REPO_ROOT/runtime-overlay/install.sh" --runtime

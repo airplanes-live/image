@@ -136,6 +136,11 @@ if [[ -d "$overlay_dir/src/etc" ]]; then
 fi
 
 mkdir -p "$staging/migrations" "$staging/scripts/lib"
+# Shell-migration scripts (forward + rollback) ship in the release tree so the
+# self-updater can resolve `${release_dir}/migrations/<script>` on device.
+if [[ -d "$overlay_dir/src/migrations" ]]; then
+    cp -a "$overlay_dir/src/migrations/." "$staging/migrations/"
+fi
 cp -a "$overlay_dir/scripts/lib/install-common.sh" \
     "$staging/scripts/lib/install-common.sh"
 

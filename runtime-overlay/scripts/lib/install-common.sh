@@ -1293,11 +1293,137 @@ _airplanes_runtime_probe_uat_state() {
     done
 }
 
+# Shared stability window cushion / cap (seconds). The window over which the
+# unit-health gate re-confirms a set of units is max(effective RestartUSec) +
+# cushion, capped to UNIT_WINDOW_MAX and to the remaining deadline budget.
+AIRPLANES_RUNTIME_UNIT_WINDOW_CUSHION="${AIRPLANES_RUNTIME_UNIT_WINDOW_CUSHION:-10}"
+AIRPLANES_RUNTIME_UNIT_WINDOW_MAX="${AIRPLANES_RUNTIME_UNIT_WINDOW_MAX:-60}"
+
+# Parse a systemd time-span (the form `systemctl show -p RestartUSec --value`
+# emits: "30s", "100ms", "1min 30s", "0", "infinity", or a bare integer of
+# microseconds) to whole seconds, rounded up. Echoes the integer; non-zero
+# exit on an unparseable span so the caller can fail closed.
+_airplanes_runtime_parse_timespan_seconds() {
+    python3 - "$1" <<'PY'
+import sys, re, math
+s = sys.argv[1].strip()
+if s == "infinity":
+    # No finite auto-restart cadence — nothing to wait out beyond the cushion.
+    print(0); raise SystemExit(0)
+if re.fullmatch(r"\d+", s):           # bare integer = microseconds
+    print(int(math.ceil(int(s) / 1e6))); raise SystemExit(0)
+units = {"us": 1e-6, "usec": 1e-6, "ms": 1e-3, "msec": 1e-3,
+         "s": 1, "sec": 1, "second": 1, "seconds": 1,
+         "min": 60, "m": 60, "h": 3600, "hr": 3600}
+total = 0.0; found = False
+for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([a-zA-Z]+)", s):
+    u = m.group(2).lower()
+    if u not in units:
+        raise SystemExit(1)
+    total += float(m.group(1)) * units[u]; found = True
+if not found:
+    raise SystemExit(1)
+print(int(math.ceil(total)))
+PY
+}
+
+_airplanes_runtime_unit_prop() {
+    systemctl show "$1" -p "$2" --value 2>/dev/null
+}
+
+# Aggregate unit-health gate. Requires ALL named units to reach
+# ActiveState=active within `deadline`, then hold active — with NRestarts
+# unchanged and Result in {success, ""} — across ONE shared stability window.
+#
+# A bare `is-active` is insufficient: a Restart=always unit reads `active`
+# momentarily between failures, so a crash-loop (e.g. tar1090 217/USER) would
+# slip through. The HTTP probes alone also miss it: lighttpd serves
+# tar1090/graphs1090 static dirs with 200 even when the service is dead, and
+# readsb's aircraft.json can be stale-but-fresh from just before a crash.
+#
+# Fails closed (returns 1) when systemctl is unavailable or a RestartUSec span
+# cannot be parsed — gates only run in runtime mode, where a missing systemctl
+# is an error, not a reason to skip. Documented residual limit: a unit that
+# crashes on a cadence slower than the window can still pass one window.
+_airplanes_runtime_probe_units_active() {
+    local deadline="$1"; shift
+    local units=("$@")
+    local u state nr result sub
+
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "ERROR: probe_units_active: systemctl unavailable; failing closed" >&2
+        return 1
+    fi
+
+    # Phase 1 — all units reach active within the deadline.
+    local end=$(( $(date +%s) + deadline ))
+    while :; do
+        local all_active=1
+        for u in "${units[@]}"; do
+            state="$(_airplanes_runtime_unit_prop "$u" ActiveState)"
+            [[ "$state" == "active" ]] || { all_active=0; break; }
+        done
+        (( all_active )) && break
+        if (( $(date +%s) >= end )); then
+            echo "ERROR: probe_units_active: not all units active within ${deadline}s (last: $u=$state)" >&2
+            return 1
+        fi
+        sleep 1
+    done
+
+    # Phase 2 — shared window = max(effective RestartUSec) + cushion, capped.
+    local window=0 rs sec
+    for u in "${units[@]}"; do
+        rs="$(_airplanes_runtime_unit_prop "$u" RestartUSec)"
+        if ! sec="$(_airplanes_runtime_parse_timespan_seconds "$rs")"; then
+            echo "ERROR: probe_units_active: unparseable RestartUSec='$rs' for $u; failing closed" >&2
+            return 1
+        fi
+        (( sec > window )) && window=$sec
+    done
+    window=$(( window + AIRPLANES_RUNTIME_UNIT_WINDOW_CUSHION ))
+    (( window > AIRPLANES_RUNTIME_UNIT_WINDOW_MAX )) && window=$AIRPLANES_RUNTIME_UNIT_WINDOW_MAX
+    local remaining=$(( end - $(date +%s) ))
+    (( remaining > 0 && window > remaining )) && window=$remaining
+    (( window < 1 )) && window=1
+
+    # Phase 3 — snapshot NRestarts, hold the window re-confirming health.
+    local -A base_restarts
+    for u in "${units[@]}"; do
+        base_restarts["$u"]="$(_airplanes_runtime_unit_prop "$u" NRestarts)"
+    done
+    local hold_end=$(( $(date +%s) + window ))
+    while (( $(date +%s) < hold_end )); do
+        for u in "${units[@]}"; do
+            state="$(_airplanes_runtime_unit_prop "$u" ActiveState)"
+            nr="$(_airplanes_runtime_unit_prop "$u" NRestarts)"
+            result="$(_airplanes_runtime_unit_prop "$u" Result)"
+            if [[ "$state" != "active" ]] || [[ "$nr" != "${base_restarts[$u]}" ]] \
+                    || { [[ -n "$result" ]] && [[ "$result" != "success" ]]; }; then
+                sub="$(_airplanes_runtime_unit_prop "$u" SubState)"
+                echo "ERROR: probe_units_active: $u unstable (ActiveState=$state SubState=$sub Result=$result NRestarts=$nr base=${base_restarts[$u]})" >&2
+                return 1
+            fi
+        done
+        sleep 1
+    done
+    return 0
+}
+
 # Runs every health gate, in declared order. Returns 0 only if every gate
 # passes within its deadline. Caller handles rollback on non-zero return.
 airplanes_runtime_run_health_gates() {
     local target_root="$1"
     local deadline="${AIRPLANES_RUNTIME_HEALTH_DEADLINE}"
+
+    # Unit-health gate FIRST: a crash-looping decoder/web unit would otherwise
+    # pass the HTTP probes (lighttpd's static 200) or the aircraft.json
+    # freshness check (stale pre-crash file). readsb's is-active is NOT
+    # SDR-dependent — the daemon is active with zero aircraft.
+    if ! _airplanes_runtime_probe_units_active "$deadline" \
+            readsb.service tar1090.service graphs1090.service; then
+        return 1
+    fi
 
     # readsb: aircraft.json fresh + tar1090 HTTP probe.
     local aircraft_json="${target_root}/run/readsb/aircraft.json"
