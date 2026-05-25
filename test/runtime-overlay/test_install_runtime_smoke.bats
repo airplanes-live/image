@@ -78,8 +78,8 @@ JSON
     stage_product_runtime_assets "$REL_STAGING" "$HTTPD_DOC/$REL_TAG" "$ARCH" "$KEY_DIR/test.sec"
 
     # Also serve the three HTTP-probe responses so the health gates pass.
-    install -d -m 755 "$HTTPD_DOC/dump1090/data" "$HTTPD_DOC/tar1090" "$HTTPD_DOC/graphs1090"
-    : > "$HTTPD_DOC/dump1090/data/aircraft.json"
+    install -d -m 755 "$HTTPD_DOC/tar1090/data" "$HTTPD_DOC/tar1090" "$HTTPD_DOC/graphs1090"
+    : > "$HTTPD_DOC/tar1090/data/aircraft.json"
     printf 'ok' > "$HTTPD_DOC/tar1090/index.html"
     printf 'ok' > "$HTTPD_DOC/graphs1090/index.html"
 
