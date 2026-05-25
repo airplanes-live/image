@@ -92,13 +92,50 @@ jobs:
     name: Build runtime-overlay (arm64)
     needs: [resolve-channel-and-tags]
     runs-on: ubuntu-24.04-arm
+    # Build inside a Debian trixie userspace, not Ubuntu's, so the
+    # produced binaries link against exactly the SONAMEs the deployed
+    # feeder image carries. The specific bug this prevents: Ubuntu's
+    # librtlsdr-dev provides `librtlsdr.so.2`, Debian trixie's provides
+    # only `librtlsdr.so.0`; a readsb built on Ubuntu fails execve on a
+    # flashed feeder because the loader can't find .so.2. The same
+    # class of drift applies to libboost, libstdc++, libSoapySDR, and
+    # anything else with a SONAME that diverges between distros — none
+    # bite today but all could in a future apt update. Building against
+    # the target distro removes the entire class.
+    container:
+      image: debian:trixie-slim
+      # bwrap (used by stage-tar1090.sh / stage-graphs1090.sh) calls
+      # clone(CLONE_NEWUSER) which the container's default seccomp +
+      # AppArmor profiles block on this Ubuntu host even though
+      # Debian's bubblewrap is setuid-root. --privileged lifts both.
+      # Acceptable trade-off here because this job carries no signing
+      # secrets (sign job runs separately, gated on != pull_request)
+      # and the runner is ephemeral.
+      options: --privileged
     timeout-minutes: 90
+    # Inside `container:`, GH Actions's default shell is `sh`, not bash.
+    # Existing steps use `[[ ... ]]` and bash arrays. Force bash so no
+    # step silently misbehaves under dash.
+    defaults:
+      run:
+        shell: bash
     env:
       CHANNEL: ${{ needs.resolve-channel-and-tags.outputs.channel }}
       VERSION: ${{ needs.resolve-channel-and-tags.outputs.version }}
       IMMUTABLE_TAG: ${{ needs.resolve-channel-and-tags.outputs.immutable_tag }}
       COMMIT_SHA: ${{ needs.resolve-channel-and-tags.outputs.commit_sha }}
+      DEBIAN_FRONTEND: noninteractive
     steps:
+      - name: Bootstrap container (git + ca-certificates)
+        # debian:trixie-slim is minimal — no git, no ca-certificates.
+        # actions/checkout falls back to a slow REST-API tarball if git
+        # is missing; ca-certificates is needed for any HTTPS fetch. Do
+        # this before checkout so we get the fast git path.
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+              git ca-certificates
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # Component build helpers run `git ls-remote` on upstream repos
@@ -110,10 +147,9 @@ jobs:
           persist-credentials: false
 
       - name: Install build + verify dependencies
-        # Native arm64 runner: install component-build deps (libusb / rtlsdr
-        # / boost / ncurses for readsb; bwrap + lighttpd for the staging
-        # sandboxes) PLUS gate deps (shellcheck, python3-jsonschema, jq,
-        # minisign, file).
+        # Debian trixie container, running as root — no `sudo` prefix.
+        # Same logical package set as before; Debian's package names
+        # match Ubuntu's for everything here.
         #
         # rfc3339-validator is on PyPI but not in apt; install via pip so
         # `validate-manifest.sh` enforces format: date-time strictly rather
@@ -121,8 +157,7 @@ jobs:
         # rfc3339-validator is non-fatal — the script still gates the
         # regex pattern on build_date.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get install -y --no-install-recommends \
               build-essential \
               libusb-1.0-0-dev \
               pkg-config \
@@ -144,29 +179,26 @@ jobs:
               shellcheck \
               bubblewrap \
               minisign \
-              git \
               file \
-              ca-certificates \
               curl \
               wget \
               unzip \
               bash-builtins \
               rrdtool \
-              collectd-core
+              collectd-core \
+              libpython3.13
           # rfc3339-validator: best-effort. The validator falls back to a
           # regex when this is missing, which still gates the YYYY-MM-DDTHH:MM:SS
           # shape on build_date.
           pip3 install --break-system-packages rfc3339-validator || true
 
-      - name: Allow unprivileged user namespaces (bwrap)
-        # Ubuntu 24.04 ships an AppArmor restriction
-        # (kernel.apparmor_restrict_unprivileged_userns=1) that breaks bwrap's
-        # uid map setup with "Permission denied". The tar1090 and graphs1090
-        # staging helpers rely on bwrap to mask host paths the upstream
-        # installers would otherwise mutate (/etc/lighttpd, /etc/collectd,
-        # /etc/cron.d, /lib/systemd/system, ...). Turn the restriction off
-        # for the duration of this job; the runner is ephemeral.
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # No `Allow unprivileged user namespaces` step on Debian. Trixie's
+      # bubblewrap package ships /usr/bin/bwrap setuid-root, so bwrap
+      # doesn't depend on `kernel.apparmor_restrict_unprivileged_userns`
+      # (the Ubuntu-specific restriction we previously had to disable).
+      # If a future Debian rev drops the setuid bit, the targeted
+      # fallback is `options: --privileged` on the container block —
+      # narrow blast radius (this job carries no signing secrets).
 
       - name: Source channel config
         # runtime-overlay/config-stable / runtime-overlay/config-dev export
@@ -381,6 +413,36 @@ jobs:
         with:
           name: release-assets-unsigned
           path: ${{ runner.temp }}/release
+
+      - name: Re-extract release tree from tarball (preserves file modes)
+        # actions/upload-artifact / download-artifact roundtrips loose
+        # files through a zip-style archive that strips Unix mode bits;
+        # build artefacts arrive at mode 0644 even though the build
+        # produced 0755 binaries and scripts. pack-release-tarball.sh
+        # produces a mode-preserving tar.gz under the same upload dir,
+        # so the modes can be recovered by extracting that tarball over
+        # the mode-stripped loose tree. The exec-bit-check gate fails
+        # without this, and any downstream verify steps that exec or
+        # mode-check files would silently see wrong shapes too.
+        env:
+          IMMUTABLE_TAG: ${{ needs.resolve-channel-and-tags.outputs.immutable_tag }}
+        run: |
+          set -euo pipefail
+          tarball="$RUNNER_TEMP/release/$IMMUTABLE_TAG-arm64.tar.gz"
+          if [[ ! -f "$tarball" ]]; then
+              echo "::error::expected tarball missing: $tarball" >&2
+              ls -la "$RUNNER_TEMP/release/" >&2
+              exit 1
+          fi
+          # Drop the mode-stripped tree before extracting, so we end
+          # up with exactly the tarball's contents rather than a mix.
+          rm -rf -- "$RUNNER_TEMP/release/v$VERSION"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP/release"
+          if [[ ! -d "$RUNNER_TEMP/release/v$VERSION" ]]; then
+              echo "::error::tarball did not produce expected v$VERSION dir" >&2
+              tar -tzf "$tarball" | head -20 >&2
+              exit 1
+          fi
 
       - name: Run release gates
         run: |

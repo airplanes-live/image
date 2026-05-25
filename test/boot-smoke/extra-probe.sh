@@ -1251,6 +1251,77 @@ if [[ -d /opt/airplanes-runtime ]]; then
     # minisign actually parses the shipped key (no binary surprises).
     command -v minisign >/dev/null 2>&1 \
         || fail "minisign apt package not installed"
+
+    # Decoder binaries' dynamic dependencies resolve on the target
+    # image. If the runtime overlay was built against an Ubuntu library
+    # set (or any environment whose SONAMEs diverge from Debian), `ldd`
+    # surfaces the unresolved entries here. Capture the full output so
+    # the failing library is visible in the harness log; bare
+    # `ldd | grep` under `set -euo pipefail` can mask the real loader
+    # error.
+    for _decoder_bin in /usr/bin/readsb /usr/bin/airplanes-978 /usr/bin/dump978-fa; do
+        [[ -e "$_decoder_bin" ]] || fail "decoder binary missing: $_decoder_bin"
+        _ldd_out="$(ldd "$_decoder_bin" 2>&1)"
+        _ldd_rc=$?
+        if (( _ldd_rc != 0 )); then
+            echo "image-probe: ldd $_decoder_bin exited $_ldd_rc" >&2
+            echo "$_ldd_out" >&2
+            fail "ldd failed for $_decoder_bin (rc=$_ldd_rc)"
+        fi
+        if grep -q 'not found' <<<"$_ldd_out"; then
+            echo "image-probe: $_decoder_bin has unresolved shared libraries:" >&2
+            grep 'not found' <<<"$_ldd_out" >&2
+            fail "$_decoder_bin has unresolved shared libraries (likely ABI drift between build host and target image)"
+        fi
+    done
+
+    # ExecStart targets that resolve into the overlay must be
+    # executable on the running system. Stage-airplanes ships these as
+    # symlinks into /opt/airplanes-runtime/current/, and the runtime
+    # tarball is what owns the mode bits. A `0644` script behind an
+    # ExecStart= line fails the unit at boot with `203/EXEC`, which is
+    # how airplanes-runtime-update-recover.service broke on the first
+    # flashed dev feeder. The release-build gate (exec-bit-check.sh)
+    # is the primary defence; this is the runtime cross-check, scoped
+    # to the recovery + self-update + decoder-wrapper paths boot-smoke
+    # can reach without SDR hardware.
+    for _exec_target in \
+        /opt/airplanes-runtime/current/lib/airplanes-runtime-update-recover.sh \
+        /opt/airplanes-runtime/current/lib/runtime-self-update.sh \
+        /opt/airplanes-runtime/current/lib/airplanes-update-orchestrator \
+        /opt/airplanes-runtime/current/share/airplanes/readsb.sh \
+        /opt/airplanes-runtime/current/share/airplanes/airplanes-978.sh \
+        /opt/airplanes-runtime/current/share/airplanes/dump978-fa.sh \
+        /opt/airplanes-runtime/current/share/airplanes/tar1090-uat-sync.sh \
+        /opt/airplanes-runtime/current/lib/airplanes/render-status \
+    ; do
+        [[ -e "$_exec_target" ]] || fail "overlay file missing: $_exec_target"
+        [[ -x "$_exec_target" ]] \
+            || fail "overlay file not executable: $_exec_target (mode=$(stat -c '%a' -- "$_exec_target" 2>/dev/null || echo '???'))"
+    done
+
+    # Recovery service must not be failed. It runs as a `Type=oneshot`
+    # gated on `ConditionPathExists=` for the recovery script — on a
+    # fresh boot with no in-flight update state it should reach
+    # inactive(dead) with Result=success. `failed` here means
+    # ExecStart fired and exec()'d into something that failed (e.g.
+    # the script is 0644, or has a CRLF shebang, or the kernel
+    # rejected the interpreter line). readsb itself is intentionally
+    # NOT asserted here: with no SDR in QEMU, readsb fails for
+    # hardware-not-found reasons unrelated to packaging — the `ldd`
+    # check above is the deterministic readsb-side assertion.
+    _recover_active="$(systemctl show airplanes-runtime-update-recover.service \
+        --property=ActiveState --value 2>/dev/null || true)"
+    _recover_result="$(systemctl show airplanes-runtime-update-recover.service \
+        --property=Result --value 2>/dev/null || true)"
+    if [[ "$_recover_active" == "failed" || "$_recover_result" != "success" ]]; then
+        # Inline a fragment of the unit's journal so the harness log
+        # captures the actual exec failure, not just our diagnosis.
+        echo "image-probe: airplanes-runtime-update-recover.service is in a bad state" >&2
+        echo "  ActiveState=$_recover_active Result=$_recover_result" >&2
+        systemctl status airplanes-runtime-update-recover.service --no-pager --full 2>&1 | head -40 >&2 || true
+        fail "airplanes-runtime-update-recover.service ActiveState=$_recover_active Result=$_recover_result (expected dead/success)"
+    fi
 fi
 
 # Boot-config apply state.
