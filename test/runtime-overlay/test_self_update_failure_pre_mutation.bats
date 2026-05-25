@@ -39,7 +39,7 @@ setup() {
         AIRPLANES_RUNTIME_ROOT="$TARGET_ROOT" \
         AIRPLANES_RUNTIME_DOWNLOAD_BASE="http://127.0.0.1:1" \
         AIRPLANES_RUNTIME_MINISIGN_PUBKEY="$KEY_DIR/test.pub" \
-        AIRPLANES_RUNTIME_OVERLAY_TAG="runtime-v0.0.1" \
+        AIRPLANES_RUNTIME_OVERLAY_TAG="v0.0.1" \
         AIRPLANES_RUNTIME_LOCK_FILE="$LOCK_FILE" \
         AIRPLANES_RUNTIME_INSTALL_COMMON="$REPO_ROOT/runtime-overlay/scripts/lib/install-common.sh" \
         PATH="$SHIM_DIR:$PATH" \
@@ -64,7 +64,7 @@ setup() {
         skip "minisign required"
     fi
 
-    REL_TAG="runtime-v0.0.1"
+    REL_TAG="v0.0.1"
     REL_VER="0.0.1"
     ARCH="arm64"
     REL_STAGING="$BATS_TEST_TMPDIR/rel-staging/v$REL_VER"
@@ -95,13 +95,7 @@ JSON
 
     HTTPD_DOC="$BATS_TEST_TMPDIR/web"
     install -d -m 755 "$HTTPD_DOC/$REL_TAG"
-    TARBALL_NAME="${REL_TAG}-${ARCH}.tar.gz"
-    ( cd "$BATS_TEST_TMPDIR/rel-staging" && tar -czf "$HTTPD_DOC/$REL_TAG/$TARBALL_NAME" \
-            --owner=0 --group=0 --numeric-owner --sort=name "v$REL_VER" )
-    cp "$REL_STAGING/manifest.json" "$HTTPD_DOC/$REL_TAG/manifest.json"
-    : > "$HTTPD_DOC/$REL_TAG/PROVENANCE.md"
-    ( cd "$HTTPD_DOC/$REL_TAG" && sha256sum "$TARBALL_NAME" manifest.json > SHA256SUMS )
-    echo "" | minisign -Sm "$HTTPD_DOC/$REL_TAG/SHA256SUMS" -s "$KEY_DIR/test.sec" -W >/dev/null 2>&1
+    stage_product_runtime_assets "$REL_STAGING" "$HTTPD_DOC/$REL_TAG" "$ARCH" "$KEY_DIR/test.sec"
 
     HTTPD_LOG="$BATS_TEST_TMPDIR/httpd.log"
     PORT_FILE="$BATS_TEST_TMPDIR/httpd.port"
@@ -121,6 +115,10 @@ srv.serve_forever()
         [[ -s "$PORT_FILE" ]] && break
         sleep 0.1
     done
+    if [[ ! -s "$PORT_FILE" ]]; then
+        kill "$HTTPD_PID" 2>/dev/null || true
+        skip "python http.server failed to start"
+    fi
     PORT="$(tr -d '[:space:]' < "$PORT_FILE")"
 
     run env \

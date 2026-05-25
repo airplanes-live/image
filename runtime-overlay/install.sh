@@ -52,7 +52,7 @@ else
 fi
 
 airplanes_runtime_download_release "$TAG" "$ARCH_NAME" "$WORK_DIR"
-TARBALL="$(airplanes_runtime_downloaded_tarball_path "$TAG" "$ARCH_NAME" "$WORK_DIR")"
+TARBALL="$(airplanes_runtime_downloaded_tarball_path "$ARCH_NAME" "$WORK_DIR")"
 
 MANIFEST="$WORK_DIR/manifest.json"
 airplanes_runtime_verify_manifest_version "$MANIFEST" "$TAG"
