@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 # Tests the readsb health gate's two probes: aircraft.json freshness on disk
-# (mtime <= 30s) and a 200 from /dump1090/data/aircraft.json against the
+# (mtime <= 30s) and a 200 from /tar1090/data/aircraft.json against the
 # probe URL base. We use a tmpdir-backed python -m http.server to serve the
 # HTTP probe; the helper accepts AIRPLANES_RUNTIME_PROBE_URL_BASE so the
 # test can point it at the fixture port.
@@ -23,8 +23,8 @@ setup() {
     : > "$TARGET_ROOT/run/readsb/aircraft.json"
     # Start the HTTP fixture serving the three paths the gate probes.
     local doc="$BATS_TEST_TMPDIR/web"
-    install -d -m 755 "$doc/dump1090/data" "$doc/tar1090" "$doc/graphs1090"
-    : > "$doc/dump1090/data/aircraft.json"
+    install -d -m 755 "$doc/tar1090/data" "$doc/tar1090" "$doc/graphs1090"
+    : > "$doc/tar1090/data/aircraft.json"
     printf 'ok\n' > "$doc/tar1090/index.html"
     printf 'ok\n' > "$doc/graphs1090/index.html"
 

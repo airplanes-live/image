@@ -1304,7 +1304,7 @@ airplanes_runtime_run_health_gates() {
     if ! _airplanes_runtime_probe_file_freshness "$aircraft_json" 30 "$deadline"; then
         return 1
     fi
-    if ! _airplanes_runtime_probe_http_200 "${AIRPLANES_RUNTIME_PROBE_URL_BASE}/dump1090/data/aircraft.json" "$deadline"; then
+    if ! _airplanes_runtime_probe_http_200 "${AIRPLANES_RUNTIME_PROBE_URL_BASE}/tar1090/data/aircraft.json" "$deadline"; then
         return 1
     fi
 
