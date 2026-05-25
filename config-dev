@@ -58,4 +58,4 @@ export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-dev}"
 # hand when a new runtime release should bake into fresh dev image flashes.
 # On-device dev updaters consume the floating runtime-dev-latest tag and
 # don't care about this pin.
-export AIRPLANES_RUNTIME_OVERLAY_TAG="${AIRPLANES_RUNTIME_OVERLAY_TAG:-runtime-dev-20260521-6460eec}"
+export AIRPLANES_RUNTIME_OVERLAY_TAG="${AIRPLANES_RUNTIME_OVERLAY_TAG:-runtime-dev-20260525-cad8131}"
