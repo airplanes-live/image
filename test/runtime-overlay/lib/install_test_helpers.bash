@@ -126,6 +126,25 @@ JSON
     printf '%s' "$d"
 }
 
+# Package a staged v<VERSION>/ release tree as product runtime release assets.
+stage_product_runtime_assets() {
+    local release_dir="$1" dest_dir="$2" arch="$3" minisign_sec="$4"
+    local tarball_name="runtime-overlay-${arch}.tar.gz"
+
+    install -d -m 755 "$dest_dir"
+    (
+        cd "$(dirname -- "$release_dir")" || return 1
+        tar -czf "$dest_dir/$tarball_name" \
+            --owner=0 --group=0 --numeric-owner --sort=name \
+            "$(basename -- "$release_dir")"
+    )
+    cp "$release_dir/manifest.json" "$dest_dir/runtime-manifest.json"
+    : > "$dest_dir/runtime-PROVENANCE.md"
+    ( cd "$dest_dir" && sha256sum "$tarball_name" runtime-manifest.json > runtime-SHA256SUMS )
+    echo "" | minisign -Sm "$dest_dir/runtime-SHA256SUMS" \
+        -s "$minisign_sec" -W >/dev/null 2>&1
+}
+
 # Stage a systemctl shim that logs every invocation into <log> and exits
 # 0. Returns the directory the shim was placed in (caller prepends to
 # PATH).

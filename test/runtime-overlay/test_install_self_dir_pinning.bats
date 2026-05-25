@@ -36,7 +36,7 @@ setup() {
     # at the `airplanes_runtime_parse_mode_args` line). A `command not
     # found` would surface as exit 127.
     run env AIRPLANES_BUILD_MODE=1 ARCH=arm64 ROOTFS_DIR="$BATS_TEST_TMPDIR/rootfs" \
-            AIRPLANES_RUNTIME_OVERLAY_TAG="runtime-v0.0.0-nonexistent" \
+            AIRPLANES_RUNTIME_OVERLAY_TAG="v0.0.0-nonexistent" \
             AIRPLANES_RUNTIME_DOWNLOAD_BASE="file:///dev/null" \
             bash "$link_dir/install.sh" --build-mode
     # The script must reach at least the download step before failing.
