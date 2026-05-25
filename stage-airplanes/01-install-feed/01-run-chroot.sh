@@ -7,7 +7,7 @@ export PATH="/usr/local/sbin:${PATH}"
 # still requires placeholders for location / MLAT user; these are the default
 # values baked into feed.env at image freeze. Operational values are set by
 # the user via the webconfig UI after first boot; first-run on the device only
-# handles the 5-key bootstrap allowlist (HOSTNAME, WIFI_*, FEED_HOST).
+# handles the 6-key bootstrap allowlist (HOSTNAME, WIFI_*, FEED_HOST, WEBSITE_URL).
 #
 # MLAT is off by default on a fresh image: the operator must explicitly
 # enable it via the webconfig after entering real coordinates. A flashed

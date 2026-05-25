@@ -97,7 +97,7 @@ mount -t proc proc "$ROOT_MNT/proc"
 mount --rbind /sys "$ROOT_MNT/sys"
 mount --rbind /dev "$ROOT_MNT/dev"
 
-echo "==> seeding airplanes-config.txt with the 5-key allowlist"
+echo "==> seeding airplanes-config.txt with the 6-key allowlist"
 # Overwrite the shipped (all-commented) template with concrete values so we
 # can assert each allowlist path end-to-end. The boot config's job is
 # bootstrap only — hostname for mDNS discovery, WiFi creds for network

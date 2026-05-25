@@ -22,7 +22,7 @@ install -d -m 0755 "$ROOT_MNT/opt/airplanes-boot-smoke"
 install -m 0755 "$script_dir/extra-probe.sh" \
     "$ROOT_MNT/opt/airplanes-boot-smoke/extra-probe.sh"
 
-# Bootstrap-only keys — exercises parse_boot_config's 5-key allowlist
+# Bootstrap-only keys — exercises parse_boot_config's 6-key allowlist
 # (HOSTNAME, FEED_HOST) end-to-end on first boot. WIFI_* deliberately omitted:
 # the smoke runs offline under QEMU, and a stray NM keyfile would just live
 # unused on the rootfs without proving anything that test_first_run_wifi.bats

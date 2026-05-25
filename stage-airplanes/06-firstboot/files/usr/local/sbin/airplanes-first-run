@@ -9,7 +9,7 @@
 #   2. If /boot/firmware/airplanes-config.txt is present: parse + apply
 #      (NM keyfile, WiFi country, hostname, FEED_HOST expansion, feed.env
 #      merge) → rename the source to airplanes-config.applied.txt on full
-#      success. Any unknown key (rejected at parse time against the 5-key
+#      success. Any unknown key (rejected at parse time against the 6-key
 #      allowlist), user-input rejection, sub-step write failure, or merge
 #      failure leaves the source in place and writes a sibling
 #      airplanes-config.error.txt naming what to fix; the source is then
