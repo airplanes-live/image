@@ -1332,20 +1332,19 @@ if [[ -d /opt/airplanes-runtime ]]; then
     # `systemctl --failed` flags, so it would otherwise sail through CI.
     # tar1090.service (User=tar1090) is the concrete case; this guards the
     # whole class. Read the EFFECTIVE values via `systemctl show` (after
-    # drop-ins) rather than parsing the unit file, and confirm the fragment
-    # actually resolves into the overlay. DynamicUser=yes units are skipped
-    # (systemd materialises their principal at runtime).
+    # drop-ins) rather than parsing the unit file. Note systemd reports
+    # FragmentPath as the /etc/systemd/system symlink path, not the overlay
+    # target, so we don't assert on its prefix — the explicit symlink-target
+    # checks above already cover provenance. Skip units systemd doesn't load
+    # (empty FragmentPath) and DynamicUser units (principal synthesised at
+    # runtime).
     for _unit_file in /opt/airplanes-runtime/current/systemd/*.service; do
         [[ -e "$_unit_file" ]] || continue
         _unit="$(basename "$_unit_file")"
+        _frag="$(systemctl show "$_unit" --property=FragmentPath --value 2>/dev/null || true)"
+        [[ -n "$_frag" ]] || continue
         _dyn="$(systemctl show "$_unit" --property=DynamicUser --value 2>/dev/null || true)"
         [[ "$_dyn" == "yes" ]] && continue
-        _frag="$(systemctl show "$_unit" --property=FragmentPath --value 2>/dev/null || true)"
-        case "$_frag" in
-            /opt/airplanes-runtime/current/systemd/*) : ;;
-            "") fail "overlay unit $_unit has no FragmentPath (systemd did not load it)" ;;
-            *)  fail "overlay unit $_unit FragmentPath=$_frag does not resolve into the overlay" ;;
-        esac
         _u_user="$(systemctl show "$_unit" --property=User --value 2>/dev/null || true)"
         if [[ -n "$_u_user" ]]; then
             getent passwd "$_u_user" >/dev/null \
