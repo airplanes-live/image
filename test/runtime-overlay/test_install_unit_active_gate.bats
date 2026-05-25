@@ -106,3 +106,17 @@ EOF
     run _airplanes_runtime_parse_timespan_seconds 'garbage'
     [ "$status" -ne 0 ]
 }
+
+@test "time-span parser: trailing garbage after a valid token fails closed" {
+    run _airplanes_runtime_parse_timespan_seconds '1s xyz'
+    [ "$status" -ne 0 ]
+    run _airplanes_runtime_parse_timespan_seconds '30s 99'
+    [ "$status" -ne 0 ]
+}
+
+@test "tar1090 + graphs1090 are in the restart order (gate validates new units)" {
+    # If these aren't restarted on update, the unit gate would check the prior
+    # release's still-running process instead of the new unit files.
+    printf '%s\n' "${_airplanes_runtime_restart_order[@]}" | grep -qx 'tar1090.service'
+    printf '%s\n' "${_airplanes_runtime_restart_order[@]}" | grep -qx 'graphs1090.service'
+}

@@ -649,11 +649,17 @@ _airplanes_runtime_apply_managed_copy() {
 
 # Hardcoded restart order. Add new units here when their startup ordering
 # matters; everything not listed is a no-op for restart (still enabled).
+# tar1090/graphs1090 restart LAST, after the decode chain they read from. They
+# must be restarted on update (not just enabled) so the new release's unit
+# files actually start under the self-update health gate — otherwise the gate
+# would validate the prior release's still-running process.
 _airplanes_runtime_restart_order=(
     "readsb.service"
     "dump978-fa.service"
     "airplanes-978.service"
     "airplanes-tar1090-uat-sync.service"
+    "tar1090.service"
+    "graphs1090.service"
 )
 
 airplanes_runtime_apply_systemd_ops() {
@@ -1315,6 +1321,10 @@ if re.fullmatch(r"\d+", s):           # bare integer = microseconds
 units = {"us": 1e-6, "usec": 1e-6, "ms": 1e-3, "msec": 1e-3,
          "s": 1, "sec": 1, "second": 1, "seconds": 1,
          "min": 60, "m": 60, "h": 3600, "hr": 3600}
+# Reject input that is not wholly composed of "<number><unit>" tokens, so
+# partial garbage like "1s xyz" fails closed instead of silently yielding 1.
+if not re.fullmatch(r"(?:\s*\d+(?:\.\d+)?\s*[a-zA-Z]+\s*)+", s):
+    raise SystemExit(1)
 total = 0.0; found = False
 for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([a-zA-Z]+)", s):
     u = m.group(2).lower()
@@ -1383,28 +1393,43 @@ _airplanes_runtime_probe_units_active() {
     done
     window=$(( window + AIRPLANES_RUNTIME_UNIT_WINDOW_CUSHION ))
     (( window > AIRPLANES_RUNTIME_UNIT_WINDOW_MAX )) && window=$AIRPLANES_RUNTIME_UNIT_WINDOW_MAX
+    # Cap to the remaining deadline budget. If phase 1 already exhausted it
+    # (remaining <= 0) the cap drives window non-positive and the floor below
+    # pins it to a 1s final confirmation rather than running the full window
+    # past the deadline.
     local remaining=$(( end - $(date +%s) ))
-    (( remaining > 0 && window > remaining )) && window=$remaining
+    (( window > remaining )) && window=$remaining
     (( window < 1 )) && window=1
 
-    # Phase 3 — snapshot NRestarts, hold the window re-confirming health.
+    # Phase 3 — snapshot NRestarts (fail closed on a non-numeric read), then
+    # hold the window re-confirming health. The loop checks BEFORE each sleep
+    # and once more when the window expires, so a flap in the final interval is
+    # not missed.
     local -A base_restarts
     for u in "${units[@]}"; do
-        base_restarts["$u"]="$(_airplanes_runtime_unit_prop "$u" NRestarts)"
+        nr="$(_airplanes_runtime_unit_prop "$u" NRestarts)"
+        if ! [[ "$nr" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: probe_units_active: non-numeric NRestarts='$nr' for $u; failing closed" >&2
+            return 1
+        fi
+        base_restarts["$u"]="$nr"
     done
     local hold_end=$(( $(date +%s) + window ))
-    while (( $(date +%s) < hold_end )); do
+    while :; do
         for u in "${units[@]}"; do
             state="$(_airplanes_runtime_unit_prop "$u" ActiveState)"
             nr="$(_airplanes_runtime_unit_prop "$u" NRestarts)"
             result="$(_airplanes_runtime_unit_prop "$u" Result)"
-            if [[ "$state" != "active" ]] || [[ "$nr" != "${base_restarts[$u]}" ]] \
+            if [[ "$state" != "active" ]] \
+                    || ! [[ "$nr" =~ ^[0-9]+$ ]] \
+                    || [[ "$nr" != "${base_restarts[$u]}" ]] \
                     || { [[ -n "$result" ]] && [[ "$result" != "success" ]]; }; then
                 sub="$(_airplanes_runtime_unit_prop "$u" SubState)"
                 echo "ERROR: probe_units_active: $u unstable (ActiveState=$state SubState=$sub Result=$result NRestarts=$nr base=${base_restarts[$u]})" >&2
                 return 1
             fi
         done
+        (( $(date +%s) >= hold_end )) && break
         sleep 1
     done
     return 0

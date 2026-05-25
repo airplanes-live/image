@@ -16,7 +16,7 @@
 # tar1090 install.sh).
 #
 # adduser flags are EXACT PARITY with the chroot stage (enforced by
-# test_runtime_account_migration.bats). Existence-only: create-if-missing,
+# test_install_account_migration.bats). Existence-only: create-if-missing,
 # no-op-if-present; an existing account is trusted (accounts are only ever
 # created cleanly by the chroot stage). Group membership (readsb in
 # plugdev/dialout) is handled by the readsb-user-groups group_membership
