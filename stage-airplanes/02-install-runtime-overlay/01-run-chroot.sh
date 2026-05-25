@@ -15,6 +15,18 @@ fi
 adduser readsb plugdev || true
 adduser readsb dialout || true
 
+# tar1090 service account. tar1090.service runs as User=tar1090; the
+# overlay ships the unit but the account must exist on the image or
+# systemd fails the unit with 217/USER before ExecStart runs and (being
+# Restart=always) auto-restart-loops forever. The legacy tar1090
+# installer created it; the overlay cutover must keep doing so. Flags
+# match upstream tar1090 install.sh: `--system` without `--group` lands
+# the user in the `nogroup` group (do not assume tar1090:tar1090
+# ownership downstream).
+if ! getent passwd tar1090 >/dev/null; then
+	adduser --system --home /usr/local/share/tar1090 --no-create-home --quiet tar1090
+fi
+
 # readsb writes heatmap + coverage history here (--write-globe-history);
 # tar1090 reads it.
 install -d -m 0755 -o readsb -g readsb /var/globe_history

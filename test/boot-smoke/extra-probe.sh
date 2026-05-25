@@ -1322,6 +1322,75 @@ if [[ -d /opt/airplanes-runtime ]]; then
         systemctl status airplanes-runtime-update-recover.service --no-pager --full 2>&1 | head -40 >&2 || true
         fail "airplanes-runtime-update-recover.service ActiveState=$_recover_active Result=$_recover_result (expected dead/success)"
     fi
+
+    # Every overlay-shipped unit's effective User=/Group=/SupplementaryGroups=
+    # must resolve to an account that exists on the image. The chroot stage
+    # creates the service accounts; a unit naming a principal the stage
+    # forgot fails at boot with 217/USER (or a group setup error) BEFORE
+    # ExecStart runs, and — being Restart=always — auto-restart-loops. That
+    # state reads as `activating`, which neither `systemctl is-failed` nor
+    # `systemctl --failed` flags, so it would otherwise sail through CI.
+    # tar1090.service (User=tar1090) is the concrete case; this guards the
+    # whole class. Read the EFFECTIVE values via `systemctl show` (after
+    # drop-ins) rather than parsing the unit file, and confirm the fragment
+    # actually resolves into the overlay. DynamicUser=yes units are skipped
+    # (systemd materialises their principal at runtime).
+    for _unit_file in /opt/airplanes-runtime/current/systemd/*.service; do
+        [[ -e "$_unit_file" ]] || continue
+        _unit="$(basename "$_unit_file")"
+        _dyn="$(systemctl show "$_unit" --property=DynamicUser --value 2>/dev/null || true)"
+        [[ "$_dyn" == "yes" ]] && continue
+        _frag="$(systemctl show "$_unit" --property=FragmentPath --value 2>/dev/null || true)"
+        case "$_frag" in
+            /opt/airplanes-runtime/current/systemd/*) : ;;
+            "") fail "overlay unit $_unit has no FragmentPath (systemd did not load it)" ;;
+            *)  fail "overlay unit $_unit FragmentPath=$_frag does not resolve into the overlay" ;;
+        esac
+        _u_user="$(systemctl show "$_unit" --property=User --value 2>/dev/null || true)"
+        if [[ -n "$_u_user" ]]; then
+            getent passwd "$_u_user" >/dev/null \
+                || fail "overlay unit $_unit declares User=$_u_user but that account does not exist (would fail 217/USER at boot)"
+        fi
+        _u_group="$(systemctl show "$_unit" --property=Group --value 2>/dev/null || true)"
+        if [[ -n "$_u_group" ]]; then
+            getent group "$_u_group" >/dev/null \
+                || fail "overlay unit $_unit declares Group=$_u_group but that group does not exist"
+        fi
+        # SupplementaryGroups is space-separated in `systemctl show` output.
+        _u_supp="$(systemctl show "$_unit" --property=SupplementaryGroups --value 2>/dev/null || true)"
+        # shellcheck disable=SC2086  # intentional split on space-separated group list
+        for _g in $_u_supp; do
+            getent group "$_g" >/dev/null \
+                || fail "overlay unit $_unit lists SupplementaryGroups=$_g but that group does not exist"
+        done
+    done
+
+    # Long-running overlay units must reach AND hold `active`. They are
+    # Restart=always; a unit stuck in auto-restart (217/USER, 203/EXEC, a
+    # bad config, a transient that exits cleanly then flaps) reports as
+    # `activating`/`auto-restart`, which `is-failed`/`--failed` treat as
+    # not-failed. Poll for `active`, then hold briefly and re-confirm so a
+    # unit that blips active→dead is caught too. Neither needs an SDR:
+    # tar1090 compresses whatever readsb writes (and loops when there is
+    # nothing), graphs1090 renders from collectd. readsb stays excluded —
+    # with no SDR in QEMU it legitimately does not reach active.
+    for _svc in tar1090.service graphs1090.service; do
+        _svc_deadline=$(( SECONDS + 75 ))
+        while (( SECONDS < _svc_deadline )); do
+            [[ "$(systemctl is-active "$_svc" 2>/dev/null || true)" == "active" ]] && break
+            sleep 2
+        done
+        # Stability hold: a Type=simple unit can flash active then exit.
+        sleep 3
+        if [[ "$(systemctl is-active "$_svc" 2>/dev/null || true)" != "active" ]]; then
+            echo "image-probe: $_svc did not reach/hold active" >&2
+            systemctl show "$_svc" \
+                --property=ActiveState,SubState,Result,ExecMainStatus,NRestarts 2>&1 \
+                | sed 's/^/  /' >&2 || true
+            systemctl status "$_svc" --no-pager --full 2>&1 | head -40 >&2 || true
+            fail "$_svc not active (217=User= missing, 203=ExecStart not executable, exit-code=script error)"
+        fi
+    done
 fi
 
 # Boot-config apply state.
