@@ -7,7 +7,11 @@
 #   - runtime-overlay/install.sh                              (build mode + runtime mode)
 #   - runtime-overlay/update.sh                               (runtime mode shim)
 #   - runtime-overlay/src/lib/runtime-self-update.sh          (state-machine wrapper)
-#   - runtime-overlay/src/lib/airplanes-runtime-update-recover.sh (boot recovery oneshot)
+#
+# Boot-time recovery is NOT sourced from here. It is an image-owned POSIX-sh
+# pointer shim (/usr/local/lib/airplanes-runtime/recover-shim) that uses only
+# base-OS tools so it survives a fully broken overlay — see the image stage
+# at stage-airplanes/02-install-runtime-overlay/.
 #
 # Naming: every function declared here is `airplanes_runtime_*`. Variables that
 # the caller may override (download base, repo URL, lock path, etc.) are
@@ -20,6 +24,22 @@
 # ---------------------------------------------------------------------------
 # Defaults and tunables
 # ---------------------------------------------------------------------------
+
+# Version of THIS updater. A release whose manifest declares an
+# installer_min_version greater than this is refused before any mutation —
+# old updaters that cannot understand a newer manifest hard-fail cleanly
+# rather than half-installing. Bump this when the updater gains a capability a
+# future release will declare a floor against. Overridable for tests.
+AIRPLANES_RUNTIME_INSTALLER_VERSION="${AIRPLANES_RUNTIME_INSTALLER_VERSION:-1.0.0}"
+
+# Schema version this updater understands. A manifest declaring a higher
+# manifest_schema_version is refused before mutation (forward-compat floor).
+AIRPLANES_RUNTIME_INSTALLER_SCHEMA_VERSION="${AIRPLANES_RUNTIME_INSTALLER_SCHEMA_VERSION:-1}"
+
+# Minimum free bytes required on the releases filesystem before extraction.
+# Default 250MB headroom covers the decoder tree plus retained releases on a
+# small SD card; overridable for tests and tuning.
+AIRPLANES_RUNTIME_MIN_FREE_BYTES="${AIRPLANES_RUNTIME_MIN_FREE_BYTES:-262144000}"
 
 AIRPLANES_RUNTIME_REPO="${AIRPLANES_RUNTIME_REPO:-https://github.com/airplanes-live/image.git}"
 AIRPLANES_RUNTIME_DOWNLOAD_BASE="${AIRPLANES_RUNTIME_DOWNLOAD_BASE:-https://github.com/airplanes-live/image/releases/download}"
@@ -650,6 +670,67 @@ _airplanes_runtime_apply_managed_copy() {
 }
 
 # ---------------------------------------------------------------------------
+# Managed-path symlink cleanup (rollback + success)
+# ---------------------------------------------------------------------------
+#
+# When the managed_paths set changes between releases, stale symlinks must be
+# cleaned up so the FHS surface reflects exactly the active release:
+#   - on SUCCESS: remove RETIRED links (present in the prior manifest, absent
+#     from the new one) so an old release's path doesn't dangle.
+#   - on ROLLBACK: remove NEW-ONLY links (present in the new manifest, absent
+#     from the prior one) so a failed install's path doesn't dangle after the
+#     `current` flip reverts.
+# Only symlink-mode entries are considered; copy-mode targets are handled by
+# the copy-preimage restore path. Only links that are actually symlinks are
+# removed — never a regular file or directory, so an operator-created file at
+# the same path is left alone.
+
+# Emit the absolute `link` of every symlink-mode managed_paths entry in a
+# manifest, one per line. Missing manifest / no entries → empty.
+_airplanes_runtime_symlink_links() {
+    local manifest="$1"
+    [[ -f "$manifest" ]] || return 0
+    jq -r '.managed_paths[]? | select(.mode == "symlink") | .link' "$manifest" 2>/dev/null
+}
+
+# Remove the symlinks that are in <set_a manifest> but NOT in <set_b manifest>,
+# rebased under target_root. Used both directions: success passes
+# (prior, new); rollback passes (new, prior).
+_airplanes_runtime_remove_symlinks_only_in() {
+    local manifest_a="$1" manifest_b="$2" target_root="$3"
+    local b_links
+    b_links=" $(_airplanes_runtime_symlink_links "$manifest_b" | tr '\n' ' ') "
+    local link
+    while IFS= read -r link; do
+        [[ -z "$link" ]] && continue
+        [[ "$link" == /* ]] || continue
+        # Skip links also present in set B.
+        if [[ "$b_links" == *" $link "* ]]; then
+            continue
+        fi
+        local abs="${target_root}${link}"
+        # Only remove an actual symlink — never clobber a real file/dir.
+        if [[ -L "$abs" ]]; then
+            rm -f -- "$abs"
+        fi
+    done < <(_airplanes_runtime_symlink_links "$manifest_a")
+}
+
+# SUCCESS: remove retired links (in prior, not in new).
+airplanes_runtime_remove_retired_symlinks() {
+    local prev_manifest="$1" new_manifest="$2" target_root="$3"
+    [[ -f "$prev_manifest" ]] || return 0
+    _airplanes_runtime_remove_symlinks_only_in "$prev_manifest" "$new_manifest" "$target_root"
+}
+
+# ROLLBACK: remove new-only links (in new, not in prior).
+airplanes_runtime_remove_new_only_symlinks() {
+    local new_manifest="$1" prev_manifest="$2" target_root="$3"
+    [[ -f "$new_manifest" ]] || return 0
+    _airplanes_runtime_remove_symlinks_only_in "$new_manifest" "$prev_manifest" "$target_root"
+}
+
+# ---------------------------------------------------------------------------
 # systemd ops
 # ---------------------------------------------------------------------------
 #
@@ -727,6 +808,16 @@ airplanes_runtime_apply_systemd_ops() {
             systemctl restart "$u" || return 1
         fi
     done
+
+    # Reload-or-restart pass: for units carrying overlay-managed config where a
+    # full restart is unnecessary (e.g. lighttpd picking up a new conf snippet)
+    # the manifest lists them under systemd.reload_or_restart. `reload-or-
+    # restart` reloads if the unit declares ExecReload, otherwise restarts.
+    local r
+    while IFS= read -r r; do
+        [[ -z "$r" ]] && continue
+        systemctl reload-or-restart "$r" || return 1
+    done < <(jq -r '.systemd.reload_or_restart[]?' "$manifest")
 }
 
 # ---------------------------------------------------------------------------
@@ -1676,12 +1767,128 @@ except Exception:
     print("0")' "$f" 2>/dev/null || printf '0'
 }
 
+# Compare two dotted-triple semvers. Echoes -1/0/1 for a<b / a==b / a>b.
+# Missing components default to 0. Non-numeric input fails closed (exit 2).
+_airplanes_runtime_semver_cmp() {
+    python3 - "$1" "$2" <<'PY'
+import re, sys
+def parse(s):
+    m = re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?$', s.strip())
+    if not m:
+        raise SystemExit(2)
+    return tuple(int(g or 0) for g in m.groups())
+a, b = parse(sys.argv[1]), parse(sys.argv[2])
+print(-1 if a < b else (1 if a > b else 0))
+PY
+}
+
+# Resolve the installed Debian suite codename from /etc/os-release
+# (VERSION_CODENAME). Falls back to lsb_release if os-release is unreadable.
+# Missing → empty.
+_airplanes_runtime_read_os_codename() {
+    local target_root="$1"
+    local f="${target_root}/etc/os-release"
+    if [[ -r "$f" ]]; then
+        local cn
+        cn="$(sed -n 's/^VERSION_CODENAME=//p' "$f" | head -n1 | tr -d '"'"'"' \t\r\n')"
+        if [[ -n "$cn" ]]; then
+            printf '%s' "$cn"
+            return 0
+        fi
+    fi
+    # Only consult the live system when not rebased under a test root.
+    if [[ -z "$target_root" || "$target_root" == "/" ]] && command -v lsb_release >/dev/null 2>&1; then
+        lsb_release -cs 2>/dev/null | tr -d '[:space:]'
+        return 0
+    fi
+    printf ''
+}
+
+# Free bytes available on the filesystem hosting the releases dir. Echoes the
+# integer byte count, or empty if it can't be determined.
+_airplanes_runtime_free_bytes_for_releases() {
+    local target_root="$1"
+    local dir="${target_root}/opt/airplanes-runtime/releases"
+    # Walk up to the nearest existing ancestor — the releases dir may not
+    # exist yet on a first install.
+    while [[ ! -d "$dir" && -n "$dir" && "$dir" != "/" ]]; do
+        dir="$(dirname "$dir")"
+    done
+    [[ -d "$dir" ]] || dir="${target_root:-/}"
+    [[ -d "$dir" ]] || dir="/"
+    # `df -P -B1` reports POSIX-portable 1-byte blocks; field 4 is available.
+    df -P -B1 "$dir" 2>/dev/null | awk 'NR==2 { print $4 }'
+}
+
 airplanes_runtime_run_compat_preflight() {
     local manifest="$1" target_root="$2"
 
+    # --- Forward-compat floor (top-level fields, always checked) ----------
+    #
+    # A manifest declaring a schema version or installer floor this updater
+    # does not meet is refused BEFORE any mutation, so an old updater never
+    # half-interprets a newer release.
+    local manifest_schema installer_min
+    manifest_schema="$(jq -r '.manifest_schema_version // empty' "$manifest")"
+    if [[ -n "$manifest_schema" ]]; then
+        if ! [[ "$manifest_schema" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: compat preflight: manifest_schema_version is not an integer: '$manifest_schema'" >&2
+            return 1
+        fi
+        if (( manifest_schema > AIRPLANES_RUNTIME_INSTALLER_SCHEMA_VERSION )); then
+            echo "ERROR: compat preflight: release manifest_schema_version=$manifest_schema exceeds this updater's supported schema ($AIRPLANES_RUNTIME_INSTALLER_SCHEMA_VERSION)" >&2
+            echo "       Update the on-device runtime overlay through an intermediate release first." >&2
+            return 1
+        fi
+    fi
+
+    installer_min="$(jq -r '.installer_min_version // empty' "$manifest")"
+    if [[ -n "$installer_min" ]]; then
+        local cmp
+        if ! cmp="$(_airplanes_runtime_semver_cmp "$AIRPLANES_RUNTIME_INSTALLER_VERSION" "$installer_min")"; then
+            echo "ERROR: compat preflight: could not compare installer_min_version='$installer_min'" >&2
+            return 1
+        fi
+        if (( cmp < 0 )); then
+            echo "ERROR: compat preflight: release requires updater >= $installer_min but this updater is $AIRPLANES_RUNTIME_INSTALLER_VERSION" >&2
+            echo "       Update the on-device runtime overlay through an intermediate release first." >&2
+            return 1
+        fi
+    fi
+
+    # --- Free-space preflight (always checked, before extraction) ---------
+    #
+    # The release tree plus the retained previous release must fit. A tight
+    # card should fail cleanly here rather than half-extract and wedge.
+    local free_bytes
+    free_bytes="$(_airplanes_runtime_free_bytes_for_releases "$target_root")"
+    if [[ -n "$free_bytes" && "$free_bytes" =~ ^[0-9]+$ ]]; then
+        if (( free_bytes < AIRPLANES_RUNTIME_MIN_FREE_BYTES )); then
+            echo "ERROR: compat preflight: insufficient free space for extraction: ${free_bytes}B free, need >= ${AIRPLANES_RUNTIME_MIN_FREE_BYTES}B" >&2
+            return 1
+        fi
+    fi
+
     if ! jq -e '.compat' "$manifest" >/dev/null 2>&1; then
-        # No compat block declared → nothing to enforce.
+        # No compat block declared → nothing further to enforce.
         return 0
+    fi
+
+    # --- Base-OS codename (compat.base_os_codename) -----------------------
+    local want_codename
+    want_codename="$(jq -r '.compat.base_os_codename // ""' "$manifest")"
+    if [[ -n "$want_codename" ]]; then
+        local have_codename
+        have_codename="$(_airplanes_runtime_read_os_codename "$target_root")"
+        if [[ -z "$have_codename" ]]; then
+            echo "ERROR: compat preflight: release targets base OS '$want_codename' but the installed OS codename could not be determined" >&2
+            return 1
+        fi
+        if [[ "$have_codename" != "$want_codename" ]]; then
+            echo "ERROR: compat preflight: release targets base OS '$want_codename' but this device runs '$have_codename'" >&2
+            echo "       A base-OS major upgrade is reflash-only; this release cannot be installed in place." >&2
+            return 1
+        fi
     fi
 
     local req
@@ -1762,6 +1969,53 @@ airplanes_runtime_record_runtime_manifest() {
     fi
 
     mv -Tf -- "$tmp" "$link"
+}
+
+# ---------------------------------------------------------------------------
+# Last-good-release pointer
+# ---------------------------------------------------------------------------
+#
+# Image-owned file at /var/lib/airplanes-runtime/last-good-release recording
+# the device-canonical path of the most recent release that passed its health
+# gates. The boot recovery shim uses it as the rollback target when the state
+# file's prev_release is missing or invalid. Written at (not after) the
+# HEALTH_PASSED transition so a reboot in the cleanup window cannot leave it
+# stale relative to a known-good release.
+
+AIRPLANES_RUNTIME_LAST_GOOD_REL="${AIRPLANES_RUNTIME_LAST_GOOD_REL:-var/lib/airplanes-runtime/last-good-release}"
+
+airplanes_runtime_write_last_good_release() {
+    local target_root="$1" on_device_release="$2"
+    if [[ "$on_device_release" != /* ]]; then
+        echo "ERROR: write_last_good_release: release path must be absolute (got: $on_device_release)" >&2
+        return 1
+    fi
+    local f="${target_root%/}/${AIRPLANES_RUNTIME_LAST_GOOD_REL}"
+    install -d -m 755 "$(dirname "$f")"
+    local tmp="${f}.tmp.$$"
+    if ! printf '%s\n' "$on_device_release" > "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    sync -d "$tmp" 2>/dev/null || true
+    mv -Tf -- "$tmp" "$f" || { rm -f -- "$tmp"; return 1; }
+    sync -d "$(dirname "$f")" 2>/dev/null || true
+}
+
+# Finalize the post-HEALTH_PASSED cleanup. Idempotent and resumable — runs the
+# runtime-manifest pointer write (fatal on failure: callers must retry) and a
+# best-effort GC. Reused by both the forward walk and the resume-on-entry path
+# so a HEALTH_PASSED interruption is finished by the next updater invocation.
+airplanes_runtime_finalize_after_health_passed() {
+    local target_root="$1"
+    if ! airplanes_runtime_record_runtime_manifest "$target_root"; then
+        echo "ERROR: finalize_after_health_passed: runtime manifest pointer write failed" >&2
+        return 1
+    fi
+    if ! airplanes_runtime_gc_old_releases "$target_root"; then
+        echo "WARN: finalize_after_health_passed: GC of old releases reported a failure (non-fatal)" >&2
+    fi
+    return 0
 }
 
 # ---------------------------------------------------------------------------

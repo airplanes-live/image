@@ -23,6 +23,14 @@
 # All output passes through `jq -S` so key ordering is canonical at every
 # nesting level — that property is what makes the build byte-deterministic
 # and what test_build_release_layout.bats relies on.
+#
+# The manifest schema version and the installer floor are baked into every
+# rendered manifest. They are constants of the source tree (not per-release
+# inputs) so a release built from a given commit always declares the schema
+# it was authored against and the minimum updater that understands it. Both
+# are overridable via env for tests and forward-compat experiments.
+AIRPLANES_RUNTIME_MANIFEST_SCHEMA_VERSION="${AIRPLANES_RUNTIME_MANIFEST_SCHEMA_VERSION:-1}"
+AIRPLANES_RUNTIME_INSTALLER_MIN_VERSION="${AIRPLANES_RUNTIME_INSTALLER_MIN_VERSION:-1.0.0}"
 
 # airplanes_runtime_render_manifest <version> <channel> <commit_sha> \
 #                                   <build_date> <arch> <input-dir> <output-path>
@@ -84,6 +92,8 @@ airplanes_runtime_render_manifest() {
     local rendered
     rendered="$(
         jq -nS \
+            --argjson schema_version "$AIRPLANES_RUNTIME_MANIFEST_SCHEMA_VERSION" \
+            --arg installer_min "$AIRPLANES_RUNTIME_INSTALLER_MIN_VERSION" \
             --arg version "$version" \
             --arg channel "$channel" \
             --arg commit_sha "$commit_sha" \
@@ -96,6 +106,8 @@ airplanes_runtime_render_manifest() {
             --slurpfile migrations  "$tmpdir/migrations.json" \
             --slurpfile compat      "$tmpdir/compat.json" \
             '{
+                manifest_schema_version: $schema_version,
+                installer_min_version:   $installer_min,
                 version:       $version,
                 channel:       $channel,
                 commit_sha:    $commit_sha,

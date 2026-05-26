@@ -1,0 +1,25 @@
+[Unit]
+Description=Airplanes runtime-overlay boot recovery (image-owned pointer shim)
+DefaultDependencies=no
+After=local-fs.target
+# Ordered before every runtime-overlay-consumer unit so a half-flipped
+# `current` symlink cannot be reached by a daemon depending on the overlay's
+# binaries / configs. The shim flips `current` back to the last-good release
+# before any of these start. Future overlay units invented by later releases
+# should carry After=airplanes-runtime-update-recover.service since this
+# image-owned unit cannot know names it predates.
+Before=readsb.service dump978-fa.service airplanes-978.service
+Before=airplanes-tar1090-uat-sync.service airplanes-tar1090-uat-sync.path
+Before=tar1090.service graphs1090.service
+Before=collectd.service lighttpd.service
+Before=airplanes-webconfig.service airplanes-feed.service airplanes-mlat.service
+RequiresMountsFor=/opt /var/lib/airplanes-runtime-upgrade
+ConditionPathExists=/usr/local/lib/airplanes-runtime/recover-shim
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/airplanes-runtime/recover-shim
+
+[Install]
+WantedBy=multi-user.target

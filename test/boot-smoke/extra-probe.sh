@@ -1204,9 +1204,15 @@ if [[ -d /opt/airplanes-runtime ]]; then
     [[ "$_runtime_link" == "/opt/airplanes-runtime/current/systemd/readsb.service" ]] \
         || fail "readsb.service symlink unexpected: $_runtime_link"
 
-    [[ "$(readlink /etc/systemd/system/airplanes-runtime-update-recover.service 2>/dev/null)" \
-        == "/opt/airplanes-runtime/current/systemd/airplanes-runtime-update-recover.service" ]] \
-        || fail "airplanes-runtime-update-recover.service symlink unexpected"
+    # Boot recovery is now an IMAGE-OWNED shim (it must survive a fully
+    # broken overlay), so the unit is a regular image file, not an overlay
+    # symlink, and its ExecStart points at the image-owned shim.
+    if [[ -L /etc/systemd/system/airplanes-runtime-update-recover.service \
+            || ! -f /etc/systemd/system/airplanes-runtime-update-recover.service ]]; then
+        fail "airplanes-runtime-update-recover.service should be an image-owned regular file, not an overlay symlink"
+    fi
+    [[ -x /usr/local/lib/airplanes-runtime/recover-shim ]] \
+        || fail "recover-shim missing or not executable"
     systemctl is-enabled airplanes-runtime-update-recover.service >/dev/null \
         || fail "airplanes-runtime-update-recover.service not enabled"
 
@@ -1286,7 +1292,6 @@ if [[ -d /opt/airplanes-runtime ]]; then
     # to the recovery + self-update + decoder-wrapper paths boot-smoke
     # can reach without SDR hardware.
     for _exec_target in \
-        /opt/airplanes-runtime/current/lib/airplanes-runtime-update-recover.sh \
         /opt/airplanes-runtime/current/lib/runtime-self-update.sh \
         /opt/airplanes-runtime/current/lib/airplanes-update-orchestrator \
         /opt/airplanes-runtime/current/share/airplanes/readsb.sh \

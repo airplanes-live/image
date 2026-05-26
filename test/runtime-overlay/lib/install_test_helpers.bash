@@ -63,6 +63,7 @@ mk_target_root() {
         "$r/run/airplanes-978" \
         "$r/run/dump978-fa" \
         "$r/var/lib/airplanes-runtime-upgrade" \
+        "$r/var/lib/airplanes-runtime" \
         "$r/run/airplanes"
     printf '%s' "$r"
 }
@@ -111,6 +112,8 @@ mk_target_release() {
     chmod 755 "$d/bin/readsb"
     cat > "$d/manifest.json" <<JSON
 {
+    "manifest_schema_version": 1,
+    "installer_min_version": "1.0.0",
     "version": "$version",
     "channel": "stable",
     "commit_sha": "0000000000000000000000000000000000000000",

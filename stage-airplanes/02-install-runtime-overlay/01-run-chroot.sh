@@ -56,22 +56,30 @@ if [[ ! -e /etc/cron.d/collectd_to_disk \
 		/etc/cron.d/collectd_to_disk
 fi
 
-# Enable the unit set the runtime overlay manifest declares. collectd.service
-# is apt-managed and the unit ships with collectd-core; the others are now
-# overlay-owned via the /etc/systemd/system/ → /opt/airplanes-runtime/current/
-# symlinks the host-side stage laid down. UAT services self-disable cleanly
-# when UAT_INPUT is empty in /etc/airplanes/feed.env (wrappers publish a
-# disabled decision file and sleep so the unit stays active).
-systemctl enable \
-	readsb.service \
-	airplanes-978.service \
-	dump978-fa.service \
-	airplanes-tar1090-uat-sync.service \
-	airplanes-tar1090-uat-sync.path \
-	tar1090.service \
-	graphs1090.service \
-	collectd.service \
-	airplanes-runtime-update-recover.service
+# Enable the unit set the runtime overlay manifest declares. The list is read
+# DYNAMICALLY from the active release manifest's systemd.enable array — the
+# manifest is the single source of truth so a future release that adds a unit
+# does not require an image rebuild. collectd.service is apt-managed and the
+# unit ships with collectd-core; the others are overlay-owned via the
+# /etc/systemd/system/ → /opt/airplanes-runtime/current/ symlinks the
+# host-side stage laid down. UAT services self-disable cleanly when UAT_INPUT
+# is empty in /etc/airplanes/feed.env (wrappers publish a disabled decision
+# file and sleep so the unit stays active).
+RUNTIME_MANIFEST=/opt/airplanes-runtime/current/manifest.json
+if [[ ! -f "$RUNTIME_MANIFEST" ]]; then
+	echo "ERROR: runtime overlay manifest not found at $RUNTIME_MANIFEST" >&2
+	exit 1
+fi
+mapfile -t ENABLE_UNITS < <(jq -r '.systemd.enable[]?' "$RUNTIME_MANIFEST")
+if (( ${#ENABLE_UNITS[@]} == 0 )); then
+	echo "ERROR: runtime overlay manifest declares no units to enable" >&2
+	exit 1
+fi
+systemctl enable "${ENABLE_UNITS[@]}"
+
+# The boot-recovery unit is image-owned (it must survive a broken overlay),
+# so it is NOT in the manifest's enable set. Enable it here explicitly.
+systemctl enable airplanes-runtime-update-recover.service
 
 # lighttpd conf-enabled stays image-owned; conf-available is overlay-owned
 # via the managed_paths symlinks. The two-hop chain (conf-enabled → image

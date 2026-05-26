@@ -7,9 +7,9 @@
     "airplanes-tar1090-uat-sync.path",
     "tar1090.service",
     "graphs1090.service",
-    "collectd.service",
-    "airplanes-runtime-update-recover.service"
+    "collectd.service"
   ],
   "disable": [],
+  "reload_or_restart": [],
   "daemon_reload": true
 }

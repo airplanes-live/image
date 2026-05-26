@@ -28,6 +28,8 @@
     }
   ],
   "required": [
+    "manifest_schema_version",
+    "installer_min_version",
     "version",
     "channel",
     "commit_sha",
@@ -40,6 +42,16 @@
     "migrations"
   ],
   "properties": {
+    "manifest_schema_version": {
+      "type": "integer",
+      "description": "Monotonically increasing schema version. Old updaters that do not understand a required field hard-fail before mutation.",
+      "minimum": 1
+    },
+    "installer_min_version": {
+      "type": "string",
+      "description": "Minimum runtime-overlay updater version (semver) required to install this release. The updater checks this before any mutation and refuses cleanly if it is too old.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
     "version": {
       "type": "string",
       "description": "Release version. Stable: dotted-triple (1.4.0). Dev: dotted-triple + '-dev-<YYYYMMDD>-<short-sha>'. The channel/version pairing is enforced by the top-level allOf.",
@@ -74,6 +86,11 @@
       "description": "Optional compatibility constraints. Each value is a semver-range string consumed by the on-device self-updater preflight.",
       "additionalProperties": false,
       "properties": {
+        "base_os_codename": {
+          "type": "string",
+          "description": "Required Debian suite codename (e.g. 'trixie'). Updater compares against the installed OS and refuses on mismatch.",
+          "minLength": 1
+        },
         "requires_webconfig": { "$ref": "#/$defs/semverRange" },
         "requires_feed_contract": { "$ref": "#/$defs/semverRange" },
         "min_image_base": { "$ref": "#/$defs/semverRange" }
@@ -81,16 +98,16 @@
     },
     "components": {
       "type": "object",
-      "description": "Per-component upstream pins. Known keys are listed; additional keys are allowed for forward compatibility.",
+      "description": "Per-component upstream pins. Values are either a bare SHA string (legacy) or an object with commit_sha and version. Known keys are listed; additional keys are allowed for forward compatibility.",
       "minProperties": 1,
       "properties": {
-        "readsb_wiedehopf": { "$ref": "#/$defs/componentSha" },
-        "dump978_fa": { "$ref": "#/$defs/componentSha" },
-        "tar1090": { "$ref": "#/$defs/componentSha" },
-        "tar1090_db": { "$ref": "#/$defs/componentSha" },
-        "graphs1090": { "$ref": "#/$defs/componentSha" }
+        "readsb_wiedehopf": { "$ref": "#/$defs/componentPin" },
+        "dump978_fa": { "$ref": "#/$defs/componentPin" },
+        "tar1090": { "$ref": "#/$defs/componentPin" },
+        "tar1090_db": { "$ref": "#/$defs/componentPin" },
+        "graphs1090": { "$ref": "#/$defs/componentPin" }
       },
-      "additionalProperties": { "$ref": "#/$defs/componentSha" }
+      "additionalProperties": { "$ref": "#/$defs/componentPin" }
     },
     "managed_paths": {
       "type": "array",
@@ -150,6 +167,11 @@
         },
         "disable": {
           "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "reload_or_restart": {
+          "type": "array",
+          "description": "Units to reload-or-restart after managed_paths are applied. For config-only changes (e.g. lighttpd) where a full restart is unnecessary but reload picks up the new config.",
           "items": { "type": "string", "minLength": 1 }
         },
         "daemon_reload": { "type": "boolean" }
@@ -276,6 +298,21 @@
       "type": "string",
       "description": "Upstream component git SHA (short or full hex).",
       "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "componentPin": {
+      "description": "A component pin: either a bare SHA string or an object with commit_sha (required) and an optional version.",
+      "oneOf": [
+        { "$ref": "#/$defs/componentSha" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["commit_sha"],
+          "properties": {
+            "commit_sha": { "$ref": "#/$defs/componentSha" },
+            "version": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
     },
     "semverRange": {
       "type": "string",

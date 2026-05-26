@@ -3,9 +3,9 @@
     "readsb.service",
     "airplanes-978.service",
     "dump978-fa.service",
-    "airplanes-tar1090-uat-sync.path",
-    "airplanes-runtime-update-recover.service"
+    "airplanes-tar1090-uat-sync.path"
   ],
   "disable": [],
+  "reload_or_restart": [],
   "daemon_reload": true
 }
