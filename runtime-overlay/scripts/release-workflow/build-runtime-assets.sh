@@ -118,6 +118,24 @@ bash "$overlay_dir/scripts/lib/stage-graphs1090.sh" \
     --ref "$AIRPLANES_GRAPHS1090_BRANCH" \
     --output-dir "$staging"
 
+# --- webconfig: download prebuilt release and stage into overlay tree --------
+WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-}"
+WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}"
+WEBCONFIG_DOWNLOAD_BASE="${AIRPLANES_WEBCONFIG_DOWNLOAD_BASE:-}"
+
+if [[ -n "$WEBCONFIG_RELEASE_TAG" && -n "$WEBCONFIG_COMMIT_SHA" ]]; then
+    stage_wc_args=(
+        --release-tag "$WEBCONFIG_RELEASE_TAG"
+        --commit-sha "$WEBCONFIG_COMMIT_SHA"
+        --arch "$ARCH"
+        --output-dir "$staging"
+    )
+    if [[ -n "$WEBCONFIG_DOWNLOAD_BASE" ]]; then
+        stage_wc_args+=(--download-base "$WEBCONFIG_DOWNLOAD_BASE")
+    fi
+    bash "$overlay_dir/scripts/lib/stage-webconfig.sh" "${stage_wc_args[@]}"
+fi
+
 if [[ -d "$overlay_dir/src/share/airplanes" ]]; then
     mkdir -p "$staging/share/airplanes"
     cp -a "$overlay_dir/src/share/airplanes/." "$staging/share/airplanes/"

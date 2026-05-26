@@ -105,8 +105,19 @@ for filename in "${SHA_FILES[@]}"; do
     if ! [[ "$sha" =~ ^[0-9a-f]{7,40}$ ]]; then
         die "$path: SHA must be 7..40 lowercase hex chars (got: $sha)"
     fi
-    JSON="$(printf '%s' "$JSON" \
-        | jq -S --arg k "$key" --arg v "$sha" '. + {($k): $v}')"
+    # If a companion components.<key>.version file exists, emit an object
+    # {commit_sha, version} instead of a bare SHA string. This lets downstream
+    # consumers (manifest, health gates) carry the version tag alongside the pin.
+    version_file="$INPUT_DIR/components.${key}.version"
+    if [[ -f "$version_file" ]]; then
+        ver="$(tr -d '[:space:]' < "$version_file")"
+        JSON="$(printf '%s' "$JSON" \
+            | jq -S --arg k "$key" --arg s "$sha" --arg v "$ver" \
+              '. + {($k): {commit_sha: $s, version: $v}}')"
+    else
+        JSON="$(printf '%s' "$JSON" \
+            | jq -S --arg k "$key" --arg v "$sha" '. + {($k): $v}')"
+    fi
 done
 
 # Atomic write.

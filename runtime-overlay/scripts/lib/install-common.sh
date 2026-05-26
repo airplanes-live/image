@@ -753,6 +753,7 @@ _airplanes_runtime_restart_order=(
     "airplanes-tar1090-uat-sync.service"
     "tar1090.service"
     "graphs1090.service"
+    "airplanes-webconfig.service"
 )
 
 airplanes_runtime_apply_systemd_ops() {
@@ -1480,6 +1481,71 @@ _airplanes_runtime_probe_uat_state() {
     done
 }
 
+# Webconfig version gate: probe /health through lighttpd and confirm the
+# serving binary matches the manifest's webconfig component. /health returns
+# plain-text `ok <version>\n`, where <version> is the release tag with a
+# `+<short-sha>` build-metadata suffix (the release pipeline always stamps
+# commitSha). The manifest records the webconfig component as
+# {commit_sha, version}; the short commit SHA (first 7 hex) is the precise
+# "this binary was built from the release we just installed" invariant and is
+# present in the /health output on every channel. We require the probe to
+# return 200 AND the body to carry the expected 7-char short SHA, so a stale
+# webconfig process (old binary still serving after a failed swap) is rejected
+# even though it would answer 200.
+#
+# Args: <url> <expected-short-sha> <deadline>
+_airplanes_runtime_probe_webconfig_version() {
+    local url="$1" expected_short="$2" deadline="$3"
+    local end now body code remaining curl_timeout
+    end=$(( $(date +%s) + deadline ))
+    while :; do
+        now="$(date +%s)"
+        remaining=$(( end - now ))
+        if (( remaining <= 0 )); then
+            echo "ERROR: /health never reported expected webconfig version within ${deadline}s: $url (want short-sha=$expected_short, last body='${body:-}')" >&2
+            return 1
+        fi
+        curl_timeout=$(( remaining < 5 ? remaining : 5 ))
+        (( curl_timeout < 1 )) && curl_timeout=1
+        body="$(curl -fsS -w $'\n%{http_code}' --max-time "$curl_timeout" "$url" 2>/dev/null || true)"
+        code="${body##*$'\n'}"
+        local payload="${body%$'\n'*}"
+        if [[ "$code" == "200" && "$payload" == *"$expected_short"* ]]; then
+            return 0
+        fi
+        now="$(date +%s)"
+        remaining=$(( end - now ))
+        (( remaining <= 0 )) && {
+            echo "ERROR: /health never reported expected webconfig version within ${deadline}s: $url (want short-sha=$expected_short, last code=${code:-?} body='${payload:-}')" >&2
+            return 1
+        }
+        sleep 1
+    done
+}
+
+# Resolve the webconfig component's expected short commit SHA from the release
+# manifest. The component may be a bare SHA string (legacy) or an object with
+# a commit_sha field. Echoes the 7-char short SHA, or empty if no webconfig
+# component is declared (a decoder-only release — the gate then no-ops).
+_airplanes_runtime_manifest_webconfig_short_sha() {
+    local manifest="$1"
+    [[ -f "$manifest" ]] || { printf ''; return 0; }
+    python3 - "$manifest" <<'PY'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+c = (m.get("components") or {}).get("webconfig")
+sha = ""
+if isinstance(c, str):
+    sha = c
+elif isinstance(c, dict):
+    sha = c.get("commit_sha", "") or ""
+print(sha[:7])
+PY
+}
+
 # Shared stability window cushion / cap (seconds). The window over which the
 # unit-health gate re-confirms a set of units is max(effective RestartUSec) +
 # cushion, capped to UNIT_WINDOW_MAX and to the remaining deadline budget.
@@ -1627,7 +1693,8 @@ airplanes_runtime_run_health_gates() {
     # freshness check (stale pre-crash file). readsb's is-active is NOT
     # SDR-dependent — the daemon is active with zero aircraft.
     if ! _airplanes_runtime_probe_units_active "$deadline" \
-            readsb.service tar1090.service graphs1090.service; then
+            readsb.service tar1090.service graphs1090.service \
+            airplanes-webconfig.service; then
         return 1
     fi
 
@@ -1654,6 +1721,21 @@ airplanes_runtime_run_health_gates() {
     fi
     if ! _airplanes_runtime_probe_http_200 "${AIRPLANES_RUNTIME_PROBE_URL_BASE}/graphs1090/" "$deadline"; then
         return 1
+    fi
+
+    # Webconfig: probe /health THROUGH lighttpd (port 80) and confirm the
+    # serving binary carries the release's webconfig commit. Reads the
+    # expected short SHA from the active release manifest (the `current`
+    # symlink already points at the new release at health-gate time). Skipped
+    # when the release declares no webconfig component (decoder-only release).
+    local active_manifest="${target_root}/opt/airplanes-runtime/current/manifest.json"
+    local wc_short
+    wc_short="$(_airplanes_runtime_manifest_webconfig_short_sha "$active_manifest")"
+    if [[ -n "$wc_short" ]]; then
+        if ! _airplanes_runtime_probe_webconfig_version \
+                "${AIRPLANES_RUNTIME_PROBE_URL_BASE}/health" "$wc_short" "$deadline"; then
+            return 1
+        fi
     fi
 }
 

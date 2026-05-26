@@ -95,7 +95,7 @@ airplanes_runtime_load_component_pins() {
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
             case "$name" in
-                AIRPLANES_*_REPO|AIRPLANES_*_BRANCH) ;;
+                AIRPLANES_*_REPO|AIRPLANES_*_BRANCH|AIRPLANES_*_RELEASE_TAG|AIRPLANES_*_COMMIT_SHA|AIRPLANES_*_DOWNLOAD_BASE) ;;
                 *)
                     echo "airplanes_runtime_load_component_pins: ignoring config variable with unrecognised shape: $name" >&2
                     continue

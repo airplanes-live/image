@@ -78,20 +78,36 @@ done < <(jq -r '.managed_paths[]? | select(.mode == "symlink") | [.link, .target
 # .sh under share/airplanes/, is the render-status binary or lives
 # under lib/airplanes/, sits under etc/update-motd.d/, or is a .sh
 # under lib/ (the runtime self-update helpers).
+#
+# Exception: a shebang-less `.sh` file is a SOURCED library, not a directly
+# executed script (e.g. the webconfig wifi-validators.sh / wifi-keyfile.sh
+# shipped at lib/airplanes/, which carry `# shellcheck shell=bash` and are
+# sourced by airplanes-first-run and apl-wifi). Those are mode 0644 by
+# design — execve never touches them, so requiring an exec bit would be
+# wrong. The render-status binary and every shebang-carrying script still
+# fall through to the exec-bit + shebang shape check below.
 _should_be_executable() {
     local rel="$1"
     case "$rel" in
         bin/*)                          return 0 ;;
-        share/airplanes/*.sh)           return 0 ;;
         lib/airplanes/render-status)    return 0 ;;
+        share/airplanes/*.sh \
+        |lib/airplanes/*.sh \
+        |lib/*.sh \
+        |scripts/lib/*.sh \
+        |scripts/release-workflow/*.sh \
+        |scripts/gates/*.sh \
+        |scripts/validate-manifest.sh \
+        |scripts/build-release.sh)
+            # Shebang-less .sh = sourced library; exempt from exec-bit.
+            local abs="$RELEASE_DIR/$rel"
+            if [[ -f "$abs" ]] && [[ "$(LC_ALL=C head -c 2 -- "$abs" 2>/dev/null)" != "#!" ]]; then
+                return 1
+            fi
+            return 0
+            ;;
         lib/airplanes/*)                return 0 ;;
-        lib/*.sh)                       return 0 ;;
         etc/update-motd.d/*)            return 0 ;;
-        scripts/lib/*.sh)               return 0 ;;
-        scripts/release-workflow/*.sh)  return 0 ;;
-        scripts/gates/*.sh)             return 0 ;;
-        scripts/validate-manifest.sh)   return 0 ;;
-        scripts/build-release.sh)       return 0 ;;
     esac
     return 1
 }

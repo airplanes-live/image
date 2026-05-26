@@ -86,7 +86,7 @@ server.document-root = "$scratch/var/www/html"
 server.errorlog      = "$scratch/var/log/lighttpd/error.log"
 server.pid-file      = "$scratch/var/run/lighttpd/lighttpd.pid"
 server.port          = 8080
-server.modules       = ( "mod_alias", "mod_setenv", "mod_dirlisting" )
+server.modules       = ( "mod_alias", "mod_setenv", "mod_dirlisting", "mod_proxy" )
 include "$conf"
 WRAP
     if ! lighttpd -tt -f "$wrapper" >"$scratch/$name.out" 2>&1; then

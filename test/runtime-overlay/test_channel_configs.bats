@@ -2,10 +2,10 @@
 
 # Tests for runtime-overlay/config-{stable,dev} — channel-pinning shell
 # fragments sourced by the runtime-overlay build helpers. Asserts shape
-# (5 *_REPO + 5 *_BRANCH vars), pin format per channel (40-hex SHA on
-# stable, non-SHA branch ref on dev), HTTPS-only repo URLs, and that the
-# `${VAR:-default}` idiom keeps a pre-set value intact when the file is
-# sourced.
+# (5 *_REPO + 5 *_BRANCH + 2 webconfig pins), pin format per channel
+# (40-hex SHA on stable, non-SHA branch ref on dev), HTTPS-only repo URLs,
+# and that the `${VAR:-default}` idiom keeps a pre-set value intact when
+# the file is sourced.
 
 bats_require_minimum_version 1.5.0
 
@@ -110,22 +110,26 @@ load_pins() {
     done
 }
 
-# Round-trip the file through A-3b's loader and assert the emitted key set
-# is EXACTLY the ten expected names — guards against:
+# Round-trip the file through the loader and assert the emitted key set is
+# EXACTLY the expected names — guards against:
 #   - a typo in the config adding a stray pseudo-pin;
-#   - a future helper edit relaxing the AIRPLANES_*_REPO|_BRANCH filter;
+#   - a future helper edit relaxing the name filter;
 #   - silent shape drift between this file and the loader's contract.
-@test "loader emits exactly the expected 10 pin keys for both channels" {
+@test "loader emits exactly the expected pin keys for both channels" {
     for channel in stable dev; do
         run env -u AIRPLANES_RUNTIME_OVERLAY_DIR bash -c \
             ". \"$LOADER\" && airplanes_runtime_load_component_pins $channel"
         [ "$status" -eq 0 ]
 
-        # Build the expected key list.
+        # Build the expected key list. Decoder components use _REPO/_BRANCH;
+        # webconfig uses _RELEASE_TAG/_COMMIT_SHA (downloaded prebuilt, not
+        # compiled from a branch).
         local expected=""
         for c in "${COMPONENTS[@]}"; do
             expected+="${c}_BRANCH"$'\n'"${c}_REPO"$'\n'
         done
+        expected+="AIRPLANES_WEBCONFIG_COMMIT_SHA"$'\n'
+        expected+="AIRPLANES_WEBCONFIG_RELEASE_TAG"$'\n'
         expected="$(printf '%s' "$expected" | LC_ALL=C sort -u)"
 
         # Extract just the key names from the loader output (lines look like

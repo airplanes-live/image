@@ -24,3 +24,4 @@ gpg
 pigz
 arch-test
 minisign
+visudo:sudo
