@@ -26,20 +26,17 @@ echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (install.sh --build-m
 echo "==> stage-airplanes/01-install-feed/02-run.sh (cleanup staged feed)"
 ( cd /image/stage-airplanes/01-install-feed && bash 02-run.sh )
 
-echo "==> stage-airplanes/05-install-webconfig/00-run.sh (clone image-webconfig and install)"
-# Stage 05 now clones airplanes-live/image-webconfig and pulls the release
-# binary + rootfs payload. Skip if the integration env vars are not set —
-# overlay-smoke verifies feed/install.sh's image-side overlay primarily;
-# webconfig staging is a nice-to-have here, not the contract under test.
-if [ -n "${AIRPLANES_WEBCONFIG_REPO:-}" ] && [ -n "${AIRPLANES_WEBCONFIG_BRANCH:-}" ]; then
-    ( cd /image/stage-airplanes/05-install-webconfig && bash 00-run.sh )
-    echo "==> stage-airplanes/05-install-webconfig/01-run-chroot.sh (user + lighttpd + enable)"
-    ( cd /image/stage-airplanes/05-install-webconfig && bash 01-run-chroot.sh )
-    echo "==> stage-airplanes/05-install-webconfig/02-run.sh (cleanup staged clone)"
-    ( cd /image/stage-airplanes/05-install-webconfig && bash 02-run.sh )
-else
-    echo "    skipped: set AIRPLANES_WEBCONFIG_REPO + AIRPLANES_WEBCONFIG_BRANCH to exercise stage 05" >&2
-fi
+echo "==> stage-airplanes/05-install-webconfig/00-run.sh (image-owned tmpfiles)"
+# Stage 05 is setup-only now. The webconfig binary, helpers, systemd units,
+# sudoers, and the lighttpd conf-available snippet arrive through the runtime
+# overlay at stage 02 (managed_paths) — which this fast smoke deliberately
+# does NOT run (it needs signed release downloads). So stage 05's host-side
+# step (the image-owned tmpfiles) is the only part exercisable here; the
+# chroot step's lighttpd conf-enabled activation depends on the overlay's
+# conf-available symlink and is covered by the full build + boot-smoke. The
+# webconfig user/group/state-dir + service-account contract is asserted by
+# the runtime-overlay stage tests, not here.
+( cd /image/stage-airplanes/05-install-webconfig && bash 00-run.sh )
 
 echo "==> stage-airplanes/06-firstboot/00-run.sh"
 # Seed NM state + saved WLAN rfkill so we can assert stage 06 wipes them.
@@ -157,159 +154,28 @@ grep -qE '^[[:space:]]*distro:[[:space:]]+debian[[:space:]]*$' "$distro_dropin" 
 # longer host-side artifacts — runtime-manifest.json is the canonical
 # source for those SHAs.
 
-# lighttpd config syntax check (catches broken alias.url snippets etc.)
+# lighttpd base config syntax check (catches broken alias.url snippets in the
+# stages this smoke does run). The webconfig conf-available snippet ships
+# through the runtime overlay at stage 02 (not exercised here), so the
+# conf-enabled webconfig hop is NOT linked in this smoke; the full image build
+# + boot-smoke cover the webconfig reverse-proxy path end to end.
 lighttpd -tt -f /etc/lighttpd/lighttpd.conf >/dev/null \
     || fail "lighttpd config-test failed"
 
-# Stage 05 outputs (webconfig plumbing).
-[[ -x /usr/local/bin/airplanes-webconfig ]] || fail "airplanes-webconfig binary missing"
-# Cross-build target matches ARCH (arm64); the smoke runs on amd64 so it must
-# NOT be a host-arch binary.
-file /usr/local/bin/airplanes-webconfig | grep -q 'ARM aarch64' \
-    || fail "airplanes-webconfig is not an arm64 binary"
-[[ -f /etc/systemd/system/airplanes-webconfig.service ]] || fail "airplanes-webconfig.service missing"
-grep -q '^User=airplanes-webconfig' /etc/systemd/system/airplanes-webconfig.service \
-    || fail "airplanes-webconfig.service not running as airplanes-webconfig user"
-grep -q '^After=.*airplanes-first-run.service' /etc/systemd/system/airplanes-webconfig.service \
-    || fail "airplanes-webconfig.service missing After=airplanes-first-run.service"
-[[ -f /etc/lighttpd/conf-available/40-airplanes-webconfig.conf ]] \
-    || fail "lighttpd conf-available/40-airplanes-webconfig.conf missing"
-[[ -L /etc/lighttpd/conf-enabled/40-airplanes-webconfig.conf ]] \
-    || fail "lighttpd conf-enabled/40-airplanes-webconfig.conf symlink missing"
-# mod_proxy enabled by lighttpd-enable-mod (debian helper writes a
-# 10-proxy.conf symlink into conf-enabled).
-[[ -e /etc/lighttpd/conf-enabled/10-proxy.conf ]] \
-    || fail "lighttpd mod_proxy not enabled (no 10-proxy.conf in conf-enabled)"
-have_enable_link airplanes-webconfig.service || fail "airplanes-webconfig.service enable symlink missing"
-
-# Reset oneshot: unit installed, script executable, WantedBy symlink under
-# airplanes-webconfig.service.wants/ exists.
-[[ -f /etc/systemd/system/airplanes-webconfig-reset.service ]] \
-    || fail "airplanes-webconfig-reset.service missing"
-[[ -x /usr/local/lib/airplanes-webconfig/reset ]] \
-    || fail "/usr/local/lib/airplanes-webconfig/reset missing or not executable"
-[[ -L /etc/systemd/system/airplanes-webconfig.service.wants/airplanes-webconfig-reset.service ]] \
-    || fail "reset wants symlink missing under airplanes-webconfig.service.wants/"
-
-# Sudoers (PR-3): file exists, mode 0440, owned root:root, visudo accepts.
-[[ -f /etc/sudoers.d/010_airplanes-webconfig ]] \
-    || fail "sudoers snippet missing"
-[[ "$(stat -c %a /etc/sudoers.d/010_airplanes-webconfig)" == "440" ]] \
-    || fail "sudoers snippet perms != 0440"
-[[ "$(stat -c %U:%G /etc/sudoers.d/010_airplanes-webconfig)" == "root:root" ]] \
-    || fail "sudoers snippet not owned root:root"
-visudo -cf /etc/sudoers.d/010_airplanes-webconfig >/dev/null \
-    || fail "visudo rejects sudoers snippet"
-
-# airplanes-webconfig in systemd-journal group (so /api/log/{unit} can read
-# the journal without sudo).
-id -nG airplanes-webconfig | tr ' ' '\n' | grep -qx systemd-journal \
-    || fail "airplanes-webconfig not in systemd-journal group"
-
-# apl-feed apply (the canonical feed.env writer) is shipped by
-# stage-airplanes/01-install-feed and lives at /usr/local/bin/apl-feed.
-[[ -x /usr/local/bin/apl-feed ]] \
-    || fail "apl-feed binary missing or not executable"
-
-# tmpfiles.d snippet for /run/airplanes (the feed-env lock dir).
+# Stage 05 outputs. Setup-only now — the webconfig binary, helpers, units,
+# sudoers, and the lighttpd conf-available snippet arrive through the runtime
+# overlay (stage 02) and are asserted by the runtime-overlay stage tests +
+# the full build. Here we verify only the image-owned tmpfiles snippet stage
+# 05 still installs host-side.
 [[ -f /usr/lib/tmpfiles.d/airplanes-webconfig.conf ]] \
     || fail "tmpfiles.d snippet for /run/airplanes missing"
 grep -Eq '^d /run/airplanes 0755 root root' /usr/lib/tmpfiles.d/airplanes-webconfig.conf \
     || fail "tmpfiles.d snippet wrong shape"
 
-# Sudoers expected set: apl-feed apply --json --lock-timeout 5 + reboot
-# + poweroff + claim-register start + systemd-run. The per-unit restart
-# entries are gone — apl-feed apply owns the restart fan-out now (one
-# writer pinned by sudoers; service restarts run as root inside that
-# helper, not as a separate sudo grant). --lock-timeout 5 makes webconfig
-# own the wall-clock budget so a long-held flock surfaces as a structured
-# 503 before the HTTP request times out. claim-register kicks
-# airplanes-claim.service from the webconfig Register-now button.
-for entry in \
-    '/usr/local/bin/apl-feed apply --json --lock-timeout 5' \
-    'systemctl reboot' \
-    'systemctl poweroff' \
-    'systemctl start --no-block airplanes-claim.service' \
-    'systemd-run --unit=airplanes-update'
-do
-    grep -F -q "$entry" /etc/sudoers.d/010_airplanes-webconfig \
-        || fail "sudoers missing entry: $entry"
-done
-
-# PR-3 retired every per-unit restart entry from the sudoers policy.
-# Any leftover line is dead authorization (still a valid sudo
-# escalation surface).
-for stale in \
-    'systemctl restart airplanes-feed.service' \
-    'systemctl restart airplanes-mlat.service' \
-    'systemctl restart dump978-fa.service' \
-    'systemctl restart airplanes-978.service' \
-    'apply-config'
-do
-    if grep -F -q "$stale" /etc/sudoers.d/010_airplanes-webconfig; then
-        fail "sudoers still contains retired entry: $stale"
-    fi
-done
-
-# claim-show MUST NOT be in sudoers — webconfig reads the secret directly
-# via group permissions. A leftover entry would be dead config and an
-# unnecessary privilege surface.
-if grep -qF 'apl-feed claim show' /etc/sudoers.d/010_airplanes-webconfig; then
-    fail "sudoers still contains 'apl-feed claim show' — should be dropped after the group-read pivot"
-fi
-
-# webconfig.service ReadWritePaths must reach /etc/airplanes so the sudo
-# child (running as root) is allowed to write feed.env through the helper.
-grep -E -q '^ReadWritePaths=.*/etc/airplanes( |$)' /etc/systemd/system/airplanes-webconfig.service \
-    || fail "airplanes-webconfig.service ReadWritePaths missing /etc/airplanes"
-grep -E -q '^ReadWritePaths=.*/run/airplanes( |$)' /etc/systemd/system/airplanes-webconfig.service \
-    || fail "airplanes-webconfig.service ReadWritePaths missing /run/airplanes"
-
-# airplanes-webconfig user exists with matching primary group.
-getent passwd airplanes-webconfig >/dev/null \
-    || fail "airplanes-webconfig user missing"
-getent group airplanes-webconfig >/dev/null \
-    || fail "airplanes-webconfig group missing"
-[[ -d /var/lib/airplanes-webconfig ]] || fail "/var/lib/airplanes-webconfig missing"
-[[ "$(stat -c %a /var/lib/airplanes-webconfig)" == "700" ]] \
-    || fail "/var/lib/airplanes-webconfig perms != 0700"
-[[ "$(stat -c %U /var/lib/airplanes-webconfig)" == "airplanes-webconfig" ]] \
-    || fail "/var/lib/airplanes-webconfig owner != airplanes-webconfig"
-[[ -d /etc/airplanes/webconfig ]] || fail "/etc/airplanes/webconfig missing"
-[[ "$(stat -c %a /etc/airplanes/webconfig)" == "700" ]] \
-    || fail "/etc/airplanes/webconfig perms != 0700"
-[[ "$(stat -c %U /etc/airplanes/webconfig)" == "airplanes-webconfig" ]] \
-    || fail "/etc/airplanes/webconfig owner != airplanes-webconfig"
-
-# airplanes-webconfig must be a member of the airplanes-feed group so the
-# reveal handler can read /etc/airplanes/feeder-claim-secret directly.
-id -nG airplanes-webconfig | tr ' ' '\n' | grep -qx airplanes-feed \
-    || fail "airplanes-webconfig not in airplanes-feed group"
-
-# webconfig.service must declare airplanes-feed as a supplementary group so the
-# runtime contract is self-documenting (and survives an /etc/group rewrite
-# between unit-load and process-start). It may declare additional groups too
-# (image-webconfig grants `video` for vcgencmd), so match airplanes-feed as a
-# whole token in the space-separated list rather than requiring it be the only
-# group.
-grep -qE '^SupplementaryGroups=([^[:space:]]+ )*airplanes-feed( [^[:space:]]+)*$' /etc/systemd/system/airplanes-webconfig.service \
-    || fail "airplanes-webconfig.service missing airplanes-feed in SupplementaryGroups"
-
-# End-to-end: drop a fake claim secret as airplanes-feed:airplanes-feed
-# mode 0640, then read it as airplanes-webconfig via group permissions.
-# Catches regressions in either side (file ownership/mode, group
-# membership) at PR time.
-install -d -m 0755 /etc/airplanes
-printf '%s\n' 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' > /etc/airplanes/feeder-id
-chmod 0644 /etc/airplanes/feeder-id
-printf '%s\n' 'ABCD1234EFGH5678' > /etc/airplanes/feeder-claim-secret
-chmod 0640 /etc/airplanes/feeder-claim-secret
-chown airplanes-feed:airplanes-feed /etc/airplanes/feeder-claim-secret
-read_out=$(runuser -u airplanes-webconfig -- cat /etc/airplanes/feeder-claim-secret 2>&1) \
-    || fail "airplanes-webconfig cannot read claim secret: $read_out"
-[[ "$read_out" == "ABCD1234EFGH5678" ]] \
-    || fail "claim secret read returned wrong content: $read_out"
-rm -f /etc/airplanes/feeder-id /etc/airplanes/feeder-claim-secret
+# apl-feed apply (the canonical feed.env writer) is shipped by
+# stage-airplanes/01-install-feed and lives at /usr/local/bin/apl-feed.
+[[ -x /usr/local/bin/apl-feed ]] \
+    || fail "apl-feed binary missing or not executable"
 
 # Stage 06 outputs.
 [[ -x /usr/local/sbin/airplanes-first-run ]] || fail "airplanes-first-run entrypoint missing"

@@ -104,8 +104,17 @@ for asset in "$binary_name" rootfs.tar.gz manifest.json SHA256SUMS; do
 done
 
 # --- verify SHA256 -----------------------------------------------------------
-
-(cd "$work" && sha256sum -c SHA256SUMS) || die "SHA256 verification failed"
+# The published SHA256SUMS lists every arch binary (arm64 + armhf), but we
+# only download the binary for our target arch plus the arch-independent
+# rootfs/manifest. Filter the checksum list to just the assets present so
+# `sha256sum -c` doesn't fail on the other arch's missing file.
+grep -E "  (${binary_name}|rootfs\.tar\.gz|manifest\.json)\$" \
+    "$work/SHA256SUMS" > "$work/SHA256SUMS.expected"
+expected_lines="$(wc -l < "$work/SHA256SUMS.expected")"
+if [[ "$expected_lines" -ne 3 ]]; then
+    die "SHA256SUMS missing one of $binary_name / rootfs.tar.gz / manifest.json (matched $expected_lines)"
+fi
+(cd "$work" && sha256sum -c SHA256SUMS.expected) || die "SHA256 verification failed"
 
 # --- verify manifest commit_sha ----------------------------------------------
 

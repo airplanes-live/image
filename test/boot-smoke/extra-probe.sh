@@ -869,8 +869,12 @@ _orch_run_probe() {
         rm -f "$body_file"
 
         # Webconfig is still responsive after the orchestrator's HUPs.
-        _wcu_health_200 \
-            || _orch_fail "orchestrator probe: /health did not return 200 after orchestrator finished + unit drained"
+        local _orch_health_code
+        _orch_health_code="$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' --max-time 5 \
+            http://127.0.0.1/health || echo 000)"
+        [[ "$_orch_health_code" == "200" ]] \
+            || _orch_fail "orchestrator probe: health endpoint returned $_orch_health_code after orchestrator finished + unit drained (want 200)"
 
         # SIGHUP proof: step_feed_hup in the orchestrator and the
         # systemd-run ExecStopPost both send SIGHUP to webconfig. The
