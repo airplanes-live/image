@@ -136,6 +136,30 @@ if [[ -n "$WEBCONFIG_RELEASE_TAG" && -n "$WEBCONFIG_COMMIT_SHA" ]]; then
     bash "$overlay_dir/scripts/lib/stage-webconfig.sh" "${stage_wc_args[@]}"
 fi
 
+# --- feed: overlay-build the feeder readsb + mlat-client venv + scripts ------
+# Feed is overlay-built (not a downloaded release): the overlay CI clones the
+# pinned feed/readsb/mlat-client refs and compiles them in-container.
+FEED_OVERLAY_REPO="${AIRPLANES_FEED_OVERLAY_REPO:-}"
+FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-}"
+FEED_READSB_REPO="${AIRPLANES_FEED_READSB_REPO:-}"
+FEED_READSB_BRANCH="${AIRPLANES_FEED_READSB_BRANCH:-}"
+MLAT_CLIENT_REPO="${AIRPLANES_MLAT_CLIENT_REPO:-}"
+MLAT_CLIENT_BRANCH="${AIRPLANES_MLAT_CLIENT_BRANCH:-}"
+
+if [[ -n "$FEED_OVERLAY_REPO" && -n "$FEED_OVERLAY_BRANCH" \
+        && -n "$FEED_READSB_REPO" && -n "$FEED_READSB_BRANCH" \
+        && -n "$MLAT_CLIENT_REPO" && -n "$MLAT_CLIENT_BRANCH" ]]; then
+    bash "$overlay_dir/scripts/lib/stage-feed.sh" \
+        --feed-repo "$FEED_OVERLAY_REPO" \
+        --feed-ref "$FEED_OVERLAY_BRANCH" \
+        --readsb-repo "$FEED_READSB_REPO" \
+        --readsb-ref "$FEED_READSB_BRANCH" \
+        --mlat-repo "$MLAT_CLIENT_REPO" \
+        --mlat-ref "$MLAT_CLIENT_BRANCH" \
+        --arch "$ARCH" \
+        --output-dir "$staging"
+fi
+
 if [[ -d "$overlay_dir/src/share/airplanes" ]]; then
     mkdir -p "$staging/share/airplanes"
     cp -a "$overlay_dir/src/share/airplanes/." "$staging/share/airplanes/"

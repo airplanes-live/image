@@ -490,6 +490,108 @@ jobs:
           path: ${{ runner.temp }}/airplanes-image-boot/qemu-logs
           if-no-files-found: warn
 
+  runtime-overlay-upgrade:
+    # End-to-end QEMU upgrade+rollback test: boots the built image, drives
+    # runtime-self-update.sh against synthetic GOOD + BROKEN overlay releases
+    # signed with a test key, asserts convergence then rollback, reboots and
+    # verifies the rolled-back release persists.
+    needs: [resolve-product, sign-runtime, build]
+    name: runtime-overlay-upgrade-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        arch: [arm64]
+      fail-fast: false
+    env:
+      CHANNEL: ${{ needs.resolve-product.outputs.channel }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Load channel config
+        run: |
+          set -a
+          # shellcheck disable=SC1090
+          source "config-$CHANNEL"
+          set +a
+          echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_BRANCH" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/feed
+          ref: ${{ env.AIRPLANES_FEED_BRANCH }}
+          path: feed
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-assets-signed-${{ matrix.arch }}
+          path: ${{ runner.temp }}/runtime-assets
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
+          path: deploy
+
+      - name: Install QEMU smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            binutils \
+            cpio \
+            curl \
+            gh \
+            initramfs-tools-core \
+            git \
+            jq \
+            kmod \
+            parted \
+            p7zip-full \
+            qemu-system-arm \
+            qemu-user-static \
+            rsync \
+            file \
+            unzip \
+            xz-utils \
+            zstd \
+            minisign
+
+      - name: Pre-build synthetic overlay releases (good + broken)
+        env:
+          PREBUILT_DIR: ${{ runner.temp }}/runtime-prebuilt
+          SIGNED_ASSET_DIR: ${{ runner.temp }}/runtime-assets
+          OVERLAY_DIR: ${{ github.workspace }}/runtime-overlay
+        run: |
+          # shellcheck source=test/boot-smoke/lib/runtime-upgrade-helpers.sh
+          . test/boot-smoke/lib/runtime-upgrade-helpers.sh
+          build_synthetic_runtime_releases_prebuild \
+              "$SIGNED_ASSET_DIR" "$OVERLAY_DIR" "$PREBUILT_DIR"
+
+      - name: Run image boot smoke (runtime-overlay-upgrade variant)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AIRPLANES_IMAGE_PATH: ${{ github.workspace }}/deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz
+          AIRPLANES_IMAGE_CONTRACT: new
+          AIRPLANES_IMAGE_CHANNEL: ${{ env.CHANNEL }}
+          AIRPLANES_IMAGE_ARCH: ${{ matrix.arch }}
+          AIRPLANES_BOOT_SMOKE_EXTRA_SETUP: ${{ github.workspace }}/test/boot-smoke/setup.sh
+          AIRPLANES_BOOT_SMOKE_WORK_DIR: ${{ runner.temp }}/airplanes-image-boot-upgrade
+          AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR: '1'
+          AIRPLANES_BOOT_SMOKE_TEST_RUNTIME_UPGRADE: '1'
+          AIRPLANES_BOOT_SMOKE_PREBUILT_RUNTIME_RELEASES: ${{ runner.temp }}/runtime-prebuilt
+          AIRPLANES_BOOT_SMOKE_MAX_BOOT_ATTEMPTS: '3'
+        run: |
+          sudo --preserve-env=GH_TOKEN,AIRPLANES_IMAGE_PATH,AIRPLANES_IMAGE_CONTRACT,AIRPLANES_IMAGE_CHANNEL,AIRPLANES_IMAGE_ARCH,AIRPLANES_BOOT_SMOKE_EXTRA_SETUP,AIRPLANES_BOOT_SMOKE_WORK_DIR,AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR,AIRPLANES_BOOT_SMOKE_TEST_RUNTIME_UPGRADE,AIRPLANES_BOOT_SMOKE_PREBUILT_RUNTIME_RELEASES,AIRPLANES_BOOT_SMOKE_MAX_BOOT_ATTEMPTS \
+            bash feed/test/image-boot.sh
+
+      - name: Upload QEMU logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-overlay-upgrade-${{ env.CHANNEL }}-${{ matrix.arch }}-logs
+          path: ${{ runner.temp }}/airplanes-image-boot-upgrade/qemu-logs
+          if-no-files-found: warn
+
   publish-dev-latest:
     # Maintain a single rolling `dev-latest` GitHub prerelease that always
     # points at the most recent successful push-to-dev build. Downstream
@@ -498,7 +600,7 @@ jobs:
     # rather than the workflow-artifact API; releases don't expire, so the
     # 90-day artifact retention window is no longer a coverage concern.
     name: Update rolling dev-latest prerelease
-    needs: [resolve-product, sign-runtime, build, boot-smoke]
+    needs: [resolve-product, sign-runtime, build, boot-smoke, runtime-overlay-upgrade]
     if: |
       needs.resolve-product.outputs.release_tag == 'dev-latest'
       && needs.resolve-product.outputs.should_publish == 'true'
@@ -694,10 +796,11 @@ jobs:
 
   publish-stable-release:
     # Stable product releases are published only after the runtime overlay,
-    # image build, mounted/chroot checks, and boot smoke all succeeded. The release is created as a draft first; draft
-    # releases are ignored by the on-device stable updater.
+    # image build, mounted/chroot checks, boot smoke, and the runtime-overlay
+    # upgrade+rollback QEMU test all succeeded. The release is created as a
+    # draft first; draft releases are ignored by the on-device stable updater.
     name: Publish stable product release
-    needs: [resolve-product, sign-runtime, build, boot-smoke]
+    needs: [resolve-product, sign-runtime, build, boot-smoke, runtime-overlay-upgrade]
     if: |
       needs.resolve-product.outputs.channel == 'stable'
       && needs.resolve-product.outputs.should_publish == 'true'

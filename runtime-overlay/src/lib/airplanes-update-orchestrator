@@ -6,18 +6,15 @@
 # Phases, in order:
 #   1. apt        — apt-get update && upgrade. Not rollbackable; the state
 #                   file records that fact so the UI can surface it.
-#   2. feed       — invoke the on-device feed scripts' update entrypoint
-#                   (/usr/local/share/airplanes/update.sh). After this step
-#                   succeeds, SIGHUP airplanes-webconfig so any feed-env
-#                   schema changes are picked up.
-#   3. runtime    — invoke the runtime-overlay self-update helper. The helper
+#   2. runtime    — invoke the runtime-overlay self-update helper. The helper
 #                   is the source of truth for "is anything newer" — it does
 #                   its own preflight against the release channel and no-ops
 #                   cleanly when nothing is pending. A coarse "helper exists
 #                   and is executable" gate skips the step entirely on feeders
-#                   that have not yet had it laid down. Webconfig now ships
-#                   inside the runtime overlay, so the overlay update swaps the
-#                   webconfig binary too — there is no separate webconfig step.
+#                   that have not yet had it laid down. Webconfig and the feed
+#                   stack (feeder readsb, mlat-client, feed scripts) now all
+#                   ship inside the runtime overlay, so the overlay update swaps
+#                   them together — there is no separate webconfig or feed step.
 #
 # Each step writes /run/airplanes/orchestrator.state atomically before and
 # after running so an HTTP poller (GET /api/orchestrator/state) can render
@@ -51,11 +48,8 @@ readonly _self_dir
 
 : "${AIRPLANES_ORCHESTRATOR_STATE_FILE:=/run/airplanes/orchestrator.state}"
 : "${AIRPLANES_ORCHESTRATOR_LOCK_FILE:=/run/airplanes/orchestrator.lock}"
-: "${AIRPLANES_ORCHESTRATOR_FEED_UPDATE:=/usr/local/share/airplanes/update.sh}"
 : "${AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE:=/opt/airplanes-runtime/current/lib/runtime-self-update.sh}"
 : "${AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE:=/var/lib/airplanes-runtime-upgrade/upgrade-state}"
-: "${AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE:=airplanes-webconfig.service}"
-: "${AIRPLANES_ORCHESTRATOR_SYSTEMCTL:=/usr/bin/systemctl}"
 : "${AIRPLANES_ORCHESTRATOR_APT_GET:=/usr/bin/apt-get}"
 
 readonly STATE_FILE="$AIRPLANES_ORCHESTRATOR_STATE_FILE"
@@ -107,7 +101,7 @@ APT_IRREVERSIBLE=0
 # atomically so a reader never observes a half-written line.
 #
 # Args:
-#   $1  step    — apt | feed | runtime | idle | done | failed
+#   $1  step    — apt | runtime | idle | done | failed
 #   $2  status  — pending | running | ok | skipped | failed | rollback
 #   $3  error   — error message (optional; "" if absent)
 #   $4  finished_at — RFC3339 timestamp (optional; "" → null in JSON)
@@ -161,7 +155,7 @@ JSON
 # before/after state-file writes. Sets STARTED_AT for the duration of the
 # call so write_state emits a coherent started_at field.
 #
-# step values written to the state file: apt | feed | runtime | idle | done
+# step values written to the state file: apt | runtime | idle | done
 # | failed.
 #
 # Returns the step command's exit code. The caller decides whether to bail
@@ -227,29 +221,6 @@ step_apt() {
     # the right value even on a hang or crash.
     DEBIAN_FRONTEND=noninteractive "$apt_get" update \
         && DEBIAN_FRONTEND=noninteractive "$apt_get" -y upgrade
-}
-
-# shellcheck disable=SC2317  # invoked indirectly via run_step
-step_feed() {
-    if [[ ! -x "$AIRPLANES_ORCHESTRATOR_FEED_UPDATE" ]]; then
-        echo "orchestrator: feed updater not found at $AIRPLANES_ORCHESTRATOR_FEED_UPDATE" >&2
-        return 1
-    fi
-    "$AIRPLANES_ORCHESTRATOR_FEED_UPDATE"
-}
-
-# step_feed_hup — issue SIGHUP to airplanes-webconfig so a feed-env-schema
-# change picked up by the feed step is observed by the live webconfig
-# process. Failure to HUP is logged but not fatal (the webconfig will
-# pick up the new schema on its next restart regardless).
-step_feed_hup() {
-    local systemctl="$AIRPLANES_ORCHESTRATOR_SYSTEMCTL"
-    if ! command -v "$systemctl" >/dev/null 2>&1; then
-        echo "orchestrator: systemctl not found; skipping HUP after feed" >&2
-        return 0
-    fi
-    "$systemctl" kill -s HUP "$AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE" || \
-        echo "orchestrator: SIGHUP to $AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE failed; continuing" >&2
 }
 
 # shellcheck disable=SC2317  # invoked indirectly
@@ -338,17 +309,10 @@ if ! run_step apt step_apt; then
     exit 1
 fi
 
-# feed — fatal on failure. On success, HUP webconfig so feed-env schema
-# changes are observed in the running process.
-CURRENT_STEP="feed"
-if ! run_step feed step_feed; then
-    exit 1
-fi
-step_feed_hup
-
 # runtime-overlay — skip when the helper has not been laid down yet;
 # otherwise invoke unconditionally and let the helper's own preflight decide
-# whether anything is actually newer. The overlay update swaps webconfig too.
+# whether anything is actually newer. The overlay update swaps webconfig and
+# the feed stack too.
 CURRENT_STEP="runtime"
 STARTED_AT="$(iso8601_now)"
 if helper_present "$AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE"; then

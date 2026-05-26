@@ -105,7 +105,11 @@
         "dump978_fa": { "$ref": "#/$defs/componentPin" },
         "tar1090": { "$ref": "#/$defs/componentPin" },
         "tar1090_db": { "$ref": "#/$defs/componentPin" },
-        "graphs1090": { "$ref": "#/$defs/componentPin" }
+        "graphs1090": { "$ref": "#/$defs/componentPin" },
+        "webconfig": { "$ref": "#/$defs/componentPin" },
+        "feed_readsb": { "$ref": "#/$defs/componentPin" },
+        "feed_scripts": { "$ref": "#/$defs/componentPin" },
+        "mlat_client": { "$ref": "#/$defs/componentPin" }
       },
       "additionalProperties": { "$ref": "#/$defs/componentPin" }
     },

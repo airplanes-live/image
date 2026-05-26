@@ -950,6 +950,140 @@ _orch_run_probe() {
 }
 
 # ---------------------------------------------------------------------------
+# Runtime-overlay update + rollback probe (opt-in).
+# ---------------------------------------------------------------------------
+#
+# Drives the REAL runtime-self-update.sh against synthetic LOCAL overlay
+# releases staged by test/boot-smoke/lib/runtime-upgrade-helpers.sh — no GitHub
+# release is touched. Two-pass via an own marker so the reboot-persistence leg
+# survives the harness re-running the 'updated' phase:
+#   pass 1: install GOOD vN+1 (assert convergence), install BROKEN vN+1
+#           (assert rollback to the prior release), then reboot.
+#   pass 2: assert the rolled-back GOOD release is still current after reboot
+#           and the consumer services are active; done.
+# Runs BEFORE the orchestrator stub probe, which bind-mounts a stub over
+# runtime-self-update.sh — this probe needs the real helper.
+_runtime_upgrade_marker_base() {
+    cat /var/lib/airplanes-boot-smoke/runtime-upgrade-asset-base 2>/dev/null || true
+}
+
+# Drive runtime-self-update.sh against a local asset dir. Returns the helper's
+# exit code. AIRPLANES_RUNTIME_RELEASE_ASSET_DIR makes the helper consume the
+# staged signed asset set instead of downloading from GitHub; the baked pubkey
+# was overridden to the test key in setup.sh so the synthetic
+# SHA256SUMS.minisig verifies. AIRPLANES_RUNTIME_OVERLAY_TAG=local-assets pins
+# the resolver to the local-assets path so channel/version resolution is
+# bypassed and the manifest-version check accepts the synthetic version
+# regardless of the image's release channel.
+_runtime_drive_update() {
+    local asset_dir="$1"
+    AIRPLANES_RUNTIME_RELEASE_ASSET_DIR="$asset_dir" \
+    AIRPLANES_RUNTIME_OVERLAY_TAG="local-assets" \
+        /opt/airplanes-runtime/current/lib/runtime-self-update.sh
+}
+
+_runtime_current_version() {
+    local cur
+    cur="$(readlink -f /opt/airplanes-runtime/current 2>/dev/null || true)"
+    printf '%s' "${cur##*/v}"
+}
+
+_runtime_upgrade_probe() {
+    local asset_base
+    asset_base="$(_runtime_upgrade_marker_base)"
+    [[ -n "$asset_base" ]] || return 0  # variant not enabled
+
+    local progress=/run/airplanes-boot-smoke-runtime-upgrade.progress
+    local phase=""
+    [[ -f "$progress" ]] && phase="$(cat "$progress" 2>/dev/null || true)"
+
+    if [[ "$phase" == "rolled-back-rebooted" ]]; then
+        # Pass 2 — verify the rolled-back release persisted across the reboot.
+        echo "image-probe: runtime-upgrade pass 2 (post-reboot persistence)"
+        local cur_ver
+        cur_ver="$(_runtime_current_version)"
+        [[ "$cur_ver" == "$_runtime_good_version" ]] \
+            || fail "runtime-upgrade: after reboot current=v$cur_ver, expected the rolled-back good release v$_runtime_good_version"
+        assert_service_healthy readsb.service
+        assert_service_healthy airplanes-feed.service
+        assert_service_healthy airplanes-webconfig.service
+        echo "image-probe: runtime-upgrade reboot-persistence passed (current=v$cur_ver)"
+        rm -f "$progress"
+        return 0
+    fi
+
+    # Pass 1.
+    echo "image-probe: runtime-upgrade pass 1 (GOOD then BROKEN)"
+
+    local baseline_ver
+    baseline_ver="$(_runtime_current_version)"
+    echo "image-probe: runtime-upgrade baseline current=v$baseline_ver"
+
+    # --- GOOD vN+1 : expect convergence -------------------------------------
+    echo "image-probe: driving runtime-self-update to GOOD release"
+    if ! _runtime_drive_update "$asset_base/good"; then
+        cat /var/lib/airplanes-runtime-upgrade/upgrade-state 2>/dev/null >&2 || true
+        journalctl -u readsb.service --no-pager -n 50 2>/dev/null >&2 || true
+        fail "runtime-upgrade: GOOD update did not converge (helper exited non-zero)"
+    fi
+    _runtime_good_version="$(_runtime_current_version)"
+    [[ "$_runtime_good_version" != "$baseline_ver" ]] \
+        || fail "runtime-upgrade: current did not flip after GOOD update (still v$baseline_ver)"
+    local upg_state
+    upg_state="$(awk -F= '/^state=/{sub(/^state=/,"");print;exit}' \
+        /var/lib/airplanes-runtime-upgrade/upgrade-state 2>/dev/null || true)"
+    [[ "$upg_state" == "INSTALLED" ]] \
+        || fail "runtime-upgrade: GOOD update state=$upg_state, expected INSTALLED"
+    # Consumer services restarted on the new release and healthy.
+    assert_service_healthy readsb.service
+    assert_service_healthy airplanes-feed.service
+    assert_service_healthy airplanes-webconfig.service
+    echo "image-probe: GOOD convergence passed (current=v$_runtime_good_version)"
+
+    # --- BROKEN vN+1 : expect rollback to the GOOD release ------------------
+    echo "image-probe: driving runtime-self-update to BROKEN release"
+    local pre_broken_ver="$_runtime_good_version"
+    if _runtime_drive_update "$asset_base/broken"; then
+        fail "runtime-upgrade: BROKEN update unexpectedly succeeded (rollback not triggered)"
+    fi
+    local post_broken_ver
+    post_broken_ver="$(_runtime_current_version)"
+    [[ "$post_broken_ver" == "$pre_broken_ver" ]] \
+        || fail "runtime-upgrade: after BROKEN update current=v$post_broken_ver, expected rollback to v$pre_broken_ver"
+    upg_state="$(awk -F= '/^state=/{sub(/^state=/,"");print;exit}' \
+        /var/lib/airplanes-runtime-upgrade/upgrade-state 2>/dev/null || true)"
+    [[ "$upg_state" == ROLLED_BACK_* ]] \
+        || fail "runtime-upgrade: BROKEN update state=$upg_state, expected ROLLED_BACK_*"
+    # Prior (good) release's services restored and healthy.
+    assert_service_healthy readsb.service
+    assert_service_healthy airplanes-feed.service
+    assert_service_healthy airplanes-webconfig.service
+    echo "image-probe: BROKEN rollback passed (current=v$post_broken_ver, state=$upg_state)"
+
+    # Persist the expected post-reboot version + mark pass 1 done, then reboot
+    # to verify the rolled-back release survives. The harness re-runs the
+    # 'updated' phase (MAX_BOOT_ATTEMPTS=3), re-sourcing this probe.
+    printf '%s' "$_runtime_good_version" > /var/lib/airplanes-boot-smoke/runtime-upgrade-good-version
+    printf '%s' "rolled-back-rebooted" > "$progress"
+    sync
+    echo "image-probe: runtime-upgrade rebooting to verify rollback persistence"
+    systemctl reboot
+    # The reboot tears the VM down; the probe does not return past here on
+    # pass 1. The harness boots again and re-enters at pass 2.
+    sleep 120
+    fail "runtime-upgrade: systemctl reboot did not take effect within 120s"
+}
+
+# On pass 2 the good version is read back from disk (a fresh process after the
+# reboot has no in-memory _runtime_good_version).
+if [[ -f /var/lib/airplanes-boot-smoke/runtime-upgrade-good-version ]]; then
+    _runtime_good_version="$(cat /var/lib/airplanes-boot-smoke/runtime-upgrade-good-version)"
+else
+    _runtime_good_version=""
+fi
+_runtime_upgrade_probe
+
+# ---------------------------------------------------------------------------
 
 echo "image-probe: starting image-side assertions"
 
@@ -1250,7 +1384,7 @@ sse_first_pass=0
 curl --silent --show-error --max-time 5 \
     http://127.0.0.1/api/state > "$sse_state_out" || true
 
-# Re-entrant: the webconfig-upgrade-qemu variant reboots from inside this
+# Re-entrant: the runtime-overlay-upgrade-qemu variant reboots from inside this
 # probe and re-sources us afterwards; by then /api/setup has already moved
 # the device to "initialized" and the SSE password-setup+stream path is no
 # longer applicable. Skip it cleanly — the persistence path below probes

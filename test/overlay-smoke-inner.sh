@@ -17,14 +17,14 @@ echo "==> stage-airplanes/00-prep/03-run.sh (mask first-boot prompts)"
 echo "==> stage-airplanes/00-prep/04-run.sh (force cloud-init debian distro)"
 ( cd /image/stage-airplanes/00-prep && bash 04-run.sh )
 
-echo "==> stage-airplanes/01-install-feed/00-run.sh (clone feed)"
-( cd /image/stage-airplanes/01-install-feed && bash 00-run.sh )
-
-echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (install.sh --build-mode)"
+echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (service account + state dirs)"
+# Stage 01 is setup-only now. The feed binary, daemon wrappers, apl-feed CLI,
+# systemd units, runtime libs, and the mlat-client venv arrive through the
+# runtime overlay at stage 02 (managed_paths) — which this fast smoke
+# deliberately does NOT run (it needs signed release downloads). Stage 01
+# retains only the airplanes-feed service account + group creation, state dirs,
+# and video-group membership.
 ( cd /image/stage-airplanes/01-install-feed && bash 01-run-chroot.sh )
-
-echo "==> stage-airplanes/01-install-feed/02-run.sh (cleanup staged feed)"
-( cd /image/stage-airplanes/01-install-feed && bash 02-run.sh )
 
 echo "==> stage-airplanes/05-install-webconfig/00-run.sh (image-owned tmpfiles)"
 # Stage 05 is setup-only now. The webconfig binary, helpers, systemd units,
@@ -56,73 +56,26 @@ echo 1 > /var/lib/systemd/rfkill/platform-3f300000.mmcnr:wlan
 
 echo "==> contract assertions"
 fail() { echo "FAIL: $*" >&2; exit 1; }
-[[ -f /etc/airplanes/feed.env ]] || fail "feed.env missing"
-[[ -f /etc/airplanes/image-install ]] || fail "image-install marker missing"
-[[ -x /usr/local/share/airplanes/feed-airplanes ]] || fail "feed-airplanes binary missing"
-[[ -x /usr/local/bin/apl-feed ]] || fail "apl-feed missing"
-[[ -f /etc/systemd/system/airplanes-feed.service ]] || fail "airplanes-feed.service missing"
-[[ -f /etc/systemd/system/airplanes-mlat.service ]] || fail "airplanes-mlat.service missing"
+# Stage 01 is setup-only now (service account + state dirs). Feed artifacts
+# (feed-airplanes binary, apl-feed CLI, daemon wrappers, systemd units, runtime
+# libs, mlat-client venv, feed.env, image-install marker, enable links) arrive
+# through the runtime overlay at stage 02 (managed_paths + migrations), which
+# this fast smoke does NOT run. Assertions below cover only what stages 00 + 01
+# + 06 produce, not the overlay-delivered feed surface. The full image build +
+# boot-smoke cover the feed overlay path end to end.
+[[ -d /etc/airplanes ]] || fail "/etc/airplanes dir missing (stage 01 chroot)"
+id -u airplanes-feed >/dev/null 2>&1 || fail "airplanes-feed user missing (stage 01 chroot)"
+getent group airplanes-feed >/dev/null 2>&1 || fail "airplanes-feed group missing (stage 01 chroot)"
 [[ ! -f /etc/airplanes/feeder-id ]] || fail "feeder-id should NOT exist in build mode"
 [[ ! -f /etc/airplanes/feeder-claim-secret ]] || fail "feeder-claim-secret should NOT exist in build mode"
 [[ ! -e /usr/local/share/airplanes/airplanes-uuid ]] || fail "airplanes-uuid symlink should NOT exist (new contract)"
-[[ -s /etc/airplanes/.build-feed-sha ]] || fail ".build-feed-sha missing or empty"
-[[ ! -d /usr/local/src/airplanes-feed-build ]] || fail "/usr/local/src/airplanes-feed-build was not cleaned up"
 
-# Fresh-image MLAT posture: off by default until the operator opts in via the
-# webconfig after entering real coordinates. GEO_CONFIGURED follows from the
-# lat=0/lon=0 placeholders via feed's derive_geo_configured.
-# Use -x (full-line match) + alternation so a busted half-quoted value
-# (MLAT_ENABLED="false or MLAT_ENABLED=false") fails this assertion.
-grep -qxE 'MLAT_ENABLED=("false"|false)' /etc/airplanes/feed.env \
-    || fail "feed.env: expected MLAT_ENABLED=false on fresh image"
-grep -qxE 'GEO_CONFIGURED=("false"|false)' /etc/airplanes/feed.env \
-    || fail "feed.env: expected GEO_CONFIGURED=false on fresh image"
-
-# Service files contain expected directives
-grep -q 'ExecStart=/usr/local/share/airplanes/airplanes-feed.sh' /etc/systemd/system/airplanes-feed.service \
-    || fail "airplanes-feed.service missing ExecStart=…/airplanes-feed.sh"
-grep -qE '^After=.*airplanes-first-run.service' /etc/systemd/system/airplanes-feed.service \
-    || fail "airplanes-feed.service missing After=airplanes-first-run.service"
-grep -q 'ExecStart=/usr/local/share/airplanes/airplanes-mlat.sh' /etc/systemd/system/airplanes-mlat.service \
-    || fail "airplanes-mlat.service missing ExecStart=…/airplanes-mlat.sh"
-grep -qE '^After=.*airplanes-first-run.service' /etc/systemd/system/airplanes-mlat.service \
-    || fail "airplanes-mlat.service missing After=airplanes-first-run.service"
-grep -q 'feed2.airplanes.live,64004' /usr/local/share/airplanes/airplanes-feed.sh \
-    || fail "airplanes-feed.sh missing feed2 connector"
-
-# Daemon runtime state-file dependencies (PR 1+2 in feed; consumed by
-# render-status, apl-feed status, and the webconfig server).
-# RuntimeDirectoryPreserve=yes is required so the misconfig state file
-# survives the daemon's failed terminal state (RestartPreventExitStatus=64).
-grep -qE '^RuntimeDirectoryPreserve=yes$' /etc/systemd/system/airplanes-feed.service \
-    || fail "airplanes-feed.service missing RuntimeDirectoryPreserve=yes (consumers can't read state across restart cycles)"
-grep -qE '^RuntimeDirectoryPreserve=yes$' /etc/systemd/system/airplanes-mlat.service \
-    || fail "airplanes-mlat.service missing RuntimeDirectoryPreserve=yes (state would vanish across wrapper restarts)"
-grep -qE '^RuntimeDirectory=airplanes-feed$' /etc/systemd/system/airplanes-feed.service \
-    || fail "airplanes-feed.service missing RuntimeDirectory=airplanes-feed"
-grep -qE '^RuntimeDirectory=airplanes-mlat$' /etc/systemd/system/airplanes-mlat.service \
-    || fail "airplanes-mlat.service missing RuntimeDirectory=airplanes-mlat"
-
-# Daemon-time runtime libs installed by feed's update.sh. render-status
-# and apl-feed status source state-reader.sh; the daemons source state-writer.sh.
-[[ -f /usr/local/share/airplanes/lib/state-writer.sh ]] \
-    || fail "state-writer.sh missing at /usr/local/share/airplanes/lib/ (daemons can't publish state)"
-[[ -f /usr/local/share/airplanes/lib/state-reader.sh ]] \
-    || fail "state-reader.sh missing at /usr/local/share/airplanes/lib/ (consumers can't read state)"
-[[ -r /usr/local/share/airplanes/lib/state-reader.sh ]] \
-    || fail "state-reader.sh not readable (mode 0644 expected)"
-
-# enable links exist (proves systemctl enable was effective via the stub).
-# Image services use [Install] WantedBy=default.target, mlat-client venv
-# install also enables a unit; either default.target.wants or
-# multi-user.target.wants is acceptable.
+# enable links helper (reused by stage 06 assertions below).
 have_enable_link() {
     local unit="$1"
     [[ -L "/etc/systemd/system/default.target.wants/$unit" \
         || -L "/etc/systemd/system/multi-user.target.wants/$unit" ]]
 }
-have_enable_link airplanes-feed.service || fail "airplanes-feed enable symlink missing"
-have_enable_link airplanes-mlat.service || fail "airplanes-mlat enable symlink missing"
 
 # Stage 00-prep outputs (relative-path install commands; previously silent
 # failures masked by absolute-path commands picking up the slack).
@@ -172,10 +125,8 @@ lighttpd -tt -f /etc/lighttpd/lighttpd.conf >/dev/null \
 grep -Eq '^d /run/airplanes 0755 root root' /usr/lib/tmpfiles.d/airplanes-webconfig.conf \
     || fail "tmpfiles.d snippet wrong shape"
 
-# apl-feed apply (the canonical feed.env writer) is shipped by
-# stage-airplanes/01-install-feed and lives at /usr/local/bin/apl-feed.
-[[ -x /usr/local/bin/apl-feed ]] \
-    || fail "apl-feed binary missing or not executable"
+# apl-feed is now overlay-delivered via managed_paths (stage 02). This fast
+# smoke does not run stage 02; the full image build + boot-smoke cover it.
 
 # Stage 06 outputs.
 [[ -x /usr/local/sbin/airplanes-first-run ]] || fail "airplanes-first-run entrypoint missing"
@@ -296,9 +247,8 @@ esac
 [[ "$release_channel_content" == "$AIRPLANES_FEED_UPDATE_CHANNEL" ]] \
     || fail "release-channel content '$release_channel_content' does not match AIRPLANES_FEED_UPDATE_CHANNEL='$AIRPLANES_FEED_UPDATE_CHANNEL'"
 
-# Build-manifest sentinels written by stages 00 + 01 (rest are checked above).
+# Build-manifest sentinel written by stage 00.
 [[ -s /etc/airplanes/.build-pi-gen-sha ]] || fail ".build-pi-gen-sha missing or empty"
-[[ -s /etc/airplanes/.build-airplanes-readsb-sha ]] || fail ".build-airplanes-readsb-sha missing or empty"
 
 echo "==> stage-airplanes/06a-run-tmpfs/00-run.sh"
 ( cd /image/stage-airplanes/06a-run-tmpfs && bash 00-run.sh )
@@ -521,12 +471,10 @@ echo "==> 06d post-install assertions"
     || fail "/usr/local/sbin/apl-feed mode != 0755"
 head -1 /usr/local/sbin/apl-feed | grep -qE '^#!/bin/sh' \
     || fail "/usr/local/sbin/apl-feed shebang is not /bin/sh"
-# The wrapper shadows the binary via PATH (stage2's 05-path.diff puts
-# /usr/local/sbin ahead of /usr/local/bin); the canonical binary installed
-# by stage 01 must still be present and intact — 06d must never touch it.
-[[ -x /usr/local/bin/apl-feed ]] || fail "/usr/local/bin/apl-feed missing (06d shouldn't touch it)"
-[[ "$(realpath /usr/local/sbin/apl-feed)" != "$(realpath /usr/local/bin/apl-feed)" ]] \
-    || fail "/usr/local/sbin/apl-feed and /usr/local/bin/apl-feed resolve to the same file"
+# The canonical /usr/local/bin/apl-feed is overlay-delivered (stage 02);
+# this smoke does not run stage 02 so we only verify the sbin wrapper exists
+# and is a distinct file (not a self-link). The full build + boot-smoke cover
+# the wrapper-shadowing-binary assertion end to end.
 
 # Stage 02-install-runtime-overlay is not exercised by this smoke; seed a
 # synthetic runtime-manifest.json so 07-finalize's manifest-generator.sh
@@ -539,6 +487,8 @@ cat > /etc/airplanes/runtime-manifest.json <<'JSON'
     "version": "0.0.0-smoke",
     "channel": "dev",
     "components": {
+        "feed_scripts":     "0000000000000000000000000000000000000000",
+        "feed_readsb":      "0000000000000000000000000000000000000000",
         "readsb_wiedehopf": "0000000000000000000000000000000000000000",
         "dump978_fa":       "0000000000000000000000000000000000000000",
         "tar1090":          "0000000000000000000000000000000000000000",

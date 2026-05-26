@@ -753,6 +753,8 @@ _airplanes_runtime_restart_order=(
     "airplanes-tar1090-uat-sync.service"
     "tar1090.service"
     "graphs1090.service"
+    "airplanes-feed.service"
+    "airplanes-mlat.service"
     "airplanes-webconfig.service"
 )
 
@@ -1546,6 +1548,68 @@ print(sha[:7])
 PY
 }
 
+# Resolve the feed_readsb component's expected short commit SHA from the release
+# manifest. Same shape as the webconfig extractor. Echoes the 7-char short SHA,
+# or empty if no feed_readsb component is declared (the feed gate then no-ops).
+_airplanes_runtime_manifest_feed_readsb_short_sha() {
+    local manifest="$1"
+    [[ -f "$manifest" ]] || { printf ''; return 0; }
+    python3 - "$manifest" <<'PY'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+c = (m.get("components") or {}).get("feed_readsb")
+sha = ""
+if isinstance(c, str):
+    sha = c
+elif isinstance(c, dict):
+    sha = c.get("commit_sha", "") or ""
+print(sha[:7])
+PY
+}
+
+# Feed health gate: confirm airplanes-feed.service is active and the feed
+# binary it runs resolves through the `current` symlink into the new release.
+# Gate is "started cleanly + correct binary" ONLY — never connected/synced.
+# Environmental state (no SDR, no upstream reachability) must NEVER trigger a
+# rollback, so we deliberately do not probe feed connectivity or aircraft
+# counts. The unit-active check (caller adds airplanes-feed.service to the
+# aggregate probe) covers "started cleanly"; this function adds the
+# "the running binary is the release's binary" invariant by confirming the
+# managed-path symlink for feed-airplanes points into the active release.
+#
+# Args: <target_root> <expected-feed-readsb-short-sha>
+# The short sha is currently informational only — the binary-identity proof is
+# the symlink resolution below, which the managed_paths apply guarantees. We
+# keep the arg so a future build-stamped feed binary can be version-probed.
+_airplanes_runtime_probe_feed_binary_current() {
+    local target_root="$1"
+    local link="${target_root}/usr/local/share/airplanes/feed-airplanes"
+    local current="${target_root}/opt/airplanes-runtime/current"
+    if [[ ! -L "$link" ]]; then
+        echo "ERROR: feed gate: $link is not a symlink (managed_paths not applied?)" >&2
+        return 1
+    fi
+    local resolved current_resolved
+    resolved="$(readlink -f "$link" 2>/dev/null || true)"
+    current_resolved="$(readlink -f "$current" 2>/dev/null || true)"
+    if [[ -z "$resolved" || -z "$current_resolved" ]]; then
+        echo "ERROR: feed gate: could not resolve feed-airplanes ($link) or current ($current)" >&2
+        return 1
+    fi
+    if [[ "$resolved" != "$current_resolved"/* ]]; then
+        echo "ERROR: feed gate: feed-airplanes resolves to $resolved, outside active release $current_resolved" >&2
+        return 1
+    fi
+    if [[ ! -x "$resolved" ]]; then
+        echo "ERROR: feed gate: resolved feed binary not executable: $resolved" >&2
+        return 1
+    fi
+    return 0
+}
+
 # Shared stability window cushion / cap (seconds). The window over which the
 # unit-health gate re-confirms a set of units is max(effective RestartUSec) +
 # cushion, capped to UNIT_WINDOW_MAX and to the remaining deadline budget.
@@ -1692,10 +1756,34 @@ airplanes_runtime_run_health_gates() {
     # pass the HTTP probes (lighttpd's static 200) or the aircraft.json
     # freshness check (stale pre-crash file). readsb's is-active is NOT
     # SDR-dependent — the daemon is active with zero aircraft.
-    if ! _airplanes_runtime_probe_units_active "$deadline" \
-            readsb.service tar1090.service graphs1090.service \
-            airplanes-webconfig.service; then
+    # Feed is gated only when the release declares a feed_readsb component
+    # (a decoder-only release does not ship the feed binary/unit). Read the
+    # active release manifest — `current` already points at the new release at
+    # health-gate time.
+    local active_manifest="${target_root}/opt/airplanes-runtime/current/manifest.json"
+    local feed_short
+    feed_short="$(_airplanes_runtime_manifest_feed_readsb_short_sha "$active_manifest")"
+
+    local -a active_units=(
+        readsb.service tar1090.service graphs1090.service
+        airplanes-webconfig.service
+    )
+    if [[ -n "$feed_short" ]]; then
+        active_units+=(airplanes-feed.service)
+    fi
+    if ! _airplanes_runtime_probe_units_active "$deadline" "${active_units[@]}"; then
         return 1
+    fi
+
+    # Feed binary-identity gate: the running feed binary must be the release's.
+    # NOT connected/synced — environmental state must never trigger rollback.
+    # airplanes-mlat.service is deliberately NOT gated: it is opt-in and on an
+    # unconfigured feeder the wrapper self-disables (sleeps) or refuses to start
+    # (misconfigured), neither of which is an update failure.
+    if [[ -n "$feed_short" ]]; then
+        if ! _airplanes_runtime_probe_feed_binary_current "$target_root"; then
+            return 1
+        fi
     fi
 
     # readsb: aircraft.json fresh + tar1090 HTTP probe.
@@ -1728,7 +1816,7 @@ airplanes_runtime_run_health_gates() {
     # expected short SHA from the active release manifest (the `current`
     # symlink already points at the new release at health-gate time). Skipped
     # when the release declares no webconfig component (decoder-only release).
-    local active_manifest="${target_root}/opt/airplanes-runtime/current/manifest.json"
+    # active_manifest was resolved above with the feed gate.
     local wc_short
     wc_short="$(_airplanes_runtime_manifest_webconfig_short_sha "$active_manifest")"
     if [[ -n "$wc_short" ]]; then

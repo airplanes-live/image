@@ -31,3 +31,17 @@ cat > "$BOOT_MNT/airplanes-config.txt" <<'EOF'
 HOSTNAME=boot-smoke-host
 FEED_HOST=boot-smoke-feed.local
 EOF
+
+# Runtime-overlay-upgrade variant: opt-in via env var. The CI job builds the
+# synthetic GOOD + BROKEN overlay releases pre-sudo (minisign keygen + signing
+# must run where the runner user can write), then passes the prebuilt dir into
+# this hook via AIRPLANES_BOOT_SMOKE_PREBUILT_RUNTIME_RELEASES. setup.sh copies
+# the asset sets onto the rootfs and overrides the baked runtime-release pubkey
+# so the synthetic releases verify on-device.
+if [[ "${AIRPLANES_BOOT_SMOKE_TEST_RUNTIME_UPGRADE:-}" = "1" ]]; then
+    : "${AIRPLANES_BOOT_SMOKE_PREBUILT_RUNTIME_RELEASES:?runtime-upgrade variant requires AIRPLANES_BOOT_SMOKE_PREBUILT_RUNTIME_RELEASES (dir holding good/, broken/, test.pub)}"
+    # shellcheck source=lib/runtime-upgrade-helpers.sh
+    . "$script_dir/lib/runtime-upgrade-helpers.sh"
+    install_synthetic_runtime_releases "$ROOT_MNT" \
+        "$AIRPLANES_BOOT_SMOKE_PREBUILT_RUNTIME_RELEASES"
+fi
