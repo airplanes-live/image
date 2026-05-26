@@ -3,8 +3,8 @@
 # Drives airplanes-update-orchestrator with every sub-helper stubbed out
 # via PATH overrides and explicit AIRPLANES_ORCHESTRATOR_* env vars.
 # Covers:
-#   - all four steps run in declared order
-#   - webconfig + runtime skip cleanly when the precheck reports no-op
+#   - all three steps run in declared order (apt → feed → runtime)
+#   - runtime skips cleanly when the precheck reports no-op
 #   - state file is valid JSON after every step
 #   - HUP issued to webconfig after the feed step
 #   - failure in any step writes status: failed and exits non-zero
@@ -39,11 +39,6 @@ setup() {
 echo "feed \$*" >> "$CALL_LOG"
 exit 0
 EOF
-    cat > "$TMP/sub/webconfig-update.sh" <<EOF
-#!/usr/bin/env bash
-echo "webconfig \$*" >> "$CALL_LOG"
-exit 0
-EOF
     cat > "$TMP/sub/runtime-update.sh" <<EOF
 #!/usr/bin/env bash
 echo "runtime \$*" >> "$CALL_LOG"
@@ -51,7 +46,6 @@ exit 0
 EOF
     chmod 0755 \
         "$TMP/sub/feed-update.sh" \
-        "$TMP/sub/webconfig-update.sh" \
         "$TMP/sub/runtime-update.sh"
 
     # PATH-injected systemctl + apt-get stubs.
@@ -80,7 +74,6 @@ run_orchestrator() {
         AIRPLANES_ORCHESTRATOR_STATE_FILE="$STATE_FILE" \
         AIRPLANES_ORCHESTRATOR_LOCK_FILE="$LOCK_FILE" \
         AIRPLANES_ORCHESTRATOR_FEED_UPDATE="$TMP/sub/feed-update.sh" \
-        AIRPLANES_ORCHESTRATOR_WEBCONFIG_UPDATE="$TMP/sub/webconfig-update.sh" \
         AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE="$TMP/sub/runtime-update.sh" \
         AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE="$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" \
         AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE="airplanes-webconfig.service" \
@@ -104,30 +97,36 @@ assert_state_is_valid_json() {
     python3 -c "import json,sys;json.load(open(sys.argv[1]))" "$STATE_FILE"
 }
 
-@test "all four steps run in declared order; HUP after feed" {
+@test "all three steps run in declared order; HUP after feed" {
     run_orchestrator
     [ "$status" -eq 0 ]
     assert_state_is_valid_json
     [ "$(state_step)" = "done" ]
     [ "$(state_status)" = "ok" ]
 
-    # Sequence assertions: apt before feed before HUP before webconfig
-    # before runtime. grep -n outputs line numbers in order.
+    # Sequence assertions: apt before feed before HUP before runtime.
     apt_line=$(grep -n '^apt-get update$' "$CALL_LOG" | head -1 | cut -d: -f1)
     feed_line=$(grep -n '^feed ' "$CALL_LOG" | head -1 | cut -d: -f1)
     hup_line=$(grep -n '^systemctl kill -s HUP airplanes-webconfig.service$' "$CALL_LOG" | head -1 | cut -d: -f1)
-    wc_line=$(grep -n '^webconfig ' "$CALL_LOG" | head -1 | cut -d: -f1)
     rt_line=$(grep -n '^runtime ' "$CALL_LOG" | head -1 | cut -d: -f1)
 
     [ -n "$apt_line" ]
     [ -n "$feed_line" ]
     [ -n "$hup_line" ]
-    [ -n "$wc_line" ]
     [ -n "$rt_line" ]
     [ "$apt_line" -lt "$feed_line" ]
     [ "$feed_line" -lt "$hup_line" ]
-    [ "$hup_line" -lt "$wc_line" ]
-    [ "$wc_line" -lt "$rt_line" ]
+    [ "$hup_line" -lt "$rt_line" ]
+}
+
+@test "no separate webconfig step exists" {
+    run_orchestrator
+    [ "$status" -eq 0 ]
+
+    # The orchestrator no longer has a webconfig step — webconfig ships
+    # inside the runtime overlay, so a separate step_webconfig does not exist.
+    run grep '^webconfig ' "$CALL_LOG"
+    [ "$status" -ne 0 ]
 }
 
 @test "apt step records apt_irreversible=true even after success" {
@@ -137,27 +136,7 @@ assert_state_is_valid_json() {
     [ "$irreversible" = "True" ]
 }
 
-@test "webconfig step skips cleanly when helper is absent" {
-    # A feeder that has not yet had the webconfig self-update helper
-    # laid down (build-time race; bootstrap before C-2 is consumed)
-    # must not block the orchestrator — it skips and the run continues.
-    rm -f "$TMP/sub/webconfig-update.sh"
-
-    run_orchestrator
-    [ "$status" -eq 0 ]
-    assert_state_is_valid_json
-    [ "$(state_step)" = "done" ]
-
-    # No webconfig invocation should appear in the call log.
-    run grep '^webconfig ' "$CALL_LOG"
-    [ "$status" -ne 0 ]
-}
-
 @test "runtime step skips cleanly when runtime updater is absent" {
-    # The runtime precheck only runs the helper if it is executable. A
-    # missing helper means skip rather than fail — that is by design,
-    # because a feeder without a runtime overlay yet (build-time race)
-    # should not block the rest of the orchestrator.
     rm -f "$TMP/sub/runtime-update.sh"
 
     run_orchestrator
@@ -165,25 +144,15 @@ assert_state_is_valid_json() {
     assert_state_is_valid_json
     [ "$(state_step)" = "done" ]
 
-    # No runtime invocation should appear in the call log.
     run grep '^runtime ' "$CALL_LOG"
     [ "$status" -ne 0 ]
 }
 
 @test "state file is valid JSON after every intermediate write" {
-    # Run the orchestrator wrapping every state write with a side-channel
-    # snapshot of the file. We approximate this by intercepting via a
-    # 'cat' shim on each step that copies the state file aside.
     cat > "$TMP/sub/feed-update.sh" <<EOF
 #!/usr/bin/env bash
 cp -a "$STATE_FILE" "$TMP/state/snap-feed.json"
 echo "feed \$*" >> "$CALL_LOG"
-exit 0
-EOF
-    cat > "$TMP/sub/webconfig-update.sh" <<EOF
-#!/usr/bin/env bash
-cp -a "$STATE_FILE" "$TMP/state/snap-webconfig.json"
-echo "webconfig \$*" >> "$CALL_LOG"
 exit 0
 EOF
     cat > "$TMP/sub/runtime-update.sh" <<EOF
@@ -192,12 +161,12 @@ cp -a "$STATE_FILE" "$TMP/state/snap-runtime.json"
 echo "runtime \$*" >> "$CALL_LOG"
 exit 0
 EOF
-    chmod 0755 "$TMP/sub/feed-update.sh" "$TMP/sub/webconfig-update.sh" "$TMP/sub/runtime-update.sh"
+    chmod 0755 "$TMP/sub/feed-update.sh" "$TMP/sub/runtime-update.sh"
 
     run_orchestrator
     [ "$status" -eq 0 ]
 
-    for snap in "$TMP/state/snap-feed.json" "$TMP/state/snap-webconfig.json" "$TMP/state/snap-runtime.json"; do
+    for snap in "$TMP/state/snap-feed.json" "$TMP/state/snap-runtime.json"; do
         [ -f "$snap" ]
         python3 -c "import json,sys;json.load(open(sys.argv[1]))" "$snap"
     done
@@ -217,8 +186,8 @@ EOF
     [ "$(state_step)" = "feed" ]
     [ "$(state_status)" = "failed" ]
 
-    # No HUP, no webconfig, no runtime calls after feed failure.
-    run grep -E '^(systemctl kill -s HUP|webconfig|runtime) ' "$CALL_LOG"
+    # No HUP, no runtime calls after feed failure.
+    run grep -E '^(systemctl kill -s HUP|runtime) ' "$CALL_LOG"
     [ "$status" -ne 0 ]
 }
 
@@ -236,20 +205,14 @@ EOF
     [ "$(state_step)" = "apt" ]
     [ "$(state_status)" = "failed" ]
 
-    # apt_irreversible records that an apt run was attempted.
     irreversible=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['apt_irreversible'])" "$STATE_FILE")
     [ "$irreversible" = "True" ]
 
-    # No feed / webconfig / runtime calls after apt failure.
-    run grep -E '^(feed|webconfig|runtime) ' "$CALL_LOG"
+    run grep -E '^(feed|runtime) ' "$CALL_LOG"
     [ "$status" -ne 0 ]
 }
 
 @test "apt-get update failure surfaces even if upgrade would succeed" {
-    # Regression guard: a previous shape chained the two commands such
-    # that `apt-get update` failure was masked by `apt-get upgrade`
-    # success. The current orchestrator chains with && so any non-zero
-    # rc surfaces.
     cat > "$TMP/bin/apt-get" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
@@ -263,24 +226,6 @@ EOF
     [ "$status" -ne 0 ]
     [ "$(state_step)" = "apt" ]
     [ "$(state_status)" = "failed" ]
-}
-
-@test "webconfig step failure stops the runtime step" {
-    cat > "$TMP/sub/webconfig-update.sh" <<EOF
-#!/usr/bin/env bash
-echo "webconfig FAILED" >&2
-exit 5
-EOF
-    chmod 0755 "$TMP/sub/webconfig-update.sh"
-
-    run_orchestrator
-    [ "$status" -ne 0 ]
-    assert_state_is_valid_json
-    [ "$(state_step)" = "webconfig" ]
-    [ "$(state_status)" = "failed" ]
-
-    run grep '^runtime ' "$CALL_LOG"
-    [ "$status" -ne 0 ]
 }
 
 @test "runtime step failure leaves state at runtime/failed" {
@@ -299,11 +244,6 @@ EOF
 }
 
 @test "runtime same-version-replay is treated as a no-op success" {
-    # The runtime self-updater writes FAILED_PRE_MUTATION with
-    # failure_reason=same_version_replay_<version> when invoked against
-    # the already-installed version. The orchestrator must translate
-    # that into step success — it is "no newer release available", not
-    # a real failure.
     install -d -m 0755 "$TMP/var/lib/airplanes-runtime-upgrade"
     cat > "$TMP/sub/runtime-update.sh" <<EOF
 #!/usr/bin/env bash
@@ -323,8 +263,6 @@ EOF
 }
 
 @test "runtime non-same-version FAILED_PRE_MUTATION still surfaces" {
-    # FAILED_PRE_MUTATION with a different failure_reason (download,
-    # verify, compat) is a real failure and must propagate.
     install -d -m 0755 "$TMP/var/lib/airplanes-runtime-upgrade"
     cat > "$TMP/sub/runtime-update.sh" <<EOF
 #!/usr/bin/env bash
@@ -343,20 +281,12 @@ EOF
 }
 
 @test "stale same-version-replay state is NOT misclassified as success" {
-    # Regression: a previous run's terminal state file (still on disk)
-    # plus a current-run failure that exits without touching the state
-    # file (e.g. lock contention with rc=75) must surface as a real
-    # failure — not get translated to success because the orchestrator
-    # found a matching state from the prior run.
     install -d -m 0755 "$TMP/var/lib/airplanes-runtime-upgrade"
     cat > "$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" <<STATE
 state=FAILED_PRE_MUTATION
 failure_reason=same_version_replay_opt_airplanes-runtime_releases_v0.0.1
 STATE
 
-    # The runtime helper stub exits non-zero WITHOUT modifying the
-    # state file. Simulates lock contention against a prior same-version
-    # terminal state.
     cat > "$TMP/sub/runtime-update.sh" <<EOF
 #!/usr/bin/env bash
 exit 75
@@ -370,9 +300,6 @@ EOF
 }
 
 @test "state file is created atomically (no half-written reads)" {
-    # The atomic-write pattern (tmp + mv -f) guarantees a reader always
-    # sees a complete JSON object. We assert the property indirectly by
-    # confirming no .tmp leftover file remains after a clean run.
     run_orchestrator
     [ "$status" -eq 0 ]
 
@@ -382,10 +309,6 @@ EOF
 }
 
 @test "second concurrent invocation exits 75 without touching state" {
-    # Hold the lock externally, then attempt to launch the orchestrator.
-    # The orchestrator's flock -n must observe the existing hold and
-    # exit 75 (EX_TEMPFAIL) — the same code webconfig's capability gate
-    # translates to HTTP 503.
     install -d -m 0755 "$(dirname "$LOCK_FILE")"
     : > "$LOCK_FILE"
     exec 8>"$LOCK_FILE"
@@ -394,14 +317,9 @@ EOF
     run_orchestrator
     [ "$status" -eq 75 ]
 
-    # State file untouched — the loser exits before any write_state.
     [ ! -e "$STATE_FILE" ] || {
-        # If the state file happens to exist from a prior test, the
-        # loser must not have rewritten it. Capture the mtime around
-        # the failed call to assert.
         true
     }
 
-    # Release the external lock.
     exec 8>&-
 }

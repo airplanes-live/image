@@ -128,5 +128,68 @@
     "mode": "symlink",
     "link": "/usr/share/graphs1090",
     "target": "/opt/airplanes-runtime/current/share/graphs1090"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/bin/airplanes-webconfig",
+    "target": "/opt/airplanes-runtime/current/bin/airplanes-webconfig"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/bin/apl-wifi",
+    "target": "/opt/airplanes-runtime/current/bin/apl-wifi"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes/wifi-validators.sh",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes/wifi-validators.sh"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes/wifi-keyfile.sh",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes/wifi-keyfile.sh"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes-webconfig/identity-export.sh",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/identity-export.sh"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes-webconfig/identity-import.sh",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/identity-import.sh"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes-webconfig/system-upgrade.sh",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/system-upgrade.sh"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes-webconfig/reset",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/reset"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-webconfig.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-webconfig.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-webconfig-reset.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-webconfig-reset.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/lighttpd/conf-available/40-airplanes-webconfig.conf",
+    "target": "/opt/airplanes-runtime/current/etc/lighttpd/conf-available/40-airplanes-webconfig.conf"
+  },
+  {
+    "mode": "copy",
+    "path": "/etc/sudoers.d/010_airplanes-webconfig",
+    "from": "etc/sudoers.d/010_airplanes-webconfig",
+    "owner": "root:root",
+    "perm": "0440",
+    "post_install": ["/usr/sbin/visudo", "-cf", "/etc/sudoers.d/010_airplanes-webconfig"]
   }
 ]

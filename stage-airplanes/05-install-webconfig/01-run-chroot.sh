@@ -10,22 +10,15 @@ export PATH="/usr/local/sbin:${PATH}"
 # non-interactive service account.
 adduser --system --no-create-home --group airplanes-webconfig
 
-# Per-user state dirs. image-webconfig's install.sh does not create these
-# (its rootfs.tar.gz ships only the files webconfig owns at install time),
-# so create them here at mode 0700 with the right owner.
+# Per-user state dirs. The overlay rootfs ships only the files webconfig owns
+# at install time, not these state directories, so create them here at mode
+# 0700 with the right owner.
 install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /var/lib/airplanes-webconfig
 install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /etc/airplanes/webconfig
-
-# Lock down the sudoers snippets (0440 root:root is what visudo accepts) and
-# verify each parses before the stage exits. Both files ship in the
-# image-webconfig release tarball with mode 0440 already, but the chmod
-# here is a belt-and-braces defence against a future tar pipeline writing
-# them at 0644.
-for f in 010_airplanes-webconfig 011_airplanes-webconfig-update; do
-    chmod 0440 /etc/sudoers.d/"$f"
-    chown root:root /etc/sudoers.d/"$f"
-    visudo -cf /etc/sudoers.d/"$f"
-done
+# The system-upgrade helper stages its work here; the overlay rootfs ships an
+# empty placeholder dir but the on-image state dir must exist with the right
+# owner before the service runs.
+install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /var/lib/airplanes-webconfig-upgrade
 
 # /api/log/{unit} streams journalctl as the webconfig user. Adding it to
 # systemd-journal grants read access to the system journal without sudo.
@@ -43,18 +36,21 @@ adduser airplanes-webconfig systemd-journal
 # would broaden the read surface — don't.
 adduser airplanes-webconfig airplanes-feed
 
+# video: /dev/vcio access for the hardware tile's vcgencmd probes. The unit
+# declares SupplementaryGroups=video so add the user to it when the group
+# exists on this image (it does on Raspberry Pi OS).
+if getent group video >/dev/null; then
+	adduser airplanes-webconfig video || true
+fi
+
 # Enable mod_proxy via lighttpd's helper (handles dedup if another snippet
-# already loaded it) and link our snippet into conf-enabled.
+# already loaded it) and link our snippet into conf-enabled. The conf-available
+# snippet itself is overlay-owned (a managed_paths symlink laid down by stage
+# 02); conf-enabled activation stays image-owned, mirroring the 88-tar1090 /
+# 89-airplanes-978 hops in stage 02.
 lighttpd-enable-mod proxy
 ln -sfn /etc/lighttpd/conf-available/40-airplanes-webconfig.conf \
 	/etc/lighttpd/conf-enabled/40-airplanes-webconfig.conf
 
 # Verify the merged config parses now (catches snippet bugs at build time).
 lighttpd -tt -f /etc/lighttpd/lighttpd.conf >/dev/null
-
-# Enable webconfig.service. The stub catches `enable` and forwards to the real
-# systemctl, which is a symlink edit and works inside the chroot. The reset
-# oneshot is enabled with WantedBy=airplanes-webconfig.service so enabling
-# webconfig pulls in the reset wants symlink as well.
-systemctl enable airplanes-webconfig-reset.service
-systemctl enable airplanes-webconfig.service

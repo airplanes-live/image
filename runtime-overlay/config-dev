@@ -30,3 +30,10 @@ export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-master}"
 
 export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
 export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-master}"
+
+# Webconfig — downloaded as a prebuilt release, not compiled in the overlay.
+# Dev tracks the floating dev-latest prerelease. The commit SHA is resolved
+# at build time from the downloaded manifest and cross-checked; pinning it
+# here ensures the build is reproducible within a single CI run.
+export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-dev-latest}"
+export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-1b36221b3d4670d4c91145a0d91bb6588ff58cb4}"

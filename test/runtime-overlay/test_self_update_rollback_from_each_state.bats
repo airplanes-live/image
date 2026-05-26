@@ -183,10 +183,11 @@ run_self_update() {
     [ "$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")" \
         = "/opt/airplanes-runtime/releases/v$PREV_VER" ]
     [ ! -d "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]
-    # Systemctl observed restart-of-readsb followed by stop-of-readsb
-    # (rollback's stop-services pass) — confirms we routed through the
-    # decoder-stop step before reverting the symlink.
-    grep -F 'stop airplanes-tar1090-uat-sync.service' "$SYSCTL_LOG"
+    # Systemctl observed restart-of-readsb followed by the rollback's
+    # stop-services pass — confirms we routed through the service-stop step
+    # before reverting the symlink. The stop is a single multi-arg invocation
+    # (webconfig + decoder stack), logged as one line by the shim.
+    grep -E '^stop .*airplanes-tar1090-uat-sync.service' "$SYSCTL_LOG"
 }
 
 @test "rollback failure_reason captured for triage" {

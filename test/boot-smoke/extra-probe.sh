@@ -11,263 +11,25 @@
 #   - webconfig HTTP responds over loopback via the lighttpd reverse proxy.
 
 # ---------------------------------------------------------------------------
-# Webconfig upgrade test functions — see usage below the SSE probe.
-# ---------------------------------------------------------------------------
-
-# Channel-aware expected version after a successful Phase A upgrade.
-_wcu_good_version() {
-    case "$1" in
-        stable) printf '%s' v9.9.99 ;;
-        dev)    printf '%s' dev-latest ;;
-        *)      fail "_wcu_good_version: unknown channel '$1'" ;;
-    esac
-}
-
-# Channel-aware expected version after Phase B's broken-release upload (the
-# version the manifest carries before rollback). For dev mode this matches
-# the good version since dev-latest is the same string in both directions.
-_wcu_broken_version() {
-    case "$1" in
-        stable) printf '%s' v9.9.100 ;;
-        dev)    printf '%s' dev-latest ;;
-        *)      fail "_wcu_broken_version: unknown channel '$1'" ;;
-    esac
-}
-
-_wcu_manifest_version() {
-    jq -r .version /etc/airplanes/webconfig-release.json 2>/dev/null
-}
-
-_wcu_poll_manifest_version() {
-    local want="$1" deadline=$(( SECONDS + ${2:-60} ))
-    local got
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        got="$(_wcu_manifest_version)"
-        [[ "$got" == "$want" ]] && return 0
-        sleep 2
-    done
-    got="$(_wcu_manifest_version)"
-    echo "  manifest=$got want=$want" >&2
-    return 1
-}
-
-# Posts /api/webconfig-update with the same Origin + Content-Type + cookie
-# jar the SSE probe captured. Returns the HTTP code in stdout.
-_wcu_post_update() {
-    local cookiejar="$1"
-    curl --silent --show-error --output /dev/null \
-        --write-out '%{http_code}' --max-time 30 \
-        -X POST \
-        -H 'Content-Type: application/json' \
-        -H 'Origin: http://127.0.0.1' \
-        -b "$cookiejar" \
-        --data '{}' \
-        http://127.0.0.1/api/webconfig-update
-}
-
-_wcu_health_200() {
-    local code
-    code="$(curl --silent --show-error --output /dev/null \
-        --write-out '%{http_code}' --max-time 5 http://127.0.0.1/health || echo 000)"
-    [[ "$code" == "200" ]]
-}
-
-# Re-authenticate against /api/auth/login and refresh the cookie jar in
-# place. Used between phases because Phase A's actual upgrade restarts the
-# webconfig service, which invalidates the in-memory session token captured
-# in the SSE probe's /api/setup call. Hard-codes the same probe password
-# the SSE setup uses (see sse_body below) — these must stay in sync.
-# Echoes the HTTP code to stderr on failure so a 409/429/locked-out path
-# distinguishes itself from a genuine 401 in the CI log.
-_wcu_relogin() {
-    local cookiejar="$1"
-    local code
-    code="$(curl --silent --show-error --output /dev/null \
-        --write-out '%{http_code}' --max-time 10 \
-        -X POST \
-        -H 'Content-Type: application/json' \
-        -H 'Origin: http://127.0.0.1' \
-        --data '{"password":"ProbePw1234XX"}' \
-        -c "$cookiejar" \
-        http://127.0.0.1/api/auth/login)"
-    if [[ "$code" != "200" ]]; then
-        echo "  /api/auth/login returned $code" >&2
-        return 1
-    fi
-}
-
-# _wcu_wait_for_unit_inactive UNIT PHASE_LABEL [DEADLINE_SECS]
-#
-# Waits up to DEADLINE_SECS (default 180) for the transient
-# airplanes-webconfig-update.service unit to exit. systemctl is-active
-# returns 0 while running, non-zero (inactive / failed / not-found-after-
-# collect) when done. The unit has --collect, so a clean exit garbage-
-# collects it entirely.
-_wcu_wait_for_unit_inactive() {
-    local unit="$1" label="$2" deadline_secs="${3:-180}"
-    local deadline=$(( SECONDS + deadline_secs ))
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
-            return 0
-        fi
-        sleep 2
-    done
-    if systemctl is-active --quiet "$unit" 2>/dev/null; then
-        fail "image-probe: $label: $unit still active after ${deadline_secs}s"
-    fi
-}
-
-_wcu_run_phase_a_and_b() {
-    local channel="$1" cookiejar="$2"
-    local good_version
-    good_version="$(_wcu_good_version "$channel")"
-    # _wcu_broken_version is informational — we don't compare against it
-    # directly post-rollback because rollback restores the pre-attempt
-    # manifest. For dev channel it would also be 'dev-latest' anyway.
-    local unit=airplanes-webconfig-update.service
-
-    # Phase A — happy upgrade to the good release. Capture the unix time
-    # BEFORE the POST so the journal-since filter below excludes anything
-    # the helper logged on prior unrelated runs.
-    echo "image-probe:   Phase A: POST /api/webconfig-update (→ $good_version)"
-    local phase_a_start
-    phase_a_start=$(date +%s)
-    local code
-    code="$(_wcu_post_update "$cookiejar")"
-    [[ "$code" == "202" || "$code" == "200" ]] \
-        || fail "image-probe: Phase A: /api/webconfig-update returned $code (want 200/202)"
-
-    # Wait for the transient unit to finish before checking on-disk state —
-    # on the dev channel good_version equals broken_version equals
-    # 'dev-latest', so the manifest poll alone would succeed trivially even
-    # if the helper short-circuited. The Phase B wait below has the same
-    # rationale.
-    _wcu_wait_for_unit_inactive "$unit" "Phase A"
-    sleep 2  # let the journal flush
-
-    _wcu_poll_manifest_version "$good_version" 60 \
-        || fail "image-probe: Phase A: manifest never reached $good_version"
-
-    [[ ! -f /usr/local/bin/airplanes-webconfig.prev ]] \
-        || fail "image-probe: Phase A: binary .prev not cleaned"
-    [[ ! -f /etc/systemd/system/airplanes-webconfig.service.prev ]] \
-        || fail "image-probe: Phase A: unit .prev not cleaned"
-    [[ ! -f /etc/airplanes/webconfig-release.json.prev ]] \
-        || fail "image-probe: Phase A: manifest .prev not cleaned"
-
-    assert_service_healthy airplanes-webconfig.service
-    _wcu_health_200 || fail "image-probe: Phase A: /health did not return 200 after upgrade"
-    /usr/local/bin/airplanes-webconfig --validate-sudoers \
-        || fail "image-probe: Phase A: validate-sudoers failed (cross-version parity broken)"
-
-    # Positive journal signal that the helper actually completed the upgrade.
-    # Without this, a future bug that short-circuits the helper (POST returns
-    # 202 but the helper exits before binary swap — e.g. a wrapper-level
-    # flock collision returning EX_TEMPFAIL) would still pass every assertion
-    # above on the dev channel where good_version is unchanged byte-for-byte.
-    if ! journalctl -u "$unit" --no-pager --since "@$phase_a_start" 2>&1 \
-            | grep -q 'health OK after restart'; then
-        fail "image-probe: Phase A: journal missing '/health OK after restart' (helper did not complete the upgrade)"
-    fi
-
-    # Phase A actually restarted airplanes-webconfig.service via the helper's
-    # `systemctl restart` (post-flock-fix this is no longer a no-op), which
-    # cleared the in-memory session map. The cookie jar we inherited from
-    # the SSE probe's /api/setup call now points at a session the new
-    # process has never heard of — re-login or Phase B's POST returns 401.
-    _wcu_relogin "$cookiejar" \
-        || fail "image-probe: Phase B: re-login via /api/auth/login failed after Phase A service restart"
-
-    # Phase B — broken release, expect rollback.
-    echo "image-probe:   Phase B: pushing broken-release tag, POST /api/webconfig-update"
-    sudo -n /usr/local/lib/airplanes-boot-smoke/push-broken-tag.sh "$channel" \
-        || fail "image-probe: Phase B: push-broken-tag.sh failed"
-
-    # Phase A succeeded so manifest is already $good_version going into
-    # Phase B. The polling check below only verifies post-Phase-B state, so
-    # we MUST wait for the transient unit to actually finish before reading
-    # the manifest — otherwise the poll reads the pre-Phase-B value and the
-    # assertion succeeds trivially.
-    local phase_b_start
-    phase_b_start=$(date +%s)
-
-    code="$(_wcu_post_update "$cookiejar")"
-    [[ "$code" == "202" || "$code" == "200" ]] \
-        || fail "image-probe: Phase B: /api/webconfig-update returned $code (want 200/202)"
-
-    # Default helper timing: ~10s health probe + restart + journal flush;
-    # budget 120s plus slack via the helper's default 180s.
-    _wcu_wait_for_unit_inactive "$unit" "Phase B"
-    sleep 2  # let the journal flush
-
-    # Convergence: rollback restored the manifest to the pre-attempt good
-    # version. (For dev channel both versions are 'dev-latest' so the
-    # version-equality check above is satisfied trivially; the binary
-    # rollback is the real signal there. Cover it below.)
-    local manifest_after
-    manifest_after="$(_wcu_manifest_version)"
-    [[ "$manifest_after" == "$good_version" ]] \
-        || fail "image-probe: Phase B: manifest=$manifest_after expected rollback to $good_version"
-
-    assert_service_healthy airplanes-webconfig.service
-    _wcu_health_200 || fail "image-probe: Phase B: /health did not return 200 after rollback"
-
-    # Journal evidence that the rollback code path actually ran. Restrict to
-    # entries since the POST so a successful Phase A's journal noise can't
-    # match. Without this the happy-path-only case (binary somehow served
-    # /health) could pass.
-    if ! journalctl -u "$unit" --no-pager --since "@$phase_b_start" 2>&1 \
-            | grep -qE 'health probe exhausted|rolling back'; then
-        fail "image-probe: Phase B: journal missing 'health probe exhausted' / 'rolling back'"
-    fi
-}
-
-_wcu_verify_persistence() {
-    local channel="$1"
-    local expected
-    expected="$(_wcu_good_version "$channel")"
-
-    local got
-    got="$(_wcu_manifest_version)"
-    [[ "$got" == "$expected" ]] \
-        || fail "image-probe: persistence: manifest=$got expected=$expected"
-
-    assert_service_healthy airplanes-webconfig.service
-    _wcu_health_200 \
-        || fail "image-probe: persistence: /health did not return 200 after reboot"
-
-    /usr/local/bin/airplanes-webconfig --validate-sudoers \
-        || fail "image-probe: persistence: validate-sudoers failed after reboot"
-
-    [[ ! -f /usr/local/bin/airplanes-webconfig.prev ]] \
-        || fail "image-probe: persistence: binary .prev leaked across reboot"
-    [[ ! -f /etc/systemd/system/airplanes-webconfig.service.prev ]] \
-        || fail "image-probe: persistence: unit .prev leaked across reboot"
-    [[ ! -f /etc/airplanes/webconfig-release.json.prev ]] \
-        || fail "image-probe: persistence: manifest .prev leaked across reboot"
-}
-
-# ---------------------------------------------------------------------------
 # Update-orchestrator e2e probe — drives POST /api/orchestrator/start with
 # every sub-helper stubbed out at its absolute path so the orchestrator's
-# four-phase sequencing is exercised end-to-end without actually mutating
-# apt / feed / webconfig / runtime. The bats coverage at
+# three-phase sequencing (apt → feed → runtime) is exercised end-to-end
+# without actually mutating apt / feed / runtime. The bats coverage at
 # test/runtime-overlay/test_orchestrator_sequence.bats exercises the
 # orchestrator script in isolation; this probe exercises the click-flow
 # (HTTP -> sudoers -> systemd-run -> orchestrator -> state-file) the SPA
 # uses, which the bats coverage cannot reach.
 #
-# Stubs are installed at the four absolute paths the orchestrator
+# Stubs are installed at the three absolute paths the orchestrator
 # invokes by default (no env override is possible because systemd-run's
 # sudoers-pinned argv uses env_reset and the production defaults are
 # hard-coded as absolute paths in the orchestrator script itself).
-# All four use bind-mount (not move-aside) so cleanup is a single
+# All three use bind-mount (not move-aside) so cleanup is a single
 # umount-in-reverse strategy and a probe abort leaves /usr/local/...
 # intact via the kernel's mount table even if _orch_restore never runs:
 #
 #   /usr/bin/apt-get
 #   /usr/local/share/airplanes/update.sh
-#   /usr/local/lib/airplanes-webconfig/webconfig-self-update.sh
 #   /opt/airplanes-runtime/current/lib/runtime-self-update.sh
 #
 # Each stub writes a marker file under
@@ -292,11 +54,10 @@ _wcu_verify_persistence() {
 _orch_trampoline=/usr/local/lib/airplanes-webconfig/start-orchestrator.sh
 _orch_binary=/opt/airplanes-runtime/current/lib/airplanes-update-orchestrator
 
-# Absolute paths the orchestrator (runtime-overlay/src/lib/airplanes-update-orchestrator)
-# invokes for each step. Kept in sync with the script's defaults block.
+# Absolute paths the orchestrator invokes for each step. Kept in sync with
+# the script's defaults block.
 _orch_apt_get=/usr/bin/apt-get
 _orch_feed_update=/usr/local/share/airplanes/update.sh
-_orch_webconfig_update=/usr/local/lib/airplanes-webconfig/webconfig-self-update.sh
 _orch_runtime_update=/opt/airplanes-runtime/current/lib/runtime-self-update.sh
 
 _orch_state_file=/run/airplanes/orchestrator.state
@@ -542,7 +303,7 @@ _orch_dump_diagnostics() {
     _orch_diag_run mount
     local _t
     for _t in "${_orch_apt_get:-}" "${_orch_feed_update:-}" \
-              "${_orch_webconfig_update:-}" "${_orch_runtime_update:-}"; do
+              "${_orch_runtime_update:-}"; do
         [[ -n "$_t" ]] || continue
         _orch_diag_emit "  target: $_t"
         _orch_diag_run stat -Lc '    stat: %n dev=%d ino=%i mode=%a type=%F size=%s' "$_t"
@@ -601,7 +362,6 @@ _orch_dump_diagnostics() {
                 echo "id: uid=$(id -u) gid=$(id -g) euid=$EUID"
                 for t in /usr/bin/apt-get \
                          /usr/local/share/airplanes/update.sh \
-                         /usr/local/lib/airplanes-webconfig/webconfig-self-update.sh \
                          /opt/airplanes-runtime/current/lib/runtime-self-update.sh; do
                     if [[ -x "$t" ]]; then xflag=x; else xflag=NOT-EXECUTABLE; fi
                     if [[ -e "$t" ]]; then eflag=exists; else eflag=MISSING; fi
@@ -790,7 +550,6 @@ _orch_run_probe() {
 
         _orch_bind_stub "$_orch_apt_get"          apt
         _orch_bind_stub "$_orch_feed_update"      feed
-        _orch_bind_stub "$_orch_webconfig_update" webconfig
         _orch_bind_stub "$_orch_runtime_update"   runtime
 
         # Cross-namespace visibility check: the orchestrator runs in a
@@ -806,7 +565,7 @@ _orch_run_probe() {
         # failure 5–10 seconds later.
         local _t expect_payload="" line
         for _t in "$_orch_apt_get" "$_orch_feed_update" \
-                  "$_orch_webconfig_update" "$_orch_runtime_update"; do
+                  "$_orch_runtime_update"; do
             line="$(stat -Lc '%d:%i' -- "$_t" 2>/dev/null || true)"
             if [[ -z "$line" ]]; then
                 _orch_fail "orchestrator probe: cross-ns check: stat failed for $_t (bind-mount setup race?)"
@@ -817,7 +576,7 @@ _orch_run_probe() {
         local transient_payload
         # shellcheck disable=SC2016  # $TARGETS expands inside the transient unit, not at quoting time.
         transient_payload="$(timeout 15s systemd-run --pipe --wait --collect --quiet \
-            --setenv=TARGETS="$_orch_apt_get $_orch_feed_update $_orch_webconfig_update $_orch_runtime_update" \
+            --setenv=TARGETS="$_orch_apt_get $_orch_feed_update $_orch_runtime_update" \
             /bin/bash -c '
                 set +e
                 for t in $TARGETS; do
@@ -991,7 +750,7 @@ _orch_run_probe() {
         # step=done without all phases having run if a future refactor
         # short-circuits the sequencer.
         local missing="" s
-        for s in apt feed webconfig runtime; do
+        for s in apt feed runtime; do
             [[ -f "$_orch_marker_dir/${s}.ok" ]] || missing+=" $s"
         done
         if [[ -n "$missing" ]]; then
@@ -1008,30 +767,26 @@ _orch_run_probe() {
         # rc clean so set -e doesn't trip, and grep's own '0' output
         # is what we want without an extra echo 0 (which would emit
         # `0\n0` and trip the (( )) check downstream).
-        local apt_calls feed_calls webconfig_calls runtime_calls
+        local apt_calls feed_calls runtime_calls
         apt_calls=$(grep -c '^[^ ]* apt ' "$_orch_call_log" 2>/dev/null || true)
         feed_calls=$(grep -c '^[^ ]* feed ' "$_orch_call_log" 2>/dev/null || true)
-        webconfig_calls=$(grep -c '^[^ ]* webconfig ' "$_orch_call_log" 2>/dev/null || true)
         runtime_calls=$(grep -c '^[^ ]* runtime ' "$_orch_call_log" 2>/dev/null || true)
-        : "${apt_calls:=0}" "${feed_calls:=0}" "${webconfig_calls:=0}" "${runtime_calls:=0}"
+        : "${apt_calls:=0}" "${feed_calls:=0}" "${runtime_calls:=0}"
         if (( apt_calls != 2 )); then
             _orch_fail "orchestrator probe: apt was invoked $apt_calls times (want 2: 'update' + '-y upgrade')"
         fi
         if (( feed_calls != 1 )); then
             _orch_fail "orchestrator probe: feed stub was invoked $feed_calls times (want 1)"
         fi
-        if (( webconfig_calls != 1 )); then
-            _orch_fail "orchestrator probe: webconfig stub was invoked $webconfig_calls times (want 1)"
-        fi
         if (( runtime_calls != 1 )); then
             _orch_fail "orchestrator probe: runtime stub was invoked $runtime_calls times (want 1)"
         fi
 
-        # Sequence assertion: apt before feed before webconfig before
-        # runtime. The bats coverage pins this for the orchestrator
-        # script in isolation; we re-check here because a regression
-        # in the trampoline or systemd-run plumbing could in principle
-        # reorder the actual execution.
+        # Sequence assertion: apt before feed before runtime. The bats
+        # coverage pins this for the orchestrator script in isolation;
+        # we re-check here because a regression in the trampoline or
+        # systemd-run plumbing could in principle reorder the actual
+        # execution.
         #
         # `|| true` on each pipeline: pipefail is on (inherited from
         # run.sh's `set -euo pipefail`), and the grep|head|cut shape
@@ -1041,16 +796,15 @@ _orch_run_probe() {
         # pipe after one line so grep can also get SIGPIPE (rc=141)
         # on a matching but multi-line input. We want the assertions
         # to be the only place that fails.
-        local apt_first feed_first wc_first rt_first
+        local apt_first feed_first rt_first
         apt_first=$(grep -n '^[^ ]* apt update$' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
         feed_first=$(grep -n '^[^ ]* feed ' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
-        wc_first=$(grep -n '^[^ ]* webconfig ' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
         rt_first=$(grep -n '^[^ ]* runtime ' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
-        if [[ -z "$apt_first" || -z "$feed_first" || -z "$wc_first" || -z "$rt_first" ]]; then
-            _orch_fail "orchestrator probe: sequence log missing one of apt/feed/webconfig/runtime entries (log: $(cat "$_orch_call_log"))"
+        if [[ -z "$apt_first" || -z "$feed_first" || -z "$rt_first" ]]; then
+            _orch_fail "orchestrator probe: sequence log missing one of apt/feed/runtime entries (log: $(cat "$_orch_call_log"))"
         fi
-        if ! (( apt_first < feed_first && feed_first < wc_first && wc_first < rt_first )); then
-            _orch_fail "orchestrator probe: step order wrong — apt=$apt_first feed=$feed_first webconfig=$wc_first runtime=$rt_first (want strict ascending)"
+        if ! (( apt_first < feed_first && feed_first < rt_first )); then
+            _orch_fail "orchestrator probe: step order wrong — apt=$apt_first feed=$feed_first runtime=$rt_first (want strict ascending)"
         fi
 
         # Runtime sanity bound. See the budget comment above.
@@ -1140,7 +894,7 @@ _orch_run_probe() {
         # would break the next apt operation on this VM.
         local leaked=""
         for s in "$_orch_apt_get" "$_orch_feed_update" \
-                 "$_orch_webconfig_update" "$_orch_runtime_update"; do
+                 "$_orch_runtime_update"; do
             if mountpoint -q "$s" 2>/dev/null; then
                 leaked+=" $s"
             fi
@@ -1150,7 +904,7 @@ _orch_run_probe() {
         fi
         trap - EXIT
 
-        echo "image-probe: orchestrator e2e probe passed (elapsed=${elapsed}s, all 4 markers + sequence + HTTP cross-check)"
+        echo "image-probe: orchestrator e2e probe passed (elapsed=${elapsed}s, all 3 markers + sequence + HTTP cross-check)"
     )
     local sub_rc=$?
     if (( sub_rc != 0 )); then
@@ -1536,41 +1290,6 @@ rm -f "$sse_state_out" "$sse_stream_out"
 # runtime predates the orchestrator stays green.
 if (( sse_first_pass == 1 )); then
     _orch_run_probe "$sse_cookiejar"
-fi
-
-# Webconfig-upgrade variant — gated on the marker file the boot-smoke pre-boot
-# setup writes when AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE=1. The marker
-# contains the resolver channel (`stable` or `dev`), matching what stage 06
-# baked into /etc/airplanes/release-channel. Reuses the SSE probe's
-# authenticated cookie jar.
-if [[ -s /var/lib/airplanes-boot-smoke/webconfig-upgrade-channel ]]; then
-    _wcu_channel="$(cat /var/lib/airplanes-boot-smoke/webconfig-upgrade-channel)"
-    _wcu_phase_file=/var/lib/airplanes-boot-smoke/webconfig-upgrade-phase
-    _wcu_phase="$(cat "$_wcu_phase_file" 2>/dev/null || true)"
-
-    case "$_wcu_phase" in
-        '')
-            echo "image-probe: webconfig-upgrade phase A+B (channel=$_wcu_channel)"
-            _wcu_run_phase_a_and_b "$_wcu_channel" "$sse_cookiejar"
-            printf '%s' phases-done > "$_wcu_phase_file"
-            sync
-            echo "image-probe: webconfig-upgrade rebooting to verify reboot persistence"
-            systemctl reboot
-            # systemctl reboot returns immediately; sleep so the journal flushes
-            # before the kernel cuts power. The harness's case statement on the
-            # next boot will re-enter the `updated` phase and re-source us.
-            sleep 60
-            fail "image-probe: webconfig-upgrade: systemctl reboot did not take effect within 60s"
-            ;;
-        phases-done)
-            echo "image-probe: webconfig-upgrade reboot persistence (channel=$_wcu_channel)"
-            _wcu_verify_persistence "$_wcu_channel"
-            rm -f "$_wcu_phase_file"
-            ;;
-        *)
-            fail "image-probe: webconfig-upgrade: unexpected phase '$_wcu_phase'"
-            ;;
-    esac
 fi
 
 rm -f "$sse_cookiejar"

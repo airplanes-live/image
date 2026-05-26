@@ -708,39 +708,3 @@ jobs:
         with:
           name: update-regression-artifacts
           path: ${{ runner.temp }}/update-regression
-
-  webconfig-upgrade-smoke:
-    # Filesystem-level smoke for the on-device webconfig upgrade. Stage 05
-    # inside the container clones the config-stable webconfig branch from
-    # github (the BAKED release). The sibling checkout below is the BUILDER
-    # of the synthetic newer release — it needs scripts/lib/build-release.sh,
-    # which lives on image-webconfig's dev branch, not on a stable tag from
-    # before the packager was extracted. So we pin the sibling at dev.
-    # The QEMU end-to-end (build-image.yml's webconfig-upgrade-qemu) covers
-    # the real /api/webconfig-update + helper + /health + rollback paths.
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: airplanes-live/image-webconfig
-          ref: dev
-          path: image-webconfig
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: airplanes-live/feed
-          ref: dev
-          path: feed
-
-      - name: Run webconfig-upgrade smoke
-        run: bash test/webconfig-upgrade-smoke.sh feed image-webconfig
-
-      - name: Upload smoke artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: webconfig-upgrade-artifacts
-          path: ${{ runner.temp }}/webconfig-upgrade

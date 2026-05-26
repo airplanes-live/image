@@ -38,7 +38,7 @@ on:
     tags: ['v*']
   pull_request:
     # Fire on PRs that affect what the image build produces OR the
-    # boot-smoke / webconfig-upgrade-qemu test harness that consumes
+    # boot-smoke test harness that consumes
     # the built artifact. test/boot-smoke/ is included so changes to
     # extra-probe.sh and friends are validated end-to-end against a
     # freshly built image; without it a probe regression would only
@@ -490,127 +490,6 @@ jobs:
           path: ${{ runner.temp }}/airplanes-image-boot/qemu-logs
           if-no-files-found: warn
 
-  webconfig-upgrade-qemu:
-    # End-to-end QEMU upgrade test: boots the built image, triggers
-    # /api/webconfig-update twice against synthetic file:// releases, expects
-    # convergence on Phase A and rollback on Phase B, then reboots and
-    # verifies the rolled-back state persists. Distinct from boot-smoke —
-    # they share an image build but not a VM boot.
-    needs: [resolve-product, build]
-    name: webconfig-upgrade-qemu-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
-    strategy:
-      matrix:
-        arch: [arm64]
-      fail-fast: false
-    env:
-      CHANNEL: ${{ needs.resolve-product.outputs.channel }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Load channel config
-        run: |
-          set -a
-          # shellcheck disable=SC1090
-          source "config-$CHANNEL"
-          set +a
-          echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_BRANCH" >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: airplanes-live/feed
-          ref: ${{ env.AIRPLANES_FEED_BRANCH }}
-          path: feed
-
-      # The image's BAKED webconfig ships from config-${CHANNEL}'s pin — stage
-      # 05 inside the booted VM downloads that. The sibling checkout below is
-      # the BUILDER of the synthetic newer release we upgrade to; it needs
-      # scripts/lib/build-release.sh, which only exists on dev (the release
-      # packager was extracted after the last stable tag was cut). Pin the
-      # sibling at dev so the test always picks up the current packager.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: airplanes-live/image-webconfig
-          ref: dev
-          path: image-webconfig
-
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: image-webconfig/go.mod
-          cache-dependency-path: image-webconfig/go.sum
-
-      - name: Pre-build synthetic release payloads (good + broken)
-        # Build the synthetic releases here, on the runner user where setup-go
-        # put `go` on PATH. The boot-smoke step below runs under sudo, and
-        # sudo's secure_path strips $PATH, so `go build` is not reachable
-        # from inside setup.sh. setup.sh copies the prebuilt dir into the
-        # rootfs.
-        env:
-          PREBUILT_DIR: ${{ runner.temp }}/webconfig-prebuilt
-          WEBCONFIG_SRC: ${{ github.workspace }}/image-webconfig
-        run: |
-          # shellcheck source=test/boot-smoke/lib/webconfig-upgrade-helpers.sh
-          . test/boot-smoke/lib/webconfig-upgrade-helpers.sh
-          build_synthetic_releases_prebuild "$WEBCONFIG_SRC" "$PREBUILT_DIR" "$CHANNEL"
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
-          path: deploy
-
-      - name: Install QEMU smoke dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates \
-            binutils \
-            cpio \
-            curl \
-            gh \
-            initramfs-tools-core \
-            git \
-            jq \
-            kmod \
-            parted \
-            p7zip-full \
-            qemu-system-arm \
-            qemu-user-static \
-            rsync \
-            file \
-            unzip \
-            xz-utils \
-            zstd
-
-      - name: Run image boot smoke (webconfig-upgrade variant)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          AIRPLANES_IMAGE_PATH: ${{ github.workspace }}/deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz
-          AIRPLANES_IMAGE_CONTRACT: new
-          AIRPLANES_IMAGE_CHANNEL: ${{ env.CHANNEL }}
-          AIRPLANES_IMAGE_ARCH: ${{ matrix.arch }}
-          AIRPLANES_BOOT_SMOKE_EXTRA_SETUP: ${{ github.workspace }}/test/boot-smoke/setup.sh
-          AIRPLANES_BOOT_SMOKE_WORK_DIR: ${{ runner.temp }}/airplanes-image-boot-upgrade
-          AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR: '1'
-          AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE: '1'
-          AIRPLANES_BOOT_SMOKE_PREBUILT_RELEASES: ${{ runner.temp }}/webconfig-prebuilt
-          # Probe phase model: initial boot runs feed update + reboot;
-          # 'updated' boot runs phase A+B then reboots; third boot runs
-          # the reboot-persistence check then poweroffs. image-boot.sh
-          # defaults to 2 host-side boot attempts; bump to 3 for this job.
-          AIRPLANES_BOOT_SMOKE_MAX_BOOT_ATTEMPTS: '3'
-        run: |
-          sudo --preserve-env=GH_TOKEN,AIRPLANES_IMAGE_PATH,AIRPLANES_IMAGE_CONTRACT,AIRPLANES_IMAGE_CHANNEL,AIRPLANES_IMAGE_ARCH,AIRPLANES_BOOT_SMOKE_EXTRA_SETUP,AIRPLANES_BOOT_SMOKE_WORK_DIR,AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR,AIRPLANES_BOOT_SMOKE_TEST_WEBCONFIG_UPGRADE,AIRPLANES_BOOT_SMOKE_PREBUILT_RELEASES,AIRPLANES_BOOT_SMOKE_MAX_BOOT_ATTEMPTS \
-            bash feed/test/image-boot.sh
-
-      - name: Upload QEMU logs on failure
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: webconfig-upgrade-qemu-${{ env.CHANNEL }}-${{ matrix.arch }}-logs
-          path: ${{ runner.temp }}/airplanes-image-boot-upgrade/qemu-logs
-          if-no-files-found: warn
-
   publish-dev-latest:
     # Maintain a single rolling `dev-latest` GitHub prerelease that always
     # points at the most recent successful push-to-dev build. Downstream
@@ -619,7 +498,7 @@ jobs:
     # rather than the workflow-artifact API; releases don't expire, so the
     # 90-day artifact retention window is no longer a coverage concern.
     name: Update rolling dev-latest prerelease
-    needs: [resolve-product, sign-runtime, build, boot-smoke, webconfig-upgrade-qemu]
+    needs: [resolve-product, sign-runtime, build, boot-smoke]
     if: |
       needs.resolve-product.outputs.release_tag == 'dev-latest'
       && needs.resolve-product.outputs.should_publish == 'true'
@@ -815,11 +694,10 @@ jobs:
 
   publish-stable-release:
     # Stable product releases are published only after the runtime overlay,
-    # image build, mounted/chroot checks, boot smoke, and webconfig-upgrade
-    # smoke all succeeded. The release is created as a draft first; draft
+    # image build, mounted/chroot checks, and boot smoke all succeeded. The release is created as a draft first; draft
     # releases are ignored by the on-device stable updater.
     name: Publish stable product release
-    needs: [resolve-product, sign-runtime, build, boot-smoke, webconfig-upgrade-qemu]
+    needs: [resolve-product, sign-runtime, build, boot-smoke]
     if: |
       needs.resolve-product.outputs.channel == 'stable'
       && needs.resolve-product.outputs.should_publish == 'true'

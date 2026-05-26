@@ -7,9 +7,13 @@
     "airplanes-tar1090-uat-sync.path",
     "tar1090.service",
     "graphs1090.service",
-    "collectd.service"
+    "collectd.service",
+    "airplanes-webconfig.service",
+    "airplanes-webconfig-reset.service"
   ],
   "disable": [],
-  "reload_or_restart": [],
+  "reload_or_restart": [
+    "lighttpd.service"
+  ],
   "daemon_reload": true
 }
