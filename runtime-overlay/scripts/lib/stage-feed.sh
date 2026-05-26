@@ -198,6 +198,14 @@ for unit in airplanes-feed.service airplanes-mlat.service; do
     fi
 done
 
+# Stage .shellcheckrc so the verify-gates shellcheck over the release tree
+# honours the feed repo's suppressions (SC2034: unused-looking associative
+# array keys that are actually consumed by callers via source). Without it,
+# SC2034 in feed-env-apply.sh would fail the release gate.
+if [[ -f "$FEED_SRC/.shellcheckrc" ]]; then
+    install -m 0644 "$FEED_SRC/.shellcheckrc" "$OUTPUT_DIR/share/airplanes/.shellcheckrc"
+fi
+
 printf '%s' "$FEED_SHA" > "$OUTPUT_DIR/components.feed_scripts.sha"
 printf '%s' "${FEED_REF}" > "$OUTPUT_DIR/components.feed_scripts.version"
 
