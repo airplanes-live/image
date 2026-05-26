@@ -433,16 +433,6 @@ fi
 
 _state_write_or_die HEALTH_PASSED
 
-# Remove RETIRED symlinks now that the install is known-good. Links the prior
-# release owned that the new one does not are stale and should not dangle in
-# the FHS surface. Placed here (after HEALTH_PASSED, before finalize) rather
-# than earlier so a rollback never loses links the previous release depends on.
-# Skipped on first install (no prior manifest). Best-effort.
-if [[ -n "$PREV_RELEASE_DIR" && -f "$PREV_RELEASE_DIR/manifest.json" ]]; then
-    airplanes_runtime_remove_retired_symlinks \
-        "$PREV_RELEASE_DIR/manifest.json" "$RELEASE_MANIFEST" "$TARGET_ROOT" || true
-fi
-
 # Cleanup → INSTALLED. The cleanup post-step runs within HEALTH_PASSED; a
 # failure here leaves the state at HEALTH_PASSED so the NEXT invocation of
 # this script resumes the cleanup (the boot shim only no-ops on HEALTH_PASSED

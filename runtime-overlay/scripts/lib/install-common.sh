@@ -2008,6 +2008,24 @@ airplanes_runtime_write_last_good_release() {
 # so a HEALTH_PASSED interruption is finished by the next updater invocation.
 airplanes_runtime_finalize_after_health_passed() {
     local target_root="$1"
+
+    # Remove RETIRED symlinks — FHS links the prior release owned that the
+    # new release does not. Done INSIDE finalize (rather than inline in the
+    # forward walk) so the HEALTH_PASSED resume path — re-entry after a power
+    # loss in the cleanup window — also performs it; otherwise retired links
+    # could persist indefinitely. prev/new release dirs are read from the
+    # state file, which persists them across transitions. Best-effort,
+    # idempotent, and skipped on first install or once GC has removed the
+    # prior release dir. Runs before manifest-record + GC so the prior
+    # manifest is still on disk when we diff against it.
+    local prev new
+    prev="$(airplanes_runtime_state_get "$target_root" prev_release)"
+    new="$(airplanes_runtime_state_get  "$target_root" new_release)"
+    if [[ -n "$prev" && -f "$prev/manifest.json" && -n "$new" && -f "$new/manifest.json" ]]; then
+        airplanes_runtime_remove_retired_symlinks \
+            "$prev/manifest.json" "$new/manifest.json" "$target_root" || true
+    fi
+
     if ! airplanes_runtime_record_runtime_manifest "$target_root"; then
         echo "ERROR: finalize_after_health_passed: runtime manifest pointer write failed" >&2
         return 1
