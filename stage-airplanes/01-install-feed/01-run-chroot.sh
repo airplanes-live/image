@@ -18,21 +18,29 @@ export PATH="/usr/local/sbin:${PATH}"
 # exists before stage 05's group-membership wiring and before first boot starts
 # the overlay-shipped airplanes-feed.service.
 
-# Create the airplanes-feed system group + user. Primary group matches the
-# username; --no-create-home avoids a /home entry for a non-interactive
-# service account. Idempotent guards mirror feed's ensure_airplanes_feed_account.
+# Create the airplanes-feed system group + user. Fallback chain mirrors feed's
+# ensure_airplanes_feed_account so the chroot works on minimal containers (e.g.
+# debian:trixie-slim used by feed-overlay-smoke) that may lack the `adduser`
+# package.
 if ! getent group airplanes-feed >/dev/null 2>&1; then
-	addgroup --system airplanes-feed
+	addgroup --system airplanes-feed 2>/dev/null \
+		|| groupadd --system airplanes-feed 2>/dev/null \
+		|| { echo "ERROR: failed to create airplanes-feed group" >&2; exit 1; }
 fi
 if ! id -u airplanes-feed >/dev/null 2>&1; then
 	adduser --system --ingroup airplanes-feed \
-		--home /usr/local/share/airplanes --no-create-home --quiet airplanes-feed
+		--home /usr/local/share/airplanes --no-create-home --quiet airplanes-feed 2>/dev/null \
+		|| useradd --system --gid airplanes-feed \
+		--home-dir /usr/local/share/airplanes --no-create-home airplanes-feed 2>/dev/null \
+		|| { echo "ERROR: failed to create airplanes-feed user" >&2; exit 1; }
 fi
 
 # Pi hardware: the daemon user needs the `video` group so vcgencmd can read
 # /dev/vchiq for the diagnostics throttle fields. Add it when the group exists.
 if getent group video >/dev/null 2>&1; then
-	adduser airplanes-feed video || true
+	adduser airplanes-feed video 2>/dev/null \
+		|| usermod -aG video airplanes-feed 2>/dev/null \
+		|| true
 fi
 
 # State directory the feed daemons + claim flow write to. The overlay ships the
