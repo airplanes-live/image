@@ -590,7 +590,7 @@ _airplanes_runtime_apply_managed_symlink() {
 
 _airplanes_runtime_apply_managed_copy() {
     local manifest="$1" idx="$2" release_dir="$3" target_root="$4"
-    local path from owner perm src dst abs_dst tmp
+    local path from owner perm src abs_dst tmp
     path="$(jq -r  ".managed_paths[$idx].path"  "$manifest")"
     from="$(jq -r  ".managed_paths[$idx].from"  "$manifest")"
     owner="$(jq -r ".managed_paths[$idx].owner" "$manifest")"
@@ -614,27 +614,39 @@ _airplanes_runtime_apply_managed_copy() {
         chown "$owner" "$tmp"
     fi
 
-    mv -Tf -- "$tmp" "$abs_dst"
-
-    # post_install runs as a single sequential pipeline; abort on first
-    # non-zero so a sudoers visudo -c failure surfaces immediately.
+    # Validate BEFORE the file goes live — run post_install against the
+    # STAGED tmp file, not the destination. Each argv element equal to the
+    # declared `path` is rewritten to the tmp path, so a validator like
+    #   ["/usr/sbin/visudo", "-cf", "/etc/sudoers.d/010_airplanes-webconfig"]
+    # checks the staged content. On failure the tmp file is removed and the
+    # destination is never touched: an invalid sudoers file never goes live,
+    # and a pre-existing destination is left intact (the mv never runs). The
+    # path rewrite also makes validation target-root-correct in build mode,
+    # where `path` (host-absolute) differs from the staged tmp under the
+    # chroot. post_install runs as a single sequential pipeline; abort on the
+    # first non-zero.
     local pi_count
     pi_count="$(jq -r ".managed_paths[$idx].post_install | length // 0" "$manifest")"
     if [[ "$pi_count" -gt 0 ]]; then
         local argv_json
         argv_json="$(jq -c ".managed_paths[$idx].post_install" "$manifest")"
-        # Read into a bash array via mapfile + jq @sh would be safer if any
-        # entry contained quotes; current schema's argvString minLength:1
-        # combined with jq -r line-emission is sufficient for the v1
-        # surface (visudo -c is the only declared post_install today).
         local -a argv=()
         local line
-        while IFS= read -r line; do argv+=("$line"); done < <(jq -r '.[]' <<< "$argv_json")
+        while IFS= read -r line; do
+            if [[ "$line" == "$path" ]]; then
+                argv+=("$tmp")
+            else
+                argv+=("$line")
+            fi
+        done < <(jq -r '.[]' <<< "$argv_json")
         if ! "${argv[@]}"; then
             echo "ERROR: managed_paths[$idx] post_install failed: ${argv[*]}" >&2
+            rm -f -- "$tmp"
             return 1
         fi
     fi
+
+    mv -Tf -- "$tmp" "$abs_dst"
 }
 
 # ---------------------------------------------------------------------------
@@ -800,6 +812,84 @@ airplanes_runtime_restore_all_mutable_paths() {
         [[ -z "$p" ]] && continue
         airplanes_runtime_restore_mutable_path "$release_dir" "$target_root" "$p" || return 1
     done < <(jq -r '.mutable_paths[]?' "$manifest")
+}
+
+# ---------------------------------------------------------------------------
+# Copy-mode managed-path preimage backup + restore
+# ---------------------------------------------------------------------------
+#
+# Symlink-mode managed_paths revert for free when the `current` symlink flips
+# back. Copy-mode entries do not — they write directly to an FHS location, so
+# a rollback would otherwise leave the failed release's file in place. Before
+# the copy write, snapshot the live target into <release-dir>/.copy-preimage/
+# so the rollback path can restore it (or delete it, if the release created
+# it). Same shape as the mutable-path preimage above, but keyed off the
+# managed_paths[].mode == "copy" entries and a separate preimage dir so the
+# two mechanisms never collide.
+
+airplanes_runtime_backup_copy_path() {
+    local release_dir="$1" target_root="$2" abs_path="$3"
+    local preimage_dir="${release_dir}/.copy-preimage"
+    install -d -m 700 "$preimage_dir"
+    local enc
+    enc="$(_airplanes_runtime_encode_path "$abs_path")"
+    # Write-once, mirroring the mutable preimage: never clobber a captured
+    # original with an already-mutated intermediate.
+    if [[ -e "${preimage_dir}/${enc}" || -e "${preimage_dir}/${enc}.absent" ]]; then
+        return 0
+    fi
+    local src="${target_root}${abs_path}"
+    if [[ -e "$src" ]]; then
+        cp -a -- "$src" "${preimage_dir}/${enc}"
+    else
+        : > "${preimage_dir}/${enc}.absent"
+    fi
+}
+
+airplanes_runtime_restore_copy_path() {
+    local release_dir="$1" target_root="$2" abs_path="$3"
+    local preimage_dir="${release_dir}/.copy-preimage"
+    local enc
+    enc="$(_airplanes_runtime_encode_path "$abs_path")"
+    local dst="${target_root}${abs_path}"
+    if [[ -f "${preimage_dir}/${enc}.absent" ]]; then
+        rm -f -- "$dst"
+        return 0
+    fi
+    if [[ -e "${preimage_dir}/${enc}" ]]; then
+        install -d -m 755 "$(dirname "$dst")"
+        cp -a -- "${preimage_dir}/${enc}" "$dst"
+        return 0
+    fi
+    # No preimage and no absent-marker → nothing was backed up; no-op.
+    return 0
+}
+
+# Walk all copy-mode managed_paths and back each target up before the copy
+# write. Convenience wrapper for the orchestration step alongside the mutable
+# backup.
+airplanes_runtime_backup_all_copy_paths() {
+    local manifest="$1" release_dir="$2" target_root="$3"
+    local count i mode path
+    count="$(jq -r '(.managed_paths // []) | length' "$manifest")"
+    for (( i = 0; i < count; i++ )); do
+        mode="$(jq -r ".managed_paths[$i].mode" "$manifest")"
+        [[ "$mode" == "copy" ]] || continue
+        path="$(jq -r ".managed_paths[$i].path" "$manifest")"
+        airplanes_runtime_backup_copy_path "$release_dir" "$target_root" "$path" || return 1
+    done
+}
+
+airplanes_runtime_restore_all_copy_paths() {
+    local manifest="$1" release_dir="$2" target_root="$3"
+    local count i mode path
+    count="$(jq -r '(.managed_paths // []) | length' "$manifest")"
+    for (( i = 0; i < count; i++ )); do
+        mode="$(jq -r ".managed_paths[$i].mode" "$manifest")"
+        [[ "$mode" == "copy" ]] || continue
+        path="$(jq -r ".managed_paths[$i].path" "$manifest")"
+        airplanes_runtime_restore_copy_path "$release_dir" "$target_root" "$path" || return 1
+    done
 }
 
 # ---------------------------------------------------------------------------

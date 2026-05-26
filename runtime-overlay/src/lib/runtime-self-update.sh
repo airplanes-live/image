@@ -242,6 +242,8 @@ roll_back_and_exit() {
                     "$new/manifest.json" "$new" "$TARGET_ROOT" || true
                 airplanes_runtime_restore_all_mutable_paths \
                     "$new/manifest.json" "$new" "$TARGET_ROOT" || true
+                airplanes_runtime_restore_all_copy_paths \
+                    "$new/manifest.json" "$new" "$TARGET_ROOT" || true
             fi
             ;;
     esac
@@ -343,6 +345,10 @@ _state_write_or_die MIGRATIONS_FORWARD_DONE
 if ! airplanes_runtime_backup_all_mutable_paths \
         "$RELEASE_MANIFEST" "$RELEASE_DIR_ABS" "$TARGET_ROOT"; then
     roll_back_and_exit 1 "mutable_backup_failed"
+fi
+if ! airplanes_runtime_backup_all_copy_paths \
+        "$RELEASE_MANIFEST" "$RELEASE_DIR_ABS" "$TARGET_ROOT"; then
+    roll_back_and_exit 1 "copy_backup_failed"
 fi
 if ! airplanes_runtime_run_migrations_forward \
         "$RELEASE_MANIFEST" "$RELEASE_DIR_ABS" "$TARGET_ROOT"; then
