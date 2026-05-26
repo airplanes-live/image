@@ -286,11 +286,14 @@ getent group airplanes-webconfig >/dev/null \
 id -nG airplanes-webconfig | tr ' ' '\n' | grep -qx airplanes-feed \
     || fail "airplanes-webconfig not in airplanes-feed group"
 
-# webconfig.service must declare the supplementary group explicitly so the
+# webconfig.service must declare airplanes-feed as a supplementary group so the
 # runtime contract is self-documenting (and survives an /etc/group rewrite
-# between unit-load and process-start).
-grep -q '^SupplementaryGroups=airplanes-feed$' /etc/systemd/system/airplanes-webconfig.service \
-    || fail "airplanes-webconfig.service missing SupplementaryGroups=airplanes-feed"
+# between unit-load and process-start). It may declare additional groups too
+# (image-webconfig grants `video` for vcgencmd), so match airplanes-feed as a
+# whole token in the space-separated list rather than requiring it be the only
+# group.
+grep -qE '^SupplementaryGroups=([^[:space:]]+ )*airplanes-feed( [^[:space:]]+)*$' /etc/systemd/system/airplanes-webconfig.service \
+    || fail "airplanes-webconfig.service missing airplanes-feed in SupplementaryGroups"
 
 # End-to-end: drop a fake claim secret as airplanes-feed:airplanes-feed
 # mode 0640, then read it as airplanes-webconfig via group permissions.
