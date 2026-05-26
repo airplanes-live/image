@@ -1,10 +1,13 @@
 {
+  "manifest_schema_version": 1,
+  "installer_min_version": "1.0.0",
   "version": "1.4.0",
   "channel": "stable",
   "commit_sha": "0123456789abcdef0123456789abcdef01234567",
   "build_date": "2026-05-19T12:34:56Z",
   "arches": ["arm64"],
   "compat": {
+    "base_os_codename": "trixie",
     "requires_webconfig": ">=2.1.0,<2.3.0",
     "requires_feed_contract": ">=14"
   },
@@ -13,7 +16,11 @@
     "dump978_fa": "0fedcba987654321fedcba9876543210fedcba98",
     "tar1090": "1234567890abcdef1234567890abcdef12345678",
     "tar1090_db": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-    "graphs1090": "cafebabecafebabecafebabecafebabecafebabe"
+    "graphs1090": "cafebabecafebabecafebabecafebabecafebabe",
+    "webconfig": {
+      "commit_sha": "feedface0000feedface0000feedface00001234",
+      "version": "2.2.0"
+    }
   },
   "managed_paths": [
     {
@@ -129,10 +136,10 @@
       "readsb.service",
       "airplanes-978.service",
       "dump978-fa.service",
-      "airplanes-tar1090-uat-sync.path",
-      "airplanes-runtime-update-recover.service"
+      "airplanes-tar1090-uat-sync.path"
     ],
     "disable": [],
+    "reload_or_restart": ["lighttpd.service"],
     "daemon_reload": true
   },
   "migrations": [

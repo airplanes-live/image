@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # runtime-self-update.sh — drive a runtime-overlay upgrade through a
-# state-machine-persisted protocol so a power loss between any two steps
-# can be resumed (or rolled back) by airplanes-runtime-update-recover.sh
-# on the next boot.
+# state-machine-persisted protocol so a power loss between any two steps is
+# recoverable. Two recovery actors share the persisted state:
+#   - the rich in-process rollback (roll_back_and_exit) while this script runs;
+#   - an image-owned POSIX-sh pointer shim at boot
+#     (/usr/local/lib/airplanes-runtime/recover-shim), the last-resort floor
+#     that only flips `current` back to the last-good release using base-OS
+#     tools — it deliberately does NOT run migrations/cleanup.
+# A HEALTH_PASSED interruption (cleanup/GC not finished) is resumed by the
+# next invocation of THIS script, which can use the new release's code.
 #
 # Invoked as root via the webconfig orchestrator (sudoers-pinned). Owns the
 # upgrade flock at /run/airplanes/runtime-update.lock for the whole
@@ -81,11 +87,14 @@ _state_write_or_die() {
 # Refuse re-entry on a dirty state
 # ---------------------------------------------------------------------------
 #
-# Recovery is the boot-time oneshot's job; mixing entry paths is error-
-# prone. CLEAN, INSTALLED, FAILED_PRE_MUTATION, and ROLLED_BACK_*
-# (terminal good / terminal failure) are safe to enter from. Anything
-# else means the previous attempt did not reach a terminal state and the
-# recovery oneshot must drain the state file first.
+# Boot-time pointer recovery is the image-owned shim's job; mixing the rich
+# entry path with a half-flipped tree is error-prone. CLEAN, INSTALLED,
+# FAILED_PRE_MUTATION, ROLLED_BACK_* (terminal good / terminal failure) are
+# safe to enter from. HEALTH_PASSED is the one resumable point: the live
+# release already passed health and only the cleanup/GC post-step was
+# interrupted — we finish it here (using the new release's code) before
+# starting any fresh attempt. Any other non-terminal state means a flip was
+# in flight; the boot shim drains it, so refuse and point at a reboot.
 
 _initial_state="$(airplanes_runtime_state_read "$TARGET_ROOT")"
 case "$_initial_state" in
@@ -99,12 +108,22 @@ case "$_initial_state" in
         echo "runtime-self-update: prior attempt terminated in $_initial_state; starting fresh" >&2
         airplanes_runtime_state_clear "$TARGET_ROOT"
         ;;
+    HEALTH_PASSED)
+        # Cleanup/GC interrupted after a good install. Resume the post-step
+        # (last-good already written before HEALTH_PASSED), then start fresh.
+        echo "runtime-self-update: resuming interrupted post-install cleanup from HEALTH_PASSED" >&2
+        airplanes_runtime_finalize_after_health_passed "$TARGET_ROOT" || {
+            echo "ERROR: runtime-self-update: could not finalize a prior HEALTH_PASSED install; retry after reboot" >&2
+            exit 1
+        }
+        airplanes_runtime_state_clear "$TARGET_ROOT"
+        ;;
     UNKNOWN)
-        echo "ERROR: runtime-self-update: state file is malformed; run airplanes-runtime-update-recover.sh first" >&2
+        echo "ERROR: runtime-self-update: state file is malformed; reboot to let the boot recovery shim drain it, or triage over SSH" >&2
         exit 1
         ;;
     *)
-        echo "ERROR: runtime-self-update: state file is in non-terminal state '$_initial_state'; run airplanes-runtime-update-recover.sh first" >&2
+        echo "ERROR: runtime-self-update: state file is in non-terminal state '$_initial_state'; reboot to let the boot recovery shim drain it, or triage over SSH" >&2
         exit 1
         ;;
 esac
@@ -267,6 +286,23 @@ roll_back_and_exit() {
             ;;
     esac
 
+    # SYMLINK_FLIPPED / SYSTEMD_OPS_DONE / HEALTH_RUNNING : remove NEW-ONLY
+    # symlinks (present in the failed release's manifest but not the prior one)
+    # BEFORE daemon-reload so systemd/services never observe the failed
+    # release's stale unit/config links during the restart.
+    case "$at" in
+        SYMLINK_FLIPPED|SYSTEMD_OPS_DONE|HEALTH_RUNNING)
+            if [[ -n "$new" && -f "$new/manifest.json" ]]; then
+                local prev_manifest=""
+                if [[ -n "$prev" && -f "$prev/manifest.json" ]]; then
+                    prev_manifest="$prev/manifest.json"
+                fi
+                airplanes_runtime_remove_new_only_symlinks \
+                    "$new/manifest.json" "${prev_manifest:-/dev/null}" "$TARGET_ROOT" || true
+            fi
+            ;;
+    esac
+
     # SYMLINK_FLIPPED / SYSTEMD_OPS_DONE / HEALTH_RUNNING : daemon-reload
     # + restart the prior release's decoder stack so the rolled-back
     # symlink takes effect. Order mirrors the hardcoded forward restart
@@ -383,18 +419,28 @@ _state_write_or_die HEALTH_RUNNING
 if ! airplanes_runtime_run_health_gates "$TARGET_ROOT"; then
     roll_back_and_exit 1 "health_gates_failed"
 fi
+
+# Record last-good-release BEFORE marking HEALTH_PASSED. A reboot between
+# HEALTH_PASSED and a later last-good write would leave the boot shim
+# correctly no-op'ing (health passed) while last-good is stale, so future
+# updates would lack the correct rollback target. Writing it first closes
+# that window; the on-device path is the device-canonical release path.
+NEW_RELEASE_ON_DEVICE="${RELEASE_DIR_ABS#"$TARGET_ROOT"}"
+if ! airplanes_runtime_write_last_good_release "$TARGET_ROOT" "$NEW_RELEASE_ON_DEVICE"; then
+    echo "ERROR: runtime-self-update: failed to record last-good-release before HEALTH_PASSED" >&2
+    roll_back_and_exit 1 "last_good_write_failed"
+fi
+
 _state_write_or_die HEALTH_PASSED
 
-# Cleanup → INSTALLED. Both steps below run within HEALTH_PASSED; a
-# failure here leaves the state at HEALTH_PASSED so the recovery
-# oneshot finishes the cleanup pass on next boot. We deliberately do
-# NOT roll back here — health gates passed, the live release is good.
-if ! airplanes_runtime_record_runtime_manifest "$TARGET_ROOT"; then
-    echo "ERROR: runtime-self-update: failed to record runtime manifest pointer after HEALTH_PASSED" >&2
+# Cleanup → INSTALLED. The cleanup post-step runs within HEALTH_PASSED; a
+# failure here leaves the state at HEALTH_PASSED so the NEXT invocation of
+# this script resumes the cleanup (the boot shim only no-ops on HEALTH_PASSED
+# — pointer recovery cannot finish cleanup). We deliberately do NOT roll back
+# here — health gates passed, the live release is good.
+if ! airplanes_runtime_finalize_after_health_passed "$TARGET_ROOT"; then
+    echo "ERROR: runtime-self-update: post-install cleanup failed after HEALTH_PASSED; leaving state for resume" >&2
     exit 1
-fi
-if ! airplanes_runtime_gc_old_releases "$TARGET_ROOT"; then
-    echo "WARN: runtime-self-update: GC of old releases reported a failure (non-fatal)" >&2
 fi
 
 _state_write_or_die INSTALLED

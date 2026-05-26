@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 
 # Assert runtime-self-update.sh refuses to enter when the state file is in
-# a non-terminal state. The recovery oneshot is responsible for draining
-# the state file before the orchestrator runs again; mixing entry paths
-# is error-prone, so the orchestrator fails loudly.
+# a mid-flip non-terminal state. The boot recovery shim is responsible for
+# draining a half-flipped state before the orchestrator runs again; mixing
+# entry paths is error-prone, so the orchestrator fails loudly. HEALTH_PASSED
+# is the one resumable exception — covered by its own test, not here.
 
 bats_require_minimum_version 1.5.0
 
@@ -35,7 +36,7 @@ run_self_update() {
     run run_self_update
     [ "$status" -ne 0 ]
     [[ "$output" == *"non-terminal state"* ]]
-    [[ "$output" == *"airplanes-runtime-update-recover.sh"* ]]
+    [[ "$output" == *"boot recovery shim"* ]]
     # State file untouched.
     [ "$(read_state "$TARGET_ROOT")" = "STARTED" ]
 }
@@ -73,13 +74,6 @@ run_self_update() {
     run run_self_update
     [ "$status" -ne 0 ]
     [ "$(read_state "$TARGET_ROOT")" = "HEALTH_RUNNING" ]
-}
-
-@test "refuses entry when state is HEALTH_PASSED" {
-    mk_state_file "$TARGET_ROOT" HEALTH_PASSED
-    run run_self_update
-    [ "$status" -ne 0 ]
-    [ "$(read_state "$TARGET_ROOT")" = "HEALTH_PASSED" ]
 }
 
 @test "refuses entry when state file is malformed (UNKNOWN)" {

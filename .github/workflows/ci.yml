@@ -28,6 +28,8 @@ jobs:
                  -o -name 'airplanes-grant-sudo' \
                  -o -name 'render-status' \
                  -o -name '10-airplanes-status' \
+                 -o -name '09-airplanes-recovery-status' \
+                 -o -name 'recover-shim' \
                  -o -name 'airplanes-update-orchestrator' \) \
               -print0
           )
@@ -51,6 +53,8 @@ jobs:
                    runtime-overlay/scripts/release-workflow/*.sh \
                    runtime-overlay/src/etc/update-motd.d/10-airplanes-status \
                    runtime-overlay/src/share/airplanes/*.sh \
+                   stage-airplanes/02-install-runtime-overlay/files/usr/local/lib/airplanes-runtime/recover-shim \
+                   stage-airplanes/02-install-runtime-overlay/files/etc/update-motd.d/09-airplanes-recovery-status \
                    test/*.sh; do
             [[ -e "$f" ]] || continue
             bash -n "$f"
@@ -437,6 +441,24 @@ jobs:
           sudo journalctl -u airplanes-grant-sudo.service --no-pager || true
           sudo ls -la /etc/sudoers.d/ || true
 
+  # Bridge-release verification: install a "release N+1" (a manifest carrying
+  # the schema fields manifest_schema_version / installer_min_version /
+  # compat.base_os_codename) using "release N's" in-tree updater, proving the
+  # forward-compat floor is enforced from the first schema-using release. Runs
+  # as a focused job so a regression in the floor surfaces by name, not buried
+  # in the broad bats sweep.
+  bridge-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install bats + minisign
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats jq minisign
+
+      - name: Bridge-release install (N+1 on N's updater)
+        run: bats test/runtime-overlay/test_bridge_release.bats
+
   feed-overlay-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -535,15 +557,17 @@ jobs:
               runtime-overlay/src/systemd/dump978-fa.service \
               runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.service \
               runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.path \
-              runtime-overlay/src/systemd/airplanes-runtime-update-recover.service \
               "$ROOT/etc/systemd/system/"
-          # The recover unit's ConditionPathExists / ExecStart resolve at
-          # runtime against /opt/airplanes-runtime/current/lib/...; stub
-          # those out so the unit's syntax verifies regardless of where
-          # the runtime overlay is shipped from.
-          mkdir -p "$ROOT/opt/airplanes-runtime/current/lib"
-          install -m 0755 /dev/null \
-              "$ROOT/opt/airplanes-runtime/current/lib/airplanes-runtime-update-recover.sh"
+          # Boot recovery is image-owned (it must survive a broken overlay):
+          # the unit and its ExecStart shim ship from stage 02's files/ tree,
+          # not the overlay. Stage them from there and create the shim target.
+          install -m 0644 \
+              stage-airplanes/02-install-runtime-overlay/files/etc/systemd/system/airplanes-runtime-update-recover.service \
+              "$ROOT/etc/systemd/system/"
+          mkdir -p "$ROOT/usr/local/lib/airplanes-runtime"
+          install -m 0755 \
+              stage-airplanes/02-install-runtime-overlay/files/usr/local/lib/airplanes-runtime/recover-shim \
+              "$ROOT/usr/local/lib/airplanes-runtime/recover-shim"
           install -m 0644 image-webconfig/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06c-grant-sudo/files/etc/systemd/system/*.service \

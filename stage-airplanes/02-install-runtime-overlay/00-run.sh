@@ -1,4 +1,9 @@
-#!/bin/bash -e
+#!/bin/bash
+# Explicit `set -e` (not just the shebang) — pi-gen sources this via
+# `run_stage`, and the bats harness invokes it as `bash 00-run.sh`; both
+# ignore the shebang's flags, so a failure in install.sh must abort here
+# rather than fall through to the trailing cleanup with a 0 exit.
+set -e
 
 # Host-side stage: invoke runtime-overlay/install.sh --build-mode against either
 # the signed runtime assets produced earlier in CI
@@ -16,6 +21,27 @@
 : "${ARCH:?must be set by pi-gen}"
 : "${ROOTFS_DIR:?must be set by pi-gen}"
 : "${BASE_DIR:?must be set by pi-gen}"
+
+# Image-owned recovery files. The boot-recovery shim and its unit must
+# survive a completely broken overlay, so they are installed directly into
+# the image (NOT through the overlay's managed_paths). Copy them in before
+# the overlay install so the unit's ConditionPathExists target exists.
+STAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+install -d -m 755 "${ROOTFS_DIR}/usr/local/lib/airplanes-runtime"
+install -m 0755 \
+	"${STAGE_DIR}/files/usr/local/lib/airplanes-runtime/recover-shim" \
+	"${ROOTFS_DIR}/usr/local/lib/airplanes-runtime/recover-shim"
+install -d -m 755 "${ROOTFS_DIR}/etc/systemd/system"
+install -m 0644 \
+	"${STAGE_DIR}/files/etc/systemd/system/airplanes-runtime-update-recover.service" \
+	"${ROOTFS_DIR}/etc/systemd/system/airplanes-runtime-update-recover.service"
+install -d -m 755 "${ROOTFS_DIR}/etc/update-motd.d"
+install -m 0755 \
+	"${STAGE_DIR}/files/etc/update-motd.d/09-airplanes-recovery-status" \
+	"${ROOTFS_DIR}/etc/update-motd.d/09-airplanes-recovery-status"
+# State + last-good dirs the shim and updater write into.
+install -d -m 755 "${ROOTFS_DIR}/var/lib/airplanes-runtime-upgrade"
+install -d -m 755 "${ROOTFS_DIR}/var/lib/airplanes-runtime"
 
 # Copy the runtime-overlay source tree into a scratch dir outside the rootfs
 # so install.sh's $_self_dir resolution does not point at a path inside the

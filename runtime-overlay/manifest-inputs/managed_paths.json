@@ -26,11 +26,6 @@
   },
   {
     "mode": "symlink",
-    "link": "/etc/systemd/system/airplanes-runtime-update-recover.service",
-    "target": "/opt/airplanes-runtime/current/systemd/airplanes-runtime-update-recover.service"
-  },
-  {
-    "mode": "symlink",
     "link": "/etc/systemd/system/tar1090.service",
     "target": "/opt/airplanes-runtime/current/systemd/tar1090.service"
   },
