@@ -56,6 +56,20 @@ if [[ ! -e /etc/cron.d/collectd_to_disk \
 		/etc/cron.d/collectd_to_disk
 fi
 
+# Seed the default fresh-image feed.env from the overlay-shipped template
+# (produced by feed's own configure.sh --build-mode at overlay-build time, so
+# it is the canonical feed contract). The feed daemons source
+# /etc/airplanes/feed.env; a fresh flash needs it present with the fresh-image
+# posture (MLAT off, geo unconfigured) so feed.service still feeds ADS-B before
+# the operator configures anything. airplanes-first-run later merges boot-config
+# FEED_HOST → MLATSERVER/TARGET into it. Never overwrite an existing feed.env.
+if [[ ! -e /etc/airplanes/feed.env \
+		&& -e /opt/airplanes-runtime/current/share/airplanes/feed.env.default ]]; then
+	install -d -m 0755 /etc/airplanes
+	install -m 0644 /opt/airplanes-runtime/current/share/airplanes/feed.env.default \
+		/etc/airplanes/feed.env
+fi
+
 # Enable the unit set the runtime overlay manifest declares. The list is read
 # DYNAMICALLY from the active release manifest's systemd.enable array — the
 # manifest is the single source of truth so a future release that adds a unit

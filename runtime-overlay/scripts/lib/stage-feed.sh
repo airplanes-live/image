@@ -206,6 +206,33 @@ if [[ -f "$FEED_SRC/.shellcheckrc" ]]; then
     install -m 0644 "$FEED_SRC/.shellcheckrc" "$OUTPUT_DIR/share/airplanes/.shellcheckrc"
 fi
 
+# Generate the default fresh-image feed.env by running feed's own configure.sh
+# in build mode against a throwaway root, so the template is the canonical
+# feed contract (not a bespoke image-side duplicate). Fresh-image posture:
+# MLAT off, geo unconfigured (lat/lon=0 Atlantic placeholders), MLAT_USER set
+# to the image marker. A shell migration seeds /etc/airplanes/feed.env from
+# this default on first install when absent (the overlay never overwrites an
+# operator-configured feed.env).
+feed_env_root="$SCRATCH_DIR/feed-env-root"
+install -d -m 0755 "$feed_env_root"
+(
+    cd "$FEED_SRC"
+    AIRPLANES_BUILD_MODE=1 \
+    AIRPLANES_ROOT="$feed_env_root" \
+    AIRPLANES_SKIP_ROOT_CHECK=1 \
+    AIRPLANES_MLAT_USER=airplanes-live-image \
+    AIRPLANES_MLAT_ENABLED=false \
+    AIRPLANES_LATITUDE=0 \
+    AIRPLANES_LONGITUDE=0 \
+    AIRPLANES_ALTITUDE=0m \
+        bash configure.sh --build-mode
+)
+if [[ ! -f "$feed_env_root/etc/airplanes/feed.env" ]]; then
+    die "feed configure.sh --build-mode did not produce a default feed.env"
+fi
+install -m 0644 "$feed_env_root/etc/airplanes/feed.env" \
+    "$OUTPUT_DIR/share/airplanes/feed.env.default"
+
 printf '%s' "$FEED_SHA" > "$OUTPUT_DIR/components.feed_scripts.sha"
 printf '%s' "${FEED_REF}" > "$OUTPUT_DIR/components.feed_scripts.version"
 
