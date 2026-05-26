@@ -16,6 +16,15 @@ setup() {
     TARGET_ROOT="$(mk_target_root "$BATS_TEST_TMPDIR")"
     AIRPLANES_RUNTIME_HEALTH_DEADLINE=3
     export AIRPLANES_RUNTIME_HEALTH_DEADLINE
+    # run_health_gates now runs the unit-active gate first; stub systemctl so
+    # the three units read healthy. Zero cushion keeps the stability window
+    # at ~1s for these readsb-focused cases.
+    local shim_dir
+    shim_dir="$(mk_systemctl_shim "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/systemctl.log")"
+    PATH="$shim_dir:$PATH"
+    export PATH
+    AIRPLANES_RUNTIME_UNIT_WINDOW_CUSHION=0
+    export AIRPLANES_RUNTIME_UNIT_WINDOW_CUSHION
 }
 
 @test "readsb gate: fresh aircraft.json + 200 from HTTP" {

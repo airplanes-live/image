@@ -1,5 +1,12 @@
 [
   {
+    "id": "create-service-accounts",
+    "type": "shell",
+    "run_when": "every_install",
+    "script": "migrations/0001-create-service-accounts.sh",
+    "rollback_script": "migrations/0001-create-service-accounts.rollback.sh"
+  },
+  {
     "id": "readsb-user-groups",
     "type": "group_membership",
     "run_when": "every_install",

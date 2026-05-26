@@ -145,18 +145,52 @@ stage_product_runtime_assets() {
         -s "$minisign_sec" -W >/dev/null 2>&1
 }
 
-# Stage a systemctl shim that logs every invocation into <log> and exits
-# 0. Returns the directory the shim was placed in (caller prepends to
-# PATH).
+# Stage a systemctl shim. For `show <unit> -p <PROP> --value` it returns a
+# property value — from $SYSTEMCTL_STUB_DIR/<unit>.<PROP> when that file
+# exists (failure-injection hook), otherwise a healthy default
+# (ActiveState=active, SubState=running, Result=success, NRestarts=0,
+# RestartUSec=0). Every other invocation is logged into <log> and exits 0.
+# Returns the directory the shim was placed in (caller prepends to PATH).
+#
+# The healthy `show` defaults let the unit-health gate
+# (_airplanes_runtime_probe_units_active) pass without each gate test having
+# to enumerate properties; a test that wants a crash-loop sets
+# SYSTEMCTL_STUB_DIR and writes e.g. `<dir>/tar1090.service.ActiveState`.
 mk_systemctl_shim() {
     local shim_dir="$1" log="$2"
     install -d -m 755 "$shim_dir"
     : > "$log"
-    cat > "$shim_dir/systemctl" <<EOF
-#!/usr/bin/env bash
-printf '%s\\n' "\$*" >> "$log"
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'SYSTEMCTL_LOG=%q\n' "$log"
+        cat <<'EOF'
+if [[ "${1:-}" == "show" ]]; then
+    unit="${2:-}"; prop=""
+    args=("$@"); n=${#args[@]}
+    for ((i = 0; i < n; i++)); do
+        case "${args[i]}" in
+            -p) prop="${args[i+1]:-}" ;;
+            --property=*) prop="${args[i]#--property=}" ;;
+        esac
+    done
+    if [[ -n "${SYSTEMCTL_STUB_DIR:-}" && -f "${SYSTEMCTL_STUB_DIR}/${unit}.${prop}" ]]; then
+        cat "${SYSTEMCTL_STUB_DIR}/${unit}.${prop}"
+        exit 0
+    fi
+    case "$prop" in
+        ActiveState) echo active ;;
+        SubState)    echo running ;;
+        Result)      echo success ;;
+        NRestarts)   echo 0 ;;
+        RestartUSec) echo 0 ;;
+        *)           echo "" ;;
+    esac
+    exit 0
+fi
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
 exit 0
 EOF
+    } > "$shim_dir/systemctl"
     chmod 755 "$shim_dir/systemctl"
     printf '%s' "$shim_dir"
 }
