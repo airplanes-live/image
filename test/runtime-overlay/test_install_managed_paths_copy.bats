@@ -85,6 +85,98 @@ JSON
     [[ "$output" == *"post_install failed"* ]]
 }
 
+@test "post_install failure prevents file from going live (validate-before-mv)" {
+    # A validator that rejects files containing BROKEN — proves the staged
+    # tmp is validated, not the destination (which does not exist yet).
+    cat > "$BATS_TEST_TMPDIR/validator" <<'VAL'
+#!/usr/bin/env bash
+# Usage: validator -cf <file>
+f="${2:?}"
+! grep -q BROKEN "$f"
+VAL
+    chmod +x "$BATS_TEST_TMPDIR/validator"
+    # Stage a BROKEN source.
+    printf 'BROKEN content\n' > "$RELEASE_DIR/etc/sudoers.d/090_airplanes-runtime"
+    cat > "$BATS_TEST_TMPDIR/manifest.json" <<JSON
+{
+    "version": "1.0.0", "channel": "stable",
+    "managed_paths": [
+        { "mode": "copy",
+          "path": "/etc/sudoers.d/090_airplanes-runtime",
+          "from": "etc/sudoers.d/090_airplanes-runtime",
+          "owner": "root:root",
+          "perm": "0440",
+          "post_install": ["$BATS_TEST_TMPDIR/validator", "-cf", "/etc/sudoers.d/090_airplanes-runtime"] }
+    ]
+}
+JSON
+    run airplanes_runtime_apply_managed_paths "$BATS_TEST_TMPDIR/manifest.json" "$RELEASE_DIR" "$TARGET_ROOT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"post_install failed"* ]]
+    # The invalid file MUST NOT exist at the destination.
+    [ ! -e "$TARGET_ROOT/etc/sudoers.d/090_airplanes-runtime" ]
+}
+
+@test "post_install validates staged tmp, not destination (path substitution)" {
+    # Validator that echoes its -cf argument — we assert the path was the
+    # tmp file, not the manifest-declared path.
+    cat > "$BATS_TEST_TMPDIR/validator" <<'VAL'
+#!/usr/bin/env bash
+echo "validated: $2"
+VAL
+    chmod +x "$BATS_TEST_TMPDIR/validator"
+    cat > "$BATS_TEST_TMPDIR/manifest.json" <<JSON
+{
+    "version": "1.0.0", "channel": "stable",
+    "managed_paths": [
+        { "mode": "copy",
+          "path": "/etc/sudoers.d/090_airplanes-runtime",
+          "from": "etc/sudoers.d/090_airplanes-runtime",
+          "owner": "root:root",
+          "perm": "0440",
+          "post_install": ["$BATS_TEST_TMPDIR/validator", "-cf", "/etc/sudoers.d/090_airplanes-runtime"] }
+    ]
+}
+JSON
+    run airplanes_runtime_apply_managed_paths "$BATS_TEST_TMPDIR/manifest.json" "$RELEASE_DIR" "$TARGET_ROOT"
+    [ "$status" -eq 0 ]
+    # The validated path must contain ".tmp." — the staged tmp, not the
+    # bare destination. This proves path substitution happened.
+    [[ "$output" == *".tmp."* ]]
+}
+
+@test "pre-existing destination preserved when post_install rejects the new file" {
+    # Place a valid file at the destination.
+    install -d -m 755 "$TARGET_ROOT/etc/sudoers.d"
+    printf 'ORIGINAL\n' > "$TARGET_ROOT/etc/sudoers.d/090_airplanes-runtime"
+    # Stage a BROKEN source.
+    printf 'BROKEN content\n' > "$RELEASE_DIR/etc/sudoers.d/090_airplanes-runtime"
+    cat > "$BATS_TEST_TMPDIR/validator" <<'VAL'
+#!/usr/bin/env bash
+f="${2:?}"
+! grep -q BROKEN "$f"
+VAL
+    chmod +x "$BATS_TEST_TMPDIR/validator"
+    cat > "$BATS_TEST_TMPDIR/manifest.json" <<JSON
+{
+    "version": "1.0.0", "channel": "stable",
+    "managed_paths": [
+        { "mode": "copy",
+          "path": "/etc/sudoers.d/090_airplanes-runtime",
+          "from": "etc/sudoers.d/090_airplanes-runtime",
+          "owner": "root:root",
+          "perm": "0440",
+          "post_install": ["$BATS_TEST_TMPDIR/validator", "-cf", "/etc/sudoers.d/090_airplanes-runtime"] }
+    ]
+}
+JSON
+    run airplanes_runtime_apply_managed_paths "$BATS_TEST_TMPDIR/manifest.json" "$RELEASE_DIR" "$TARGET_ROOT"
+    [ "$status" -ne 0 ]
+    # The original must still be intact.
+    run cat "$TARGET_ROOT/etc/sudoers.d/090_airplanes-runtime"
+    [ "$output" = "ORIGINAL" ]
+}
+
 @test "missing source file is rejected with a clear error" {
     cat > "$BATS_TEST_TMPDIR/manifest.json" <<'JSON'
 {
