@@ -120,16 +120,17 @@ JSON
 
 # --- managed_paths + systemd.json declarations ------------------------------
 
-@test "managed_paths.json declares feed binary, apl-feed, venv, and units" {
+@test "managed_paths.json declares feed binary, apl-feed, and units" {
     local mp
     mp="$(cat "$BATS_TEST_DIRNAME/../../runtime-overlay/manifest-inputs/managed_paths.json")"
     local link
+    # The mlat-client venv is intentionally NOT a managed_path yet — its
+    # prebuilt overlay delivery is deferred to a follow-up.
     for link in \
         /usr/local/share/airplanes/feed-airplanes \
         /usr/local/bin/apl-feed \
         /usr/local/share/airplanes/airplanes-feed.sh \
         /usr/local/share/airplanes/airplanes-mlat.sh \
-        /usr/local/share/airplanes/venv \
         /etc/systemd/system/airplanes-feed.service \
         /etc/systemd/system/airplanes-mlat.service; do
         local mode

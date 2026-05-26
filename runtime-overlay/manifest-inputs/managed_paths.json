@@ -229,11 +229,6 @@
   },
   {
     "mode": "symlink",
-    "link": "/usr/local/share/airplanes/venv",
-    "target": "/opt/airplanes-runtime/current/share/airplanes/venv"
-  },
-  {
-    "mode": "symlink",
     "link": "/etc/systemd/system/airplanes-feed.service",
     "target": "/opt/airplanes-runtime/current/systemd/airplanes-feed.service"
   },

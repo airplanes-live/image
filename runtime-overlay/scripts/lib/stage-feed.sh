@@ -236,45 +236,15 @@ install -m 0644 "$feed_env_root/etc/airplanes/feed.env" \
 printf '%s' "$FEED_SHA" > "$OUTPUT_DIR/components.feed_scripts.sha"
 printf '%s' "${FEED_REF}" > "$OUTPUT_DIR/components.feed_scripts.version"
 
-# ---------------------------------------------------------------------------
-# 3. Build mlat-client venv at the target absolute path
-# ---------------------------------------------------------------------------
+# The mlat-client venv is NOT staged here. Its prebuilt overlay delivery is a
+# follow-up: building the venv at the on-device target path and wiring it as a
+# managed_path needs its own shebang + content-hash smoke and free-space
+# preflight, which are out of scope for this change. Conditional MLAT semantics
+# (the updater treating unconfigured mlat as inactive-success, never a rollback
+# trigger) are implemented in runtime-self-update.sh / install-common.sh here;
+# the airplanes-mlat wrapper self-disables (sleeps) on a fresh image, so the
+# absence of the venv does not break the fresh-image feed path. --mlat-repo /
+# --mlat-ref are accepted but currently only recorded, not consumed.
+echo "stage-feed: mlat-client venv delivery deferred (pin recorded: $MLAT_REPO @ $MLAT_REF)"
 
-MLAT_SRC="$SCRATCH_DIR/mlat-src"
-echo "stage-feed: cloning mlat-client from $MLAT_REPO @ $MLAT_REF"
-fetch_repo "$MLAT_SRC" "$MLAT_REPO" "$MLAT_REF"
-MLAT_SHA="$(git -C "$MLAT_SRC" rev-parse HEAD)"
-
-VENV_TARGET="/usr/local/share/airplanes/venv"
-echo "stage-feed: building mlat-client venv at $VENV_TARGET"
-
-rm -rf "$VENV_TARGET"
-python3 -m venv "$VENV_TARGET"
-
-(
-    # shellcheck disable=SC1091
-    . "$VENV_TARGET/bin/activate"
-    python3 -c "import setuptools" 2>/dev/null || python3 -m pip install setuptools
-    python3 -c "import asyncore" 2>/dev/null || python3 -m pip install pyasyncore
-    python3 -m pip install wheel
-    cd "$MLAT_SRC"
-    pip install .
-)
-
-# Verify shebang resolves
-if ! grep -qs '#!' "$VENV_TARGET/bin/mlat-client"; then
-    die "mlat-client binary missing or has no shebang in $VENV_TARGET/bin/mlat-client"
-fi
-
-# Stage the venv into the overlay tree
-install -d -m 0755 "$OUTPUT_DIR/share/airplanes"
-cp -a "$VENV_TARGET" "$OUTPUT_DIR/share/airplanes/venv"
-
-# Compute content hash for future smoke tests
-VENV_HASH="$(find "$OUTPUT_DIR/share/airplanes/venv" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
-printf '%s' "$VENV_HASH" > "$OUTPUT_DIR/share/airplanes/venv.sha256"
-
-printf '%s' "$MLAT_SHA" > "$OUTPUT_DIR/components.mlat_client.sha"
-printf '%s' "${MLAT_REF}" > "$OUTPUT_DIR/components.mlat_client.version"
-
-echo "stage-feed: staged feed artifacts (feed_readsb=$READSB_SHA feed_scripts=$FEED_SHA mlat_client=$MLAT_SHA)"
+echo "stage-feed: staged feed artifacts (feed_readsb=$READSB_SHA feed_scripts=$FEED_SHA)"
