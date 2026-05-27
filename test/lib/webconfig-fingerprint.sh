@@ -28,7 +28,6 @@ WEBCONFIG_REGULAR_FILES=(
     /etc/lighttpd/conf-available/40-airplanes-webconfig.conf
     /usr/lib/tmpfiles.d/airplanes-webconfig.conf
     /usr/local/bin/airplanes-webconfig
-    /usr/local/lib/airplanes-webconfig/apply-config
     /usr/local/lib/airplanes-webconfig/reset
     /usr/local/share/airplanes/update.sh
     /etc/airplanes/feed.env

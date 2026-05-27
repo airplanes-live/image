@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Fast PR-time smoke for the stage-airplanes overlay. Runs stages 00-prep,
-# 01-install-feed, 02-install-decoder, and 06-firstboot inside a
-# debian:trixie-slim container at native amd64 speed, skipping pi-gen stages
-# 0/1/2 and qemu emulation. Catches stage-airplanes script regressions and
-# feed/install.sh interactions in ~5-15 min instead of the full build's
-# ~75 min.
+# 01-install-feed, 06-firstboot, 06a-run-tmpfs, 06b-console-dashboard, and
+# 06d-cli-ergonomics inside a debian:trixie-slim container at native amd64
+# speed, skipping pi-gen stages 0/1/2 and qemu emulation. Catches
+# stage-airplanes script regressions and feed/install.sh interactions in
+# ~5-15 min instead of the full build's ~75 min. The runtime-overlay stage
+# (02-install-runtime-overlay) requires signed release downloads and is not
+# exercised here — build-image.yml's full image build covers it end-to-end.
 #
 # External network dependencies: install.sh clones readsb (via
 # AIRPLANES_READSB_REPO), mlat-client, and may fetch from PyPI to build the
-# mlat venv. Stage 02 also clones wiedehopf/readsb and flightaware/dump978.
-# These are accepted as external integration coverage; flakes here would need
-# fixturing those repos.
+# mlat venv. These are accepted as external integration coverage; flakes
+# here would need fixturing those repos.
 #
 # Usage: overlay-smoke.sh FEED_DIR
 #   FEED_DIR — path to a local feed/ checkout
@@ -30,5 +31,7 @@ docker run --rm \
     --volume "$REPO_ROOT:/image:ro" \
     --volume "$FEED_DIR:/feed:ro" \
     --env AIRPLANES_FEED_BRANCH=dev \
+    --env "AIRPLANES_WEBCONFIG_REPO=${AIRPLANES_WEBCONFIG_REPO:-}" \
+    --env "AIRPLANES_WEBCONFIG_BRANCH=${AIRPLANES_WEBCONFIG_BRANCH:-}" \
     debian:trixie-slim \
     bash -e -o pipefail /image/test/overlay-smoke-inner.sh

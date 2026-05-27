@@ -97,7 +97,7 @@ mount -t proc proc "$ROOT_MNT/proc"
 mount --rbind /sys "$ROOT_MNT/sys"
 mount --rbind /dev "$ROOT_MNT/dev"
 
-echo "==> seeding airplanes-config.txt with the 5-key allowlist"
+echo "==> seeding airplanes-config.txt with the 6-key allowlist"
 # Overwrite the shipped (all-commented) template with concrete values so we
 # can assert each allowlist path end-to-end. The boot config's job is
 # bootstrap only — hostname for mDNS discovery, WiFi creds for network
@@ -111,6 +111,7 @@ echo "==> seeding airplanes-config.txt with the 5-key allowlist"
 cat > "$ROOT_MNT/boot/firmware/airplanes-config.txt" <<'CFG'
 HOSTNAME=ci-smoke-feeder
 FEED_HOST=test.local
+WEBSITE_URL=http://homelab.airplanes.test
 WIFI_SSID="Test Net"
 WIFI_PASS="hunter22-secret"
 WIFI_COUNTRY=DE
@@ -168,12 +169,14 @@ echo "==> asserting feed.env carries the FEED_HOST-derived endpoints"
 # UAT_INPUT/etc.) was written by feed/configure.sh during the chroot install
 # and must survive the first-run merge unchanged — don't pin their specific
 # values though, that's configure.sh's concern; assert presence only.
-unset LATITUDE LONGITUDE ALTITUDE USER MLAT_USER MLAT_ENABLED MLATSERVER TARGET FEED_HOST UAT_INPUT
+unset LATITUDE LONGITUDE ALTITUDE USER MLAT_USER MLAT_ENABLED MLATSERVER TARGET FEED_HOST UAT_INPUT APL_FEED_WEBSITE_URL WEBSITE_URL
 # shellcheck source=/dev/null
 ( set -a; source "$ROOT_MNT/etc/airplanes/feed.env"; set +a; \
 	[[ "$MLATSERVER" == "test.local:31090" ]] || { echo "MLATSERVER not derived from FEED_HOST: $MLATSERVER"; exit 1; }; \
 	[[ "$TARGET" == "--net-connector test.local,30004,beast_reduce_plus_out" ]] || { echo "TARGET not derived from FEED_HOST: $TARGET"; exit 1; }; \
+	[[ "$APL_FEED_WEBSITE_URL" == "http://homelab.airplanes.test" ]] || { echo "APL_FEED_WEBSITE_URL not derived from WEBSITE_URL: $APL_FEED_WEBSITE_URL"; exit 1; }; \
 	[[ -z "${FEED_HOST:-}" ]] || { echo "FEED_HOST leaked into feed.env: $FEED_HOST"; exit 1; }; \
+	[[ -z "${WEBSITE_URL:-}" ]] || { echo "WEBSITE_URL leaked into feed.env: $WEBSITE_URL"; exit 1; }; \
 	[[ -z "${USER:-}" ]] || { echo "legacy USER leaked into feed.env: $USER"; exit 1; }; \
 	[[ -v MLAT_USER ]] || { echo "MLAT_USER missing from feed.env (configure.sh default lost)"; exit 1; }; \
 	[[ -v MLAT_ENABLED ]] || { echo "MLAT_ENABLED missing from feed.env"; exit 1; }; \
@@ -185,6 +188,10 @@ unset LATITUDE LONGITUDE ALTITUDE USER MLAT_USER MLAT_ENABLED MLATSERVER TARGET 
 echo "==> asserting synthetic keys did NOT leak into feed.env on disk"
 if grep -E '^FEED_HOST=' "$ROOT_MNT/etc/airplanes/feed.env"; then
 	echo "FEED_HOST= line present in feed.env"; exit 1
+fi
+# WEBSITE_URL is allowlisted but synthetic — renamed to APL_FEED_WEBSITE_URL.
+if grep -E '^WEBSITE_URL=' "$ROOT_MNT/etc/airplanes/feed.env"; then
+	echo "WEBSITE_URL= line present in feed.env (should have been renamed)"; exit 1
 fi
 # HOSTNAME is allowlisted but synthetic — applied to /etc/hostname only.
 if grep -E '^HOSTNAME=' "$ROOT_MNT/etc/airplanes/feed.env"; then

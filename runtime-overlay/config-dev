@@ -1,0 +1,52 @@
+# Runtime-overlay channel pins (dev).
+#
+# Sourced by the runtime-overlay build helpers
+# (runtime-overlay/scripts/lib/component-pins.sh,
+# runtime-overlay/scripts/lib/cross-compile-readsb.sh,
+# runtime-overlay/scripts/lib/cross-compile-dump978.sh,
+# runtime-overlay/scripts/lib/stage-tar1090.sh,
+# runtime-overlay/scripts/lib/stage-graphs1090.sh) to pick the upstream
+# sources baked into runtime-overlay assets published inside dev product releases.
+#
+# Scope is the inbound-decode stack only — readsb (wiedehopf), dump978-fa
+# (flightaware), tar1090 (wiedehopf), tar1090-db (wiedehopf), graphs1090
+# (wiedehopf).
+#
+# Dev tracks upstream branch heads (moving target by design) so the runtime
+# overlay catches upstream drift early. Dev releases are intentionally not
+# reproducible from this file alone.
+
+export AIRPLANES_READSB_DECODER_REPO="${AIRPLANES_READSB_DECODER_REPO:-https://github.com/wiedehopf/readsb.git}"
+export AIRPLANES_READSB_DECODER_BRANCH="${AIRPLANES_READSB_DECODER_BRANCH:-dev}"
+
+export AIRPLANES_DUMP978_REPO="${AIRPLANES_DUMP978_REPO:-https://github.com/flightaware/dump978.git}"
+export AIRPLANES_DUMP978_BRANCH="${AIRPLANES_DUMP978_BRANCH:-master}"
+
+export AIRPLANES_TAR1090_REPO="${AIRPLANES_TAR1090_REPO:-https://github.com/wiedehopf/tar1090.git}"
+export AIRPLANES_TAR1090_BRANCH="${AIRPLANES_TAR1090_BRANCH:-master}"
+
+export AIRPLANES_TAR1090_DB_REPO="${AIRPLANES_TAR1090_DB_REPO:-https://github.com/wiedehopf/tar1090-db.git}"
+export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-master}"
+
+export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
+export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-master}"
+
+# Webconfig — downloaded as a prebuilt release, not compiled in the overlay.
+# Dev tracks the floating dev-latest prerelease and resolves the commit from
+# the downloaded (SHA256-verified) manifest at build time. No fixed commit pin
+# here on purpose: dev-latest moves on every webconfig dev release, and a hard
+# SHA pin would break the dev build until hand-bumped. Stable keeps a fixed SHA
+# pin as its provenance anchor (see config-stable).
+export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-dev-latest}"
+
+# Feed — overlay-built (not a downloaded release): the overlay CI clones these
+# refs and compiles the feeder readsb, the mlat-client venv, and stages the
+# feed scripts. Dev tracks branch heads (feed dev, readsb dev, mlat master).
+export AIRPLANES_FEED_OVERLAY_REPO="${AIRPLANES_FEED_OVERLAY_REPO:-https://github.com/airplanes-live/feed.git}"
+export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-dev}"
+
+export AIRPLANES_FEED_READSB_REPO="${AIRPLANES_FEED_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
+export AIRPLANES_FEED_READSB_BRANCH="${AIRPLANES_FEED_READSB_BRANCH:-dev}"
+
+export AIRPLANES_MLAT_CLIENT_REPO="${AIRPLANES_MLAT_CLIENT_REPO:-https://github.com/airplanes-live/mlat-client.git}"
+export AIRPLANES_MLAT_CLIENT_BRANCH="${AIRPLANES_MLAT_CLIENT_BRANCH:-master}"

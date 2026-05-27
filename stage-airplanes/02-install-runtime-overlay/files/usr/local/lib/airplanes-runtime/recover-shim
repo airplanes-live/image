@@ -1,0 +1,365 @@
+#!/bin/sh
+# recover-shim — image-owned boot-time recovery floor for the runtime-overlay
+# self-update protocol.
+#
+# This shim is DELIBERATELY image-owned and NOT shipped through the runtime
+# overlay's managed_paths. It must survive a completely broken overlay: a bad
+# `current` target, a broken in-overlay recovery script, or an
+# install-common.sh that a future release made incompatible. Those are exactly
+# the things that can be wrong after a bad flip, so recovery cannot depend on
+# any of them.
+#
+# It is NOT a second installer. It only flips the `current` symlink back to
+# the last-good release using base-OS tools (sh, ln, mv -Tf, readlink, logger,
+# systemctl daemon-reload). No migrations, no mutable/copy-mode restore, no jq,
+# no python, no install-common.sh. The rich in-process rollback stays in
+# runtime-self-update.sh while it is still running; this shim is the last
+# resort when a power loss interrupted the protocol and the next boot must
+# reach a bootable release before any overlay-consumer service starts.
+#
+# Decisions are driven by the simple key=value upgrade-state file the
+# orchestrator persists. See the case statement below for the per-state
+# behaviour. The most important distinction: HEALTH_PASSED is a NO-OP — the
+# live release already passed its health gates, so rolling back here would
+# revert a good release.
+#
+# POSIX sh only. No bashisms.
+
+set -u
+
+STATE_DIR="/var/lib/airplanes-runtime-upgrade"
+STATE_FILE="${STATE_DIR}/upgrade-state"
+RELEASES_DIR="/opt/airplanes-runtime/releases"
+CURRENT_LINK="/opt/airplanes-runtime/current"
+LAST_GOOD_FILE="/var/lib/airplanes-runtime/last-good-release"
+ATTEMPTS_FILE="${STATE_DIR}/recovery-attempts"
+STATUS_FILE="${STATE_DIR}/recovery-status"
+
+# Test/override hooks. Production leaves AIRPLANES_RECOVER_ROOT unset and uses
+# the absolute paths above. When it IS set (the bats suite), every path is
+# rebased under it AND the system-affecting side effects (logger, systemctl)
+# are suppressed — those operate on the live host regardless of path rebasing,
+# so a test run must never touch the real journal or systemd.
+ROOT="${AIRPLANES_RECOVER_ROOT:-}"
+STATE_DIR="${ROOT}${STATE_DIR}"
+STATE_FILE="${ROOT}${STATE_FILE}"
+RELEASES_DIR="${ROOT}${RELEASES_DIR}"
+CURRENT_LINK="${ROOT}${CURRENT_LINK}"
+LAST_GOOD_FILE="${ROOT}${LAST_GOOD_FILE}"
+ATTEMPTS_FILE="${ROOT}${ATTEMPTS_FILE}"
+STATUS_FILE="${ROOT}${STATUS_FILE}"
+
+MAX_ATTEMPTS=3
+
+# Suppress host-affecting side effects when running rebased under a test root.
+SANDBOXED=0
+[ -n "$ROOT" ] && SANDBOXED=1
+
+log() {
+    # journal via logger when available; always echo so the unit's journal and
+    # the test harness both capture the line. logger is skipped under a test
+    # root so the suite never writes to the host journal.
+    if [ "$SANDBOXED" -eq 0 ] && command -v logger >/dev/null 2>&1; then
+        logger -t airplanes-recover-shim -- "$1" 2>/dev/null || true
+    fi
+    echo "recover-shim: $1" >&2
+}
+
+# daemon-reload wrapper — a no-op under a test root.
+do_daemon_reload() {
+    [ "$SANDBOXED" -eq 1 ] && return 0
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+}
+
+# Write the operator-visible status file. First arg is a short machine token
+# (ok / rolled_back / needs_ssh / noop); the rest is a human message.
+write_status() {
+    _token="$1"; shift
+    mkdir -p -- "$(dirname -- "$STATUS_FILE")" 2>/dev/null || true
+    {
+        echo "status=${_token}"
+        echo "message=$*"
+        echo "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    } > "${STATUS_FILE}.tmp.$$" 2>/dev/null \
+        && mv -f -- "${STATUS_FILE}.tmp.$$" "$STATUS_FILE" 2>/dev/null \
+        || rm -f -- "${STATUS_FILE}.tmp.$$" 2>/dev/null || true
+}
+
+# Read a single key=value from the state file. Echoes the value (trimmed of
+# trailing CR) or empty. Pure POSIX — no awk dependency on field semantics
+# beyond a `=` split via sed.
+state_get() {
+    _key="$1"
+    [ -r "$STATE_FILE" ] || { printf ''; return 0; }
+    # First matching `key=...` line wins. Strip the key= prefix and any CR.
+    sed -n "s/^${_key}=//p" "$STATE_FILE" 2>/dev/null | head -n1 | tr -d '\r'
+}
+
+# valid_release: the candidate must be an absolute path under
+# /opt/airplanes-runtime/releases/v*, must exist as a directory, and must
+# contain a manifest.json (never boot a half-extracted tree). Rejects
+# path traversal by requiring the canonical releases-dir prefix and refusing
+# any `..` segment.
+valid_release() {
+    _cand="$1"
+    [ -n "$_cand" ] || return 1
+    # Must be absolute (device-canonical path begins with /opt/airplanes-runtime).
+    case "$_cand" in
+        /opt/airplanes-runtime/releases/v*) ;;
+        *) return 1 ;;
+    esac
+    # Reject traversal.
+    case "$_cand" in
+        *..*) return 1 ;;
+    esac
+    # Rebase under the (possibly empty) test root for the on-disk check.
+    _abs="${ROOT}${_cand}"
+    [ -d "$_abs" ] || return 1
+    [ -f "${_abs}/manifest.json" ] || return 1
+    return 0
+}
+
+# current_target: device-canonical path the `current` symlink points at, or
+# empty. readlink (not -f) so we get the literal target, which is the
+# device-absolute /opt/... path even under a test root.
+current_target() {
+    [ -L "$CURRENT_LINK" ] || { printf ''; return 0; }
+    readlink -- "$CURRENT_LINK" 2>/dev/null | tr -d '\r'
+}
+
+# flip_current_to: atomically point `current` at the device-canonical release
+# path passed in. The symlink target is left device-absolute; only the link
+# location is rebased under the test root.
+flip_current_to() {
+    _dev_target="$1"
+    mkdir -p -- "$(dirname -- "$CURRENT_LINK")" 2>/dev/null || true
+    _tmp="${CURRENT_LINK}.tmp.$$"
+    rm -f -- "$_tmp" 2>/dev/null || true
+    ln -s -- "$_dev_target" "$_tmp" || return 1
+    mv -Tf -- "$_tmp" "$CURRENT_LINK" || { rm -f -- "$_tmp"; return 1; }
+    return 0
+}
+
+# read_last_good: device-canonical last-good release path, or empty.
+read_last_good() {
+    [ -r "$LAST_GOOD_FILE" ] || { printf ''; return 0; }
+    head -n1 "$LAST_GOOD_FILE" 2>/dev/null | tr -d '\r '
+}
+
+# Increment the failed-recovery attempt counter; echo the new value.
+bump_attempts() {
+    mkdir -p -- "$(dirname -- "$ATTEMPTS_FILE")" 2>/dev/null || true
+    _n=0
+    if [ -r "$ATTEMPTS_FILE" ]; then
+        _n="$(head -n1 "$ATTEMPTS_FILE" 2>/dev/null | tr -dc '0-9')"
+        [ -n "$_n" ] || _n=0
+    fi
+    _n=$(( _n + 1 ))
+    printf '%s\n' "$_n" > "${ATTEMPTS_FILE}.tmp.$$" 2>/dev/null \
+        && mv -f -- "${ATTEMPTS_FILE}.tmp.$$" "$ATTEMPTS_FILE" 2>/dev/null \
+        || rm -f -- "${ATTEMPTS_FILE}.tmp.$$" 2>/dev/null || true
+    printf '%s' "$_n"
+}
+
+reset_attempts() {
+    rm -f -- "$ATTEMPTS_FILE" 2>/dev/null || true
+}
+
+# Resolve a rollback target: prefer the state file's prev_release if it
+# validates, else the image-owned last-good file. Echoes the device-canonical
+# path or empty.
+resolve_rollback_target() {
+    _prev="$1"
+    if valid_release "$_prev"; then
+        printf '%s' "$_prev"
+        return 0
+    fi
+    _lg="$(read_last_good)"
+    if valid_release "$_lg"; then
+        printf '%s' "$_lg"
+        return 0
+    fi
+    printf ''
+}
+
+# Mark a terminal ROLLED_BACK state into the state file. The shim writes a
+# minimal SHIM_ONLY-tagged terminal state so a later updater run and the
+# operator can tell the rollback was the floor, not the rich online path.
+write_terminal_state() {
+    _new_state="$1"
+    mkdir -p -- "$STATE_DIR" 2>/dev/null || true
+    if ! {
+        printf 'state=%s\n' "$_new_state"
+        printf 'prev_release=%s\n' "$(state_get prev_release)"
+        printf 'new_release=%s\n' "$(state_get new_release)"
+        printf 'started_at=%s\n' "$(state_get started_at)"
+        printf 'failure_reason=%s\n' "shim_recovery"
+    } > "${STATE_FILE}.tmp.$$" 2>/dev/null; then
+        rm -f -- "${STATE_FILE}.tmp.$$" 2>/dev/null || true
+        return 1
+    fi
+    if ! mv -Tf -- "${STATE_FILE}.tmp.$$" "$STATE_FILE" 2>/dev/null; then
+        rm -f -- "${STATE_FILE}.tmp.$$" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+clear_state() {
+    rm -f -- "$STATE_FILE" 2>/dev/null || true
+}
+
+# Attempt a roll-back-to-prev (or last-good) flip. On success: write a
+# terminal ROLLED_BACK_*_SHIM_ONLY state, daemon-reload, reset attempt
+# counter, status ok. On failure: bump attempts; if over the limit mark
+# needs_ssh, else leave the state so the next boot retries.
+do_rollback() {
+    _state="$1"
+    _prev="$(state_get prev_release)"
+    _target="$(resolve_rollback_target "$_prev")"
+
+    if [ -z "$_target" ]; then
+        _n="$(bump_attempts)"
+        if [ "$_n" -ge "$MAX_ATTEMPTS" ]; then
+            log "no valid rollback target after ${_n} attempts; giving up (needs SSH)"
+            write_terminal_state "NEEDS_SSH_${_state}"
+            write_status needs_ssh "Automatic recovery failed: no valid release to roll back to. Manual recovery over SSH is required."
+            return 1
+        fi
+        log "no valid rollback target (attempt ${_n}); will retry next boot"
+        write_status retrying "Recovery attempt ${_n} found no valid rollback target; will retry on next boot."
+        return 1
+    fi
+
+    if flip_current_to "$_target"; then
+        do_daemon_reload
+        reset_attempts
+        write_terminal_state "ROLLED_BACK_SHIM_ONLY_FROM_${_state}"
+        write_status rolled_back "Interrupted update was rolled back to ${_target}. The feeder is running the previous release."
+        log "rolled back current -> ${_target} (from state ${_state})"
+        return 0
+    fi
+
+    _n="$(bump_attempts)"
+    if [ "$_n" -ge "$MAX_ATTEMPTS" ]; then
+        log "rollback flip failed after ${_n} attempts; giving up (needs SSH)"
+        write_terminal_state "NEEDS_SSH_${_state}"
+        write_status needs_ssh "Automatic recovery failed after ${_n} attempts. Manual recovery over SSH is required."
+        return 1
+    fi
+    log "rollback flip failed (attempt ${_n}); will retry next boot"
+    write_status retrying "Recovery attempt ${_n} failed to flip the release pointer; will retry on next boot."
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+STATE="CLEAN"
+if [ -e "$STATE_FILE" ]; then
+    STATE="$(state_get state)"
+    [ -n "$STATE" ] || STATE="UNKNOWN"
+fi
+
+log "state=${STATE}"
+
+rc=0
+case "$STATE" in
+    CLEAN|INSTALLED|FAILED_PRE_MUTATION|STARTED|PAYLOAD_EXTRACTED|MIGRATIONS_FORWARD_DONE)
+        # CLEAN/INSTALLED/FAILED_PRE_MUTATION: terminal-good or pre-mutation —
+        # current never moved, nothing to flip.
+        # STARTED/PAYLOAD_EXTRACTED/MIGRATIONS_FORWARD_DONE: current had NOT
+        # moved yet (the flip happens at SYMLINK_FLIPPED). The old release is
+        # still live and bootable. We mark terminal WITHOUT running migration
+        # rollback (the shim can't — that needs overlay code). The on-disk
+        # new-migration residue is covered by the SSH-visible warning; the
+        # next updater run can finish or undo it with the new release's code.
+        case "$STATE" in
+            MIGRATIONS_FORWARD_DONE)
+                write_terminal_state "ROLLED_BACK_SHIM_ONLY_FROM_${STATE}"
+                write_status rolled_back "Update was interrupted before the release switch. The previous release is still active; forward migrations may have run. Review over SSH if the feeder misbehaves."
+                log "current had not flipped at ${STATE}; left prior release active, marked terminal"
+                ;;
+            STARTED|PAYLOAD_EXTRACTED)
+                clear_state
+                log "current had not flipped at ${STATE}; cleared state"
+                ;;
+            *)
+                : # CLEAN / INSTALLED / FAILED_PRE_MUTATION — no-op
+                ;;
+        esac
+        ;;
+    HEALTH_PASSED)
+        # CRITICAL: do NOT roll back. The live release already passed its
+        # health gates; only the cleanup/GC pass was interrupted. Rolling back
+        # here would revert a good release. The full cleanup is resumed by the
+        # next updater run; the shim simply leaves the good release active.
+        write_status ok "Update succeeded; a post-install cleanup step was interrupted and will finish automatically."
+        log "HEALTH_PASSED is a no-op (live release already healthy)"
+        ;;
+    SYMLINK_FLIPPED|SYSTEMD_OPS_DONE|HEALTH_RUNNING)
+        # current was (or may have been) flipped to the new, unvalidated
+        # release. Flip it back to prev (or last-good) before any consumer
+        # service starts.
+        do_rollback "$STATE" || rc=1
+        ;;
+    ROLLED_BACK_*|NEEDS_SSH_*)
+        # A prior shim or online rollback already terminated this attempt.
+        # If a needs_ssh terminal is set, keep signalling it.
+        case "$STATE" in
+            NEEDS_SSH_*)
+                write_status needs_ssh "Automatic recovery previously failed. Manual recovery over SSH is required."
+                rc=1
+                ;;
+            *)
+                : # already cleaned up
+                ;;
+        esac
+        ;;
+    UNKNOWN)
+        # Malformed state file. Only flip if current points at an
+        # unvalidatable/new release AND we have a valid rollback target;
+        # otherwise report needs_ssh rather than guess.
+        _cur="$(current_target)"
+        if valid_release "$_cur"; then
+            # current resolves to a real release with a manifest — bootable.
+            # Leave it; the operator can triage.
+            write_status ok "Update state file was unreadable but the active release looks valid; left as-is."
+            log "UNKNOWN state but current resolves to a valid release; leaving as-is"
+        else
+            _prev="$(state_get prev_release)"
+            _target="$(resolve_rollback_target "$_prev")"
+            if [ -n "$_target" ]; then
+                do_rollback "UNKNOWN" || rc=1
+            else
+                _n="$(bump_attempts)"
+                if [ "$_n" -ge "$MAX_ATTEMPTS" ]; then
+                    write_terminal_state "NEEDS_SSH_UNKNOWN"
+                    write_status needs_ssh "Update state is unreadable and no valid release was found. Manual recovery over SSH is required."
+                    rc=1
+                else
+                    write_status retrying "Update state is unreadable; will retry recovery on next boot."
+                    rc=1
+                fi
+            fi
+        fi
+        ;;
+    *)
+        # Truly unrecognised state token. Be conservative: if current
+        # validates, leave it; else attempt a guarded rollback.
+        _cur="$(current_target)"
+        if valid_release "$_cur"; then
+            write_status ok "Unrecognised update state but the active release looks valid; left as-is."
+            log "unrecognised state '${STATE}' but current valid; leaving as-is"
+        else
+            do_rollback "$STATE" || rc=1
+        fi
+        ;;
+esac
+
+log "done (rc=${rc})"
+# Non-zero exit ONLY when automatic recovery failed (needs_ssh / retrying).
+exit "$rc"

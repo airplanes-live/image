@@ -1,0 +1,4 @@
+{
+  "requires_webconfig": ">=2.1.0,<2.3.0",
+  "requires_feed_contract": ">=14"
+}

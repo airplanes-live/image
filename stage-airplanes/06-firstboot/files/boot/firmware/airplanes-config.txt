@@ -17,11 +17,6 @@
 # Optional keys are commented out; uncomment and set the value to apply.
 # Active lines must NOT carry inline comments — '#' only starts a comment at
 # the start of a line.
-#
-# If you leave the file as airplanes-config.txt (don't rename to .applied.txt
-# after a successful apply), FEED_HOST keeps re-deriving MLATSERVER/TARGET
-# in /etc/airplanes/feed.env on every boot. The other four keys are
-# idempotent — same input, same effect.
 
 # Override the network hostname so you can reach this Pi as <hostname>.local
 # instead of raspberrypi.local. Useful if you run multiple Pis on the same
@@ -51,4 +46,13 @@
 # Append :PORT to override the mlat port only (beast stays on 30004). For
 # advanced topologies (bracketed IPv6, non-default beast port, multi-host
 # fan-out), SSH in after first boot and edit /etc/airplanes/feed.env directly.
-#FEED_HOST=mybackend.local
+#FEED_HOST=feed.airplanes.test
+
+# Point this feeder at a non-production website (homelab, staging) instead of
+# https://airplanes.live for claim, diagnostics, and remote-config-sync POSTs.
+# This is independent of FEED_HOST — FEED_HOST controls where ADS-B + MLAT
+# traffic goes, WEBSITE_URL controls where the feeder talks to the website
+# API. Full URL with scheme (http:// or https://), optional :PORT, optional
+# /path. No userinfo, query, or fragment. For development only — production
+# feeders should leave this commented out.
+#WEBSITE_URL=http://airplanes.test/

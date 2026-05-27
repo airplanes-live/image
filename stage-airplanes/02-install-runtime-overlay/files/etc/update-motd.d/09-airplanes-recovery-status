@@ -1,0 +1,33 @@
+#!/bin/sh
+# 09-airplanes-recovery-status — image-owned MOTD snippet shown on SSH login.
+# Surfaces the runtime-overlay recovery shim's status when it acted on an
+# interrupted update. Silent when there is nothing to report (status=ok with
+# no rollback, or no status file at all) so a healthy login stays quiet.
+#
+# POSIX sh, base-OS tools only — this must work even when the overlay is
+# broken (the whole point of the recovery shim).
+
+STATUS_FILE="/var/lib/airplanes-runtime-upgrade/recovery-status"
+
+[ -r "$STATUS_FILE" ] || exit 0
+
+status="$(sed -n 's/^status=//p' "$STATUS_FILE" 2>/dev/null | head -n1)"
+message="$(sed -n 's/^message=//p' "$STATUS_FILE" 2>/dev/null | head -n1)"
+
+case "$status" in
+    needs_ssh)
+        printf '\n[airplanes.live] ACTION REQUIRED — automatic update recovery failed.\n'
+        [ -n "$message" ] && printf '  %s\n' "$message"
+        printf '\n'
+        ;;
+    rolled_back|retrying)
+        printf '\n[airplanes.live] A recent update was interrupted and recovered.\n'
+        [ -n "$message" ] && printf '  %s\n' "$message"
+        printf '\n'
+        ;;
+    *)
+        # ok / noop / unknown → stay quiet.
+        ;;
+esac
+
+exit 0

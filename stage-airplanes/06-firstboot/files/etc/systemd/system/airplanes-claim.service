@@ -1,12 +1,24 @@
 [Unit]
 Description=airplanes.live feeder claim registration
 ConditionPathExists=!/etc/airplanes/feeder-claim-secret
+# Wait for network-online.target so the first attempt has DNS reachable
+# instead of failing with curl rc=6 and parking in `failed` state until
+# the next timer fire. On this image NetworkManager-wait-online is
+# already pulled into boot by other services, so the marginal boot cost
+# is zero; on a network-less Pi the target's wait-online consumer times
+# out (default 60s) and Wants= ensures we still run afterwards.
 After=airplanes-first-run.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/apl-feed claim register
+# Transient network failures (curl DNS / connect / timeout) return 75
+# (EX_TEMPFAIL) from apl-feed claim register. Treating that as success
+# keeps the unit out of `failed` state so the timer's OnUnitActiveSec=5min
+# re-arms cleanly; exit 2 stays reserved for argv / config errors that a
+# retry can't fix.
+SuccessExitStatus=75
 
 # Sandboxing. The unit must run as root (writes /etc/airplanes/ and chowns
 # the resulting claim-state files to airplanes-feed:airplanes-feed; the dir

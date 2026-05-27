@@ -9,7 +9,7 @@
 #   2. If /boot/firmware/airplanes-config.txt is present: parse + apply
 #      (NM keyfile, WiFi country, hostname, FEED_HOST expansion, feed.env
 #      merge) → rename the source to airplanes-config.applied.txt on full
-#      success. Any unknown key (rejected at parse time against the 5-key
+#      success. Any unknown key (rejected at parse time against the 6-key
 #      allowlist), user-input rejection, sub-step write failure, or merge
 #      failure leaves the source in place and writes a sibling
 #      airplanes-config.error.txt naming what to fix; the source is then
@@ -28,6 +28,17 @@ WIFI_KEYFILE_DIR="${WIFI_KEYFILE_DIR:-/etc/NetworkManager/system-connections}"
 WIFI_KEYFILE="${WIFI_KEYFILE:-${WIFI_KEYFILE_DIR}/airplanes-config-wifi.nmconnection}"
 HOSTNAME_FILE="${HOSTNAME_FILE:-/etc/hostname}"
 HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
+
+# Shared Wi-Fi predicate + keyfile-writer libraries, also consumed by
+# /usr/local/bin/apl-wifi (webconfig flow). The libs ship from
+# airplanes-live/image-webconfig via the runtime overlay; production install
+# location is /usr/local/lib/airplanes. Bats tests point APL_WIFI_LIB_DIR at the
+# image-webconfig source checkout (AIRPLANES_IMAGE_WEBCONFIG_ROOT in CI).
+APL_WIFI_LIB_DIR="${APL_WIFI_LIB_DIR:-/usr/local/lib/airplanes}"
+# shellcheck source=/dev/null
+. "$APL_WIFI_LIB_DIR/wifi-validators.sh"
+# shellcheck source=/dev/null
+. "$APL_WIFI_LIB_DIR/wifi-keyfile.sh"
 
 # FEED_HOST shorthand: when set, expand_feed_host derives both MLATSERVER and
 # TARGET from one hostname so users editing airplanes-config.txt cannot leak
@@ -60,16 +71,19 @@ record_error() {
 	log "$1"
 }
 
-# The five keys airplanes-config.txt accepts. Operational config (location,
+# The six keys airplanes-config.txt accepts. Operational config (location,
 # MLAT name, MLAT on/off, gain, UAT toggling) lives in the webconfig UI;
 # feed.env-only knobs (MLATSERVER, TARGET, INPUT, SDR pinning, etc.) are
 # edited directly on the booted feeder. reject_unknown_boot_key emits a
 # category-specific error so airplanes-config.error.txt tells the user where
-# the setting actually lives.
+# the setting actually lives. WEBSITE_URL is the non-prod backend pointer
+# (claim + diagnostics + remote config sync); FEED_HOST is the ingest /
+# MLAT endpoint — independent keys, both bootstrap-only.
 declare -gA BOOT_CFG_ALLOWLIST=(
 	[WIFI_SSID]=1 [WIFI_PASS]=1 [WIFI_COUNTRY]=1
 	[HOSTNAME]=1
 	[FEED_HOST]=1
+	[WEBSITE_URL]=1
 )
 
 # Keys webconfig writes via POST /api/config (mirror of configspec.go
@@ -124,14 +138,31 @@ generate_feeder_id() {
 	if [[ -f "$FEEDER_ID_FILE" ]]; then
 		return 0
 	fi
-	if [[ ! -f "$CREATE_UUID" ]]; then
-		log "create-uuid.sh missing at $CREATE_UUID; skipping feeder-id generation"
-		return 1
+	if [[ -f "$CREATE_UUID" ]]; then
+		if ! bash "$CREATE_UUID"; then
+			log "create-uuid.sh exited non-zero"
+			return 1
+		fi
+		return 0
 	fi
-	if ! bash "$CREATE_UUID"; then
-		log "create-uuid.sh exited non-zero"
+	# Feed overlay delivers the feed stack via managed_paths; the legacy
+	# $GIT/create-uuid.sh is no longer on disk. Generate the feeder-id
+	# inline (same logic, simplified). Legacy-UUID migration is no longer
+	# needed on the new image (no $IPATH/airplanes-uuid to migrate from).
+	log "create-uuid.sh not found; generating feeder-id inline"
+	local uuid
+	uuid="$(cat /proc/sys/kernel/random/uuid)" || {
+		log "failed to read /proc/sys/kernel/random/uuid"
 		return 1
-	fi
+	}
+	local etc_dir
+	etc_dir="$(dirname "$FEEDER_ID_FILE")"
+	mkdir -p "$etc_dir"
+	local tmp="$FEEDER_ID_FILE.$$"
+	printf '%s\n' "$uuid" > "$tmp"
+	chmod 0644 "$tmp"
+	mv -f "$tmp" "$FEEDER_ID_FILE"
+	log "feeder-id=$uuid (generated inline)"
 }
 
 # Verify the BOOT_CONFIG directory accepts create/rename/unlink before any
@@ -199,43 +230,31 @@ parse_boot_config() {
 }
 
 # Validate WiFi inputs against NM/WPA constraints. SSID 1-32 bytes; PSK is
-# either 8-63 ASCII chars or exactly 64 hex chars; COUNTRY is ISO 3166-1
-# alpha-2 (two uppercase letters). On rejection: logs an error to
-# BOOT_CFG_ERRORS (no values, only key names) and drops the offending input
-# so write_nm_keyfile becomes a no-op.
+# either 8-63 printable ASCII or exactly 64 hex chars; COUNTRY is ISO 3166-1
+# alpha-2. Predicate bodies live in wifi-validators.sh (shared with apl-wifi).
+# On rejection: log an error to BOOT_CFG_ERRORS (no values, only key names)
+# and drop the offending input so write_nm_keyfile becomes a no-op.
 declare -g _WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
 validate_wifi_inputs() {
 	_WIFI_SSID="${BOOT_CFG[WIFI_SSID]:-}"
 	_WIFI_PASS="${BOOT_CFG[WIFI_PASS]:-}"
 	_WIFI_COUNTRY="${BOOT_CFG[WIFI_COUNTRY]:-}"
 
-	if [[ -n "$_WIFI_SSID" ]]; then
-		local ssid_bytes
-		ssid_bytes="$(LC_ALL=C printf '%s' "$_WIFI_SSID" | wc -c)"
-		if (( ssid_bytes < 1 || ssid_bytes > 32 )); then
-			record_error "WIFI_SSID: invalid length (must be 1-32 bytes); WiFi config dropped"
-			_WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
-			return 1
-		fi
+	if [[ -n "$_WIFI_SSID" ]] && ! apl_wifi_valid_ssid "$_WIFI_SSID"; then
+		record_error "WIFI_SSID: invalid (must be 1-32 bytes, no control characters); WiFi config dropped"
+		_WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
+		return 1
 	fi
 
-	if [[ -n "$_WIFI_PASS" ]]; then
-		local pass_len="${#_WIFI_PASS}"
-		# Either 64-char hex PSK or 8-63 char ASCII passphrase.
-		if [[ "$_WIFI_PASS" =~ ^[A-Fa-f0-9]{64}$ ]]; then
-			:
-		elif (( pass_len >= 8 && pass_len <= 63 )); then
-			:
-		else
-			# Never include the value or its length-derived guess — keep this
-			# message free of anything that could narrow the secret.
-			record_error "WIFI_PASS: invalid length (expected 8-63 characters or 64 hex characters); WiFi config dropped"
-			_WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
-			return 1
-		fi
+	if [[ -n "$_WIFI_PASS" ]] && ! apl_wifi_valid_psk "$_WIFI_PASS"; then
+		# Never include the value or its length-derived guess — keep this
+		# message free of anything that could narrow the secret.
+		record_error "WIFI_PASS: invalid (expected 8-63 printable ASCII characters or 64 hex characters); WiFi config dropped"
+		_WIFI_SSID="" _WIFI_PASS="" _WIFI_COUNTRY=""
+		return 1
 	fi
 
-	if [[ -n "$_WIFI_COUNTRY" ]] && [[ ! "$_WIFI_COUNTRY" =~ ^[A-Z]{2}$ ]]; then
+	if [[ -n "$_WIFI_COUNTRY" ]] && ! apl_wifi_valid_country "$_WIFI_COUNTRY"; then
 		record_error "WIFI_COUNTRY: invalid value (need ISO 3166-1 alpha-2 like DE); dropping country"
 		_WIFI_COUNTRY=""
 	fi
@@ -274,69 +293,31 @@ consume_wifi_config() {
 
 # Write /etc/NetworkManager/system-connections/airplanes-config-wifi.nmconnection
 # atomically. Idempotent: existing keyfile is replaced. If WIFI_SSID is empty,
-# do nothing. Returns non-zero only on hard write failure.
+# do nothing. Returns non-zero only on hard write failure. The atomic write +
+# body composition lives in wifi-keyfile.sh (shared with apl-wifi); first-run
+# always emits autoconnect=true and priority=0, matching the legacy keyfile.
 write_nm_keyfile() {
 	[[ -n "$_WIFI_SSID" ]] || return 0
 
-	local uuid tmp
+	local uuid
 	uuid="$(cat /proc/sys/kernel/random/uuid)" || {
 		log "failed to read /proc/sys/kernel/random/uuid"
 		return 1
 	}
 
-	if ! install -d -m 0700 "$WIFI_KEYFILE_DIR" 2>/dev/null; then
-		log "failed to create $WIFI_KEYFILE_DIR"
+	if ! apl_wifi_write_keyfile \
+		"$WIFI_KEYFILE" \
+		"airplanes-config-wifi" \
+		"$uuid" \
+		"$_WIFI_SSID" \
+		"$_WIFI_PASS" \
+		"false" \
+		0 \
+		"true"; then
+		log "failed to write WiFi keyfile"
 		return 1
 	fi
-	# Best-effort root ownership; in test mode (non-root) this is a no-op.
-	[[ "$(id -u)" -eq 0 ]] && chown root:root "$WIFI_KEYFILE_DIR" 2>/dev/null
-
-	tmp="$(mktemp "${WIFI_KEYFILE_DIR}/.airplanes-wifi.tmp.XXXXXX")" || {
-		log "failed to mktemp under $WIFI_KEYFILE_DIR"
-		return 1
-	}
-	trap '[[ -n "${tmp:-}" && -e "$tmp" ]] && rm -f "$tmp"' RETURN
-
-	{
-		printf '[connection]\n'
-		printf 'id=airplanes-config-wifi\n'
-		printf 'uuid=%s\n' "$uuid"
-		printf 'type=wifi\n'
-		printf 'autoconnect=true\n'
-		printf '\n'
-		printf '[wifi]\n'
-		printf 'ssid=%s\n' "$_WIFI_SSID"
-		printf 'mode=infrastructure\n'
-		printf '\n'
-		if [[ -n "$_WIFI_PASS" ]]; then
-			printf '[wifi-security]\n'
-			printf 'key-mgmt=wpa-psk\n'
-			printf 'psk=%s\n' "$_WIFI_PASS"
-			printf '\n'
-		fi
-		printf '[ipv4]\n'
-		printf 'method=auto\n'
-		printf '\n'
-		printf '[ipv6]\n'
-		printf 'method=auto\n'
-	} > "$tmp" || {
-		log "failed to write keyfile body"
-		return 1
-	}
-
-	chmod 0600 "$tmp" || {
-		log "failed to chmod 0600 keyfile temp"
-		return 1
-	}
-	[[ "$(id -u)" -eq 0 ]] && chown root:root "$tmp" 2>/dev/null
-
-	sync -d "$tmp" 2>/dev/null || sync
-	if ! mv -fT "$tmp" "$WIFI_KEYFILE"; then
-		log "failed to rename keyfile into place"
-		return 1
-	fi
-	tmp=""
-	sync "$WIFI_KEYFILE_DIR" 2>/dev/null || sync
+	return 0
 }
 
 # Apply the WiFi country code via raspi-config's nonint helper. raspi-config
@@ -552,6 +533,132 @@ _feed_host_is_valid() {
 	return 0
 }
 
+# Synthesize APL_FEED_WEBSITE_URL from a user-friendly WEBSITE_URL shorthand.
+# WEBSITE_URL is the non-prod backend pointer (claim + diagnostics + remote
+# config sync); apl-feed reads APL_FEED_WEBSITE_URL out of feed.env via its
+# resolver. The boot-config key name itself must not leak into feed.env, so
+# we strip it from BOOT_CFG after expansion (parallel to FEED_HOST's
+# MLATSERVER+TARGET synthesis).
+#
+# Normalises trailing-slash so "http://host/" doesn't produce double-slashes
+# in downstream "$WEBSITE_URL/api/..." concatenations.
+expand_website_url() {
+	local raw="${BOOT_CFG[WEBSITE_URL]:-}"
+	[[ -n "$raw" ]] || return 0
+
+	if ! _website_url_is_valid "$raw"; then
+		record_error "WEBSITE_URL: invalid value '$raw' (need http://host or https://host, optionally :port (1-65535) and /path; no userinfo, query, or fragment)"
+		unset 'BOOT_CFG[WEBSITE_URL]'
+		return 0
+	fi
+
+	# Strip a single trailing slash on the path portion. Leave bare-scheme
+	# "http://" pathological cases to _website_url_is_valid (rejected).
+	if [[ "$raw" == */ && "$raw" != *://*/*/ ]]; then
+		# raw matches "http(s)://host[/]"; the only trailing slash is the
+		# one right after the authority. Strip it so concatenation lands
+		# cleanly.
+		raw="${raw%/}"
+	elif [[ "$raw" == */ ]]; then
+		# Path with extra trailing slash: "http://host/api/" -> drop one.
+		raw="${raw%/}"
+	fi
+
+	BOOT_CFG[APL_FEED_WEBSITE_URL]="$raw"
+	unset 'BOOT_CFG[WEBSITE_URL]'
+}
+
+# Returns 0 if the argument is an acceptable WEBSITE_URL value. Tighter than
+# FEED_HOST's validator because the URL ends up shell-sourced from feed.env
+# AND re-scanned by apl-feed's feed-env-apply universal-reject — bytes the
+# parser admits here that the universal-reject would later trip on would
+# block every future config-sync rewrite. Explicitly rejected: userinfo
+# (user@), query strings (?), fragments (#), shell metacharacters
+# ($, `, \, "), and whitespace.
+_website_url_is_valid() {
+	local raw="$1" rest scheme hostport host port path
+	(( ${#raw} <= 2048 )) || return 1
+
+	# Scheme.
+	if [[ "$raw" == https://* ]]; then
+		scheme="https"
+		rest="${raw#https://}"
+	elif [[ "$raw" == http://* ]]; then
+		scheme="http"
+		rest="${raw#http://}"
+	else
+		return 1
+	fi
+	[[ -n "$rest" ]] || return 1
+	# scheme is validated above; silence shellcheck.
+	: "$scheme"
+
+	# No userinfo, query, or fragment. The feed-env-apply universal-reject
+	# treats some of these (esp. #) as forbidden bytes anyway.
+	[[ "$rest" == *@* ]] && return 1
+	[[ "$rest" == *\?* ]] && return 1
+	[[ "$rest" == *#* ]] && return 1
+
+	# Authority before first slash; path after (optional).
+	if [[ "$rest" == */* ]]; then
+		hostport="${rest%%/*}"
+		path="/${rest#*/}"
+	else
+		hostport="$rest"
+		path=""
+	fi
+	[[ -n "$hostport" ]] || return 1
+
+	# Split host:port. We treat the LAST `:` as the port separator. Bracketed
+	# IPv6 literals are not supported here — same posture as FEED_HOST.
+	if [[ "$hostport" == *:* ]]; then
+		host="${hostport%:*}"
+		port="${hostport##*:}"
+	else
+		host="$hostport"
+		port=""
+	fi
+	[[ -n "$host" ]] || return 1
+	(( ${#host} <= 253 )) || return 1
+
+	# Host: dotted-IPv4 or hostname-shaped (RFC 1123 letters/digits/dot/dash).
+	# Loose enough to admit single-label LAN names like `homelab` and
+	# IPv4 like `192.168.1.10`; strict on shell-safety.
+	[[ "$host" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+	if [[ "$host" =~ ^[0-9.]+$ ]]; then
+		# Looks like an IPv4 candidate — validate octets.
+		local IFS=.
+		# shellcheck disable=SC2206  # intentional word-split on dots
+		local octets=( $host )
+		(( ${#octets[@]} == 4 )) || return 1
+		local o
+		for o in "${octets[@]}"; do
+			[[ "$o" =~ ^[0-9]+$ ]] || return 1
+			# Strip leading zeros to dodge octal-interpretation.
+			o="${o#"${o%%[!0]*}"}"
+			[[ -z "$o" ]] && o=0
+			(( o >= 0 && o <= 255 )) || return 1
+		done
+	fi
+
+	# Port: 1..65535 if present.
+	if [[ -n "$port" ]]; then
+		[[ "$port" =~ ^[0-9]+$ ]] || return 1
+		port="${port#"${port%%[!0]*}"}"
+		[[ -z "$port" ]] && port=0
+		(( port >= 1 && port <= 65535 )) || return 1
+	fi
+
+	# Path (optional): conservative allowlist that survives both the shell
+	# source in apl-feed/airplanes-feed.sh and feed-env-apply's universal-
+	# reject. % accepts percent-encoded bytes.
+	if [[ -n "$path" ]]; then
+		[[ "$path" =~ ^[A-Za-z0-9._~%/-]*$ ]] || return 1
+	fi
+
+	return 0
+}
+
 # Atomic merge under flock: write a tmp file in the target directory, fsync
 # it, rename onto feed.env, then sync the parent directory. The flock matches
 # webconfig's apply-config (/run/airplanes/feed-env.lock) so a concurrent
@@ -592,6 +699,18 @@ merge_feed_env() {
 				fi
 			fi
 		done
+
+		# Preserve mode/owner from the existing feed.env so the
+		# airplanes-feed user can still source it after the rename. mktemp
+		# defaults to 0600 root:root, which silently breaks `User=airplanes-feed`
+		# units on the next read. Same pattern feed-env-apply uses for
+		# config-sync rewrites.
+		if [[ -f "$FEED_ENV" ]]; then
+			chmod --reference="$FEED_ENV" "$tmp_env" 2>/dev/null || chmod 0644 "$tmp_env" || true
+			chown --reference="$FEED_ENV" "$tmp_env" 2>/dev/null || true
+		else
+			chmod 0644 "$tmp_env" 2>/dev/null || true
+		fi
 
 		sync -d "$tmp_env" 2>/dev/null || sync
 		if ! mv "$tmp_env" "$FEED_ENV"; then
@@ -681,6 +800,7 @@ main() {
 	apply_wifi_country || record_error "failed to apply WiFi country code"
 	apply_hostname || record_error "failed to apply hostname"
 	expand_feed_host
+	expand_website_url
 
 	local merge_ok=1
 	if (( ${#BOOT_CFG[@]} > 0 )); then

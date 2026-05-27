@@ -21,13 +21,16 @@ jobs:
         run: |
           shopt -s globstar nullglob
           mapfile -d '' files < <(
-            find scripts stage-airplanes test -type f \
+            find scripts stage-airplanes test runtime-overlay -type f \
               \( -name '*.sh' \
                  -o -name 'systemctl-stub' \
                  -o -name 'airplanes-first-run' \
                  -o -name 'airplanes-grant-sudo' \
                  -o -name 'render-status' \
-                 -o -name '10-airplanes-status' \) \
+                 -o -name '10-airplanes-status' \
+                 -o -name '09-airplanes-recovery-status' \
+                 -o -name 'recover-shim' \
+                 -o -name 'airplanes-update-orchestrator' \) \
               -print0
           )
           if (( ${#files[@]} == 0 )); then
@@ -43,8 +46,15 @@ jobs:
                    stage-airplanes/**/*.sh \
                    stage-airplanes/**/files/**/airplanes-first-run \
                    stage-airplanes/**/files/**/airplanes-grant-sudo \
-                   stage-airplanes/**/files/**/render-status \
-                   stage-airplanes/**/files/**/10-airplanes-status \
+                   runtime-overlay/src/lib/airplanes/render-status \
+                   runtime-overlay/src/lib/airplanes-update-orchestrator \
+                   runtime-overlay/src/lib/*.sh \
+                   runtime-overlay/scripts/gates/*.sh \
+                   runtime-overlay/scripts/release-workflow/*.sh \
+                   runtime-overlay/src/etc/update-motd.d/10-airplanes-status \
+                   runtime-overlay/src/share/airplanes/*.sh \
+                   stage-airplanes/02-install-runtime-overlay/files/usr/local/lib/airplanes-runtime/recover-shim \
+                   stage-airplanes/02-install-runtime-overlay/files/etc/update-motd.d/09-airplanes-recovery-status \
                    test/*.sh; do
             [[ -e "$f" ]] || continue
             bash -n "$f"
@@ -69,11 +79,83 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install bats
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats
+      - name: Resolve image-webconfig ref from overlay config-stable
+        id: webconfig-ref
+        # runtime-overlay/config-stable is the single source of truth for the
+        # webconfig commit the stable image ships. Test against that so a
+        # mismatch blows up here, not on a customer device.
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          . runtime-overlay/config-stable
+          set +a
+          # Fail loudly if the pin is empty/malformed — otherwise actions/checkout
+          # silently falls back to the default branch.
+          [[ "${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::AIRPLANES_WEBCONFIG_COMMIT_SHA is not a 40-hex SHA: '${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}'"; exit 1; }
+          echo "ref=$AIRPLANES_WEBCONFIG_COMMIT_SHA" >> "$GITHUB_OUTPUT"
+
+      # Several first-run bats tests source wifi-validators.sh /
+      # wifi-keyfile.sh from airplanes-live/image-webconfig (the libs moved
+      # there with the webconfig extraction). Co-locate the checkout
+      # alongside the image repo and tell bats where to find it via
+      # AIRPLANES_IMAGE_WEBCONFIG_ROOT.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/image-webconfig
+          ref: ${{ steps.webconfig-ref.outputs.ref }}
+          path: image-webconfig-sibling
+
+      - name: Install bats and manifest-validator deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats jq python3-jsonschema
+
+      # Snapshot host state so the post-bats step can fail loudly if the
+      # tests mutated the runner. The historical instance was apply_hostname
+      # calling `hostnamectl set-hostname` against the live D-Bus during
+      # local `bats test/` runs — fixed by test/lib/host-runtime-stubs.sh,
+      # but stub coverage is a moving target. This snapshot-and-diff is a
+      # broader safety net that catches any future leak from a command we
+      # haven't thought to stub yet.
+      - name: Snapshot host state (pre-bats)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/host-state-pre"
+          cp /etc/hostname "$RUNNER_TEMP/host-state-pre/hostname"
+          cp /etc/hosts "$RUNNER_TEMP/host-state-pre/hosts"
+          # /etc/wpa_supplicant/ may not exist on a fresh ubuntu-24.04 runner.
+          if [ -d /etc/wpa_supplicant ]; then
+            ls -laR /etc/wpa_supplicant > "$RUNNER_TEMP/host-state-pre/wpa-listing"
+          else
+            echo absent > "$RUNNER_TEMP/host-state-pre/wpa-listing"
+          fi
 
       - name: bats test/
-        run: bats test/
+        env:
+          AIRPLANES_IMAGE_WEBCONFIG_ROOT: ${{ github.workspace }}/image-webconfig-sibling
+        run: bats -r test/
+
+      - name: Verify host state untouched (post-bats)
+        if: always()
+        run: |
+          set -euo pipefail
+          fail=0
+          if ! diff -u "$RUNNER_TEMP/host-state-pre/hostname" /etc/hostname; then
+            echo "::error::/etc/hostname was mutated during bats test/ — a stub is missing in test/lib/host-runtime-stubs.sh"
+            fail=1
+          fi
+          if ! diff -u "$RUNNER_TEMP/host-state-pre/hosts" /etc/hosts; then
+            echo "::error::/etc/hosts was mutated during bats test/ — a stub is missing in test/lib/host-runtime-stubs.sh"
+            fail=1
+          fi
+          actual_wpa="absent"
+          if [ -d /etc/wpa_supplicant ]; then
+            actual_wpa="$(ls -laR /etc/wpa_supplicant)"
+          fi
+          if ! diff -u "$RUNNER_TEMP/host-state-pre/wpa-listing" <(printf '%s\n' "$actual_wpa"); then
+            echo "::error::/etc/wpa_supplicant/ was mutated during bats test/ — a stub is missing in test/lib/host-runtime-stubs.sh"
+            fail=1
+          fi
+          exit "$fail"
 
   # Real-systemd smoke for airplanes-first-run.service. Installs the unit
   # and the script onto the runner, runs the unit via systemctl, and asserts
@@ -184,6 +266,59 @@ jobs:
           sudo grep -q '^MLATSERVER="ci-failure-backend.local:31090"$' /etc/airplanes/feed.env \
             || { echo "MLATSERVER not merged from partial-error file"; sudo cat /etc/airplanes/feed.env; exit 1; }
 
+      - name: WEBSITE_URL path — expand_website_url writes APL_FEED_WEBSITE_URL; key does not leak
+        run: |
+          # WEBSITE_URL is the non-prod website pointer (claim + diagnostics +
+          # config-sync). expand_website_url renames the key to
+          # APL_FEED_WEBSITE_URL on the way into feed.env; the source name
+          # itself must never leak.
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          HOSTNAME=airplanes-ci-website
+          WEBSITE_URL=http://ci-website.local
+          CFG
+          sudo systemctl restart airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ ! -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source not consumed"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.applied.txt ]] \
+            || { echo "applied.txt missing"; exit 1; }
+          [[ ! -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "unexpected error.txt"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          sudo grep -q '^APL_FEED_WEBSITE_URL="http://ci-website.local"$' /etc/airplanes/feed.env \
+            || { echo "APL_FEED_WEBSITE_URL not derived from WEBSITE_URL"; sudo cat /etc/airplanes/feed.env; exit 1; }
+          # WEBSITE_URL is a synthetic key — must never reach feed.env.
+          ! sudo grep -qE '^WEBSITE_URL=' /etc/airplanes/feed.env \
+            || { echo "WEBSITE_URL leaked into feed.env"; exit 1; }
+
+      - name: WEBSITE_URL rejection — invalid value blocks rename, writes .error.txt
+        run: |
+          # No scheme → reject. expand_website_url records the error; the
+          # rename to .applied.txt is gated on BOOT_CFG_ERRORS being empty.
+          # The preceding "WEBSITE_URL path" step left a valid APL_FEED_WEBSITE_URL
+          # in feed.env; this step must NOT overwrite it from a rejected input.
+          sudo tee /boot/firmware/airplanes-config.txt >/dev/null <<'CFG'
+          HOSTNAME=airplanes-ci-website-bad
+          WEBSITE_URL=not-a-url
+          CFG
+          sudo systemctl restart airplanes-first-run.service
+          sudo systemctl status airplanes-first-run.service --no-pager
+
+          [[ -f /boot/firmware/airplanes-config.txt ]] \
+            || { echo "source missing after invalid-URL rejection"; exit 1; }
+          [[ -f /boot/firmware/airplanes-config.error.txt ]] \
+            || { echo "error.txt missing"; exit 1; }
+          sudo grep -q 'WEBSITE_URL' /boot/firmware/airplanes-config.error.txt \
+            || { echo "error.txt does not mention WEBSITE_URL"; sudo cat /boot/firmware/airplanes-config.error.txt; exit 1; }
+          ! sudo grep -qE '^WEBSITE_URL=' /etc/airplanes/feed.env \
+            || { echo "WEBSITE_URL leaked into feed.env despite rejection"; exit 1; }
+          # Prior valid value (set by the previous step) must persist — the
+          # rejected input must not bake "not-a-url" into APL_FEED_WEBSITE_URL.
+          sudo grep -q '^APL_FEED_WEBSITE_URL="http://ci-website.local"$' /etc/airplanes/feed.env \
+            || { echo "prior APL_FEED_WEBSITE_URL clobbered by rejected input"; sudo cat /etc/airplanes/feed.env; exit 1; }
+          ! sudo grep -qE 'not-a-url' /etc/airplanes/feed.env \
+            || { echo "rejected WEBSITE_URL value reached feed.env"; sudo cat /etc/airplanes/feed.env; exit 1; }
+
       - name: Allowlist path — non-bootstrap key is rejected with category-specific message
         run: |
           # LATITUDE is webconfig-writable; the parser must reject it at parse
@@ -240,10 +375,10 @@ jobs:
           sudo install -m 0644 \
             stage-airplanes/06c-grant-sudo/files/etc/systemd/system/airplanes-grant-sudo.service \
             /etc/systemd/system/
-          # The unit Wants=cloud-final.service. On hosted runners cloud-init
-          # is preinstalled but its datasource detection generally fails, so
-          # cloud-final.service is inactive — Wants= will pull it in but
-          # not block on it (and failures don't propagate to our unit).
+          # This job exercises the runtime behavior via `systemctl start`,
+          # which bypasses the boot-time ordering graph. Cycle detection
+          # through the cloud-init chain is covered by the systemd-verify
+          # job, which loads stub cloud-init units alongside ours.
           sudo systemctl daemon-reload
 
       - name: Create synthetic operator user
@@ -310,6 +445,24 @@ jobs:
           sudo journalctl -u airplanes-grant-sudo.service --no-pager || true
           sudo ls -la /etc/sudoers.d/ || true
 
+  # Bridge-release verification: install a "release N+1" (a manifest carrying
+  # the schema fields manifest_schema_version / installer_min_version /
+  # compat.base_os_codename) using "release N's" in-tree updater, proving the
+  # forward-compat floor is enforced from the first schema-using release. Runs
+  # as a focused job so a regression in the floor surfaces by name, not buried
+  # in the broad bats sweep.
+  bridge-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install bats + minisign
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats jq minisign
+
+      - name: Bridge-release install (N+1 on N's updater)
+        run: bats test/runtime-overlay/test_bridge_release.bats
+
   feed-overlay-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -325,73 +478,44 @@ jobs:
       - name: Run overlay smoke
         run: bash test/overlay-smoke.sh feed
 
-  webconfig-test:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: webconfig/go.mod
-          cache-dependency-path: webconfig/go.sum
-
-      - name: go vet
-        working-directory: webconfig
-        run: go vet ./...
-
-      - name: go mod verify
-        working-directory: webconfig
-        run: go mod verify
-
-      - name: go test
-        working-directory: webconfig
-        run: go test ./...
-
-  webconfig-cross-build:
-    name: webconfig-cross-build-${{ matrix.arch }}
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        include:
-          - arch: arm64
-            goarch: arm64
-            goarm: ''
-          - arch: armhf
-            goarch: arm
-            goarm: '7'
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: webconfig/go.mod
-          cache-dependency-path: webconfig/go.sum
-
-      - name: cross-build webconfig for ${{ matrix.arch }}
-        working-directory: webconfig
-        env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
-        run: |
-          go build -trimpath -buildvcs=false \
-              -ldflags "-s -w -X main.version=ci" \
-              -o /tmp/airplanes-webconfig.${{ matrix.arch }} \
-              ./cmd/webconfig
-          file /tmp/airplanes-webconfig.${{ matrix.arch }}
+  # webconfig-test, webconfig-cross-build, and validator-parity used to live
+  # here. They moved to airplanes-live/image-webconfig, which owns the Go
+  # source, cross-build, sudoers parity, and JS-vs-bash validator parity now.
 
   systemd-verify:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Load tar1090/graphs1090 SHAs from config-dev
+      - name: Resolve image-webconfig ref from overlay config-stable
+        id: webconfig-ref
         run: |
           set -a
           # shellcheck disable=SC1091
-          . config-dev
+          . runtime-overlay/config-stable
+          set +a
+          # Fail loudly if the pin is empty/malformed — otherwise actions/checkout
+          # silently falls back to the default branch.
+          [[ "${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::AIRPLANES_WEBCONFIG_COMMIT_SHA is not a 40-hex SHA: '${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}'"; exit 1; }
+          echo "ref=$AIRPLANES_WEBCONFIG_COMMIT_SHA" >> "$GITHUB_OUTPUT"
+
+      # Check out airplanes-live/image-webconfig at the overlay-pinned ref so
+      # systemd-verify exercises the same unit files that the stable image
+      # will install. A drift between the unit file CI verifies and what the
+      # image installs would otherwise mean a syntax error blows up on
+      # device rather than in CI.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/image-webconfig
+          ref: ${{ steps.webconfig-ref.outputs.ref }}
+          path: image-webconfig
+
+      - name: Load tar1090/graphs1090 SHAs from runtime-overlay/config-dev
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          . runtime-overlay/config-dev
           set +a
           {
             echo "AIRPLANES_TAR1090_REPO=$AIRPLANES_TAR1090_REPO"
@@ -436,9 +560,23 @@ jobs:
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06b-console-dashboard/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
-          install -m 0644 stage-airplanes/02-install-decoder/files/etc/systemd/system/*.service \
+          install -m 0644 runtime-overlay/src/systemd/readsb.service \
+              runtime-overlay/src/systemd/airplanes-978.service \
+              runtime-overlay/src/systemd/dump978-fa.service \
+              runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.service \
+              runtime-overlay/src/systemd/airplanes-tar1090-uat-sync.path \
               "$ROOT/etc/systemd/system/"
-          install -m 0644 stage-airplanes/05-install-webconfig/files/etc/systemd/system/*.service \
+          # Boot recovery is image-owned (it must survive a broken overlay):
+          # the unit and its ExecStart shim ship from stage 02's files/ tree,
+          # not the overlay. Stage them from there and create the shim target.
+          install -m 0644 \
+              stage-airplanes/02-install-runtime-overlay/files/etc/systemd/system/airplanes-runtime-update-recover.service \
+              "$ROOT/etc/systemd/system/"
+          mkdir -p "$ROOT/usr/local/lib/airplanes-runtime"
+          install -m 0755 \
+              stage-airplanes/02-install-runtime-overlay/files/usr/local/lib/airplanes-runtime/recover-shim \
+              "$ROOT/usr/local/lib/airplanes-runtime/recover-shim"
+          install -m 0644 image-webconfig/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06c-grant-sudo/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
@@ -457,6 +595,7 @@ jobs:
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/readsb.sh"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/airplanes-978.sh"
           install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/dump978-fa.sh"
+          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/tar1090-uat-sync.sh"
           # tar1090 + graphs1090 ExecStart targets (placeholder shell scripts the
           # upstream installers normally drop in)
           install -m 0755 /dev/null "$ROOT/usr/local/share/tar1090/tar1090.sh"
@@ -489,9 +628,72 @@ jobs:
               dump978-fa.service \
               airplanes-978.service \
               tar1090.service \
+              airplanes-tar1090-uat-sync.service \
+              airplanes-tar1090-uat-sync.path \
+              airplanes-runtime-update-recover.service \
               graphs1090.service \
               airplanes-webconfig.service \
               airplanes-webconfig-reset.service
+
+      - name: Verify no boot-ordering cycle through cloud-init
+        # Dedicated cycle check for airplanes-grant-sudo.service. The main
+        # systemd-analyze verify above uses --recursive-errors=no, which
+        # silences "unit not found" warnings but ALSO prevents cycle
+        # detection because the missing-unit edges are dropped from the
+        # graph. Here we build a small isolated root with just enough
+        # systemd targets + cloud-init stubs to make the dependency graph
+        # complete around grant-sudo, then run a strict verify.
+        #
+        # Regression caught: an earlier version had
+        # WantedBy=multi-user.target on grant-sudo, which combined with
+        # cloud-final.service After=multi-user.target to form a 3-cycle
+        # that systemd silently broke by dropping grant-sudo from the
+        # boot transaction. The fix is WantedBy=cloud-init.target; this
+        # step makes systemd-analyze the gatekeeper.
+        run: |
+          set -e
+          CYCLE_ROOT="$RUNNER_TEMP/cycle-root"
+          mkdir -p "$CYCLE_ROOT/etc/systemd/system" \
+                   "$CYCLE_ROOT/usr/local/sbin" \
+                   "$CYCLE_ROOT/bin"
+          install -m 0644 \
+              stage-airplanes/06c-grant-sudo/files/etc/systemd/system/airplanes-grant-sudo.service \
+              "$CYCLE_ROOT/etc/systemd/system/"
+          install -m 0644 test/systemd-verify-stubs/multi-user.target \
+              "$CYCLE_ROOT/etc/systemd/system/multi-user.target"
+          install -m 0644 test/systemd-verify-stubs/cloud-init.target \
+              "$CYCLE_ROOT/etc/systemd/system/cloud-init.target"
+          install -m 0644 test/systemd-verify-stubs/cloud-final.service \
+              "$CYCLE_ROOT/etc/systemd/system/cloud-final.service"
+          # Minimal stubs for the standard targets pulled in by
+          # DefaultDependencies=yes. Without these systemd-analyze
+          # short-circuits before the cycle walker runs.
+          for t in basic.target sysinit.target shutdown.target rescue.target; do
+              printf '[Unit]\nDescription=%s (CI stub)\n' "$t" \
+                  > "$CYCLE_ROOT/etc/systemd/system/$t"
+          done
+          printf '[Unit]\nDescription=Rescue (CI stub)\n[Service]\nType=oneshot\nExecStart=/bin/true\n' \
+              > "$CYCLE_ROOT/etc/systemd/system/rescue.service"
+          # Materialize [Install] WantedBy= relationships as wants/
+          # symlinks so the dep graph reflects what `systemctl enable`
+          # would create at install time.
+          mkdir -p "$CYCLE_ROOT/etc/systemd/system/multi-user.target.wants" \
+                   "$CYCLE_ROOT/etc/systemd/system/cloud-init.target.wants"
+          ln -sf ../cloud-init.target \
+              "$CYCLE_ROOT/etc/systemd/system/multi-user.target.wants/cloud-init.target"
+          ln -sf ../cloud-final.service \
+              "$CYCLE_ROOT/etc/systemd/system/cloud-init.target.wants/cloud-final.service"
+          ln -sf ../airplanes-grant-sudo.service \
+              "$CYCLE_ROOT/etc/systemd/system/cloud-init.target.wants/airplanes-grant-sudo.service"
+          install -m 0755 /bin/true "$CYCLE_ROOT/bin/true"
+          install -m 0755 /dev/null "$CYCLE_ROOT/usr/local/sbin/airplanes-grant-sudo"
+          # Strict verify (no --recursive-errors=no): every referenced
+          # unit must be loadable, and any ordering cycle fails the run.
+          systemd-analyze verify --root="$CYCLE_ROOT" \
+              airplanes-grant-sudo.service \
+              cloud-final.service \
+              cloud-init.target \
+              multi-user.target
 
   feed-update-regression:
     runs-on: ubuntu-24.04

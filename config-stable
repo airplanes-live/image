@@ -32,18 +32,14 @@ export IMG_SUFFIX="${IMG_SUFFIX:-}"
 #                                   reachable but unauthenticatable
 export ENABLE_SSH="${ENABLE_SSH:-1}"
 
-# Pinned SHAs. Bump in lockstep with PRs that have been validated on dev.
-# Resolution helpers (run before bumping):
-#   gh api repos/airplanes-live/feed/commits/main --jq .sha
-#   gh api repos/airplanes-live/readsb/commits/dev --jq .sha
-#   gh api repos/wiedehopf/readsb/commits/dev --jq .sha
-#   gh api repos/flightaware/dump978/commits/master --jq .sha
-#   gh api repos/wiedehopf/tar1090/commits/master --jq .sha
-#   gh api repos/wiedehopf/tar1090-db/commits/master --jq .sha
-#   gh api repos/wiedehopf/graphs1090/commits/master --jq .sha
-
+# Feed test-harness checkout ref. NOT the feed baked into the image (that ships
+# via the runtime overlay, pinned in runtime-overlay/config-stable) — this ref
+# is checked out by build-image.yml's boot-smoke and overlay-smoke jobs to run
+# feed's own test/image-boot.sh against the built image. Must match the commit
+# the overlay pins.
 export AIRPLANES_FEED_REPO="${AIRPLANES_FEED_REPO:-https://github.com/airplanes-live/feed.git}"
-export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-9318d02efd70488f831cbcb84ca3ec4cb9cc9ece}"
+# feed v0.0.1
+export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-d120b953329ab8c1d9d613d9cdcd57c471ca1914}"
 # Runtime update channel baked into /etc/airplanes/release-channel by stage
 # 06. The feed-side resolver reads this at update time and (for stable)
 # resolves the latest v[MAJOR].[MINOR].[PATCH] release tag via git
@@ -52,20 +48,21 @@ export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-9318d02efd70488f831cbcb84
 # Allowlist enforced by stage 06: stable, dev.
 export AIRPLANES_FEED_UPDATE_CHANNEL="${AIRPLANES_FEED_UPDATE_CHANNEL:-stable}"
 
+# webconfig ships inside the runtime overlay (built/pinned in
+# runtime-overlay/config-stable, not cloned by a stage here). The authoritative
+# pin is runtime-overlay/config-stable's AIRPLANES_WEBCONFIG_COMMIT_SHA, which
+# ci.yml now sources directly for its shell-tests / systemd-verify checkout. The
+# pin below is retained only for the overlay-smoke / update-regression test
+# harness (which passes it through to docker) and MUST equal the overlay
+# COMMIT_SHA (image-webconfig v0.1.3 commit). Must be a post-self-update-removal
+# ref — the v0.1.x tags up to v0.1.2 still carried the removed self-update
+# surface.
+export AIRPLANES_WEBCONFIG_REPO="${AIRPLANES_WEBCONFIG_REPO:-https://github.com/airplanes-live/image-webconfig.git}"
+export AIRPLANES_WEBCONFIG_BRANCH="${AIRPLANES_WEBCONFIG_BRANCH:-2063d1b2a5c44e40251f51080d45519f1433eb97}"
+
+# Legacy/unused: the outbound feeder readsb now ships via the runtime overlay
+# (pinned in runtime-overlay/config-stable as AIRPLANES_FEED_READSB_BRANCH).
+# This pin is still loaded into GITHUB_ENV by build-image.yml but no longer
+# consumed by any build stage; left in place to defer the workflow cleanup.
 export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
 export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-4d6c614d7940ce0117db61b1fa91c81fd9e67988}"
-
-export AIRPLANES_READSB_DECODER_REPO="${AIRPLANES_READSB_DECODER_REPO:-https://github.com/wiedehopf/readsb.git}"
-export AIRPLANES_READSB_DECODER_BRANCH="${AIRPLANES_READSB_DECODER_BRANCH:-caf2c5a6dccf1e079d0ae63d2b7dd45d568de265}"
-
-export AIRPLANES_DUMP978_REPO="${AIRPLANES_DUMP978_REPO:-https://github.com/flightaware/dump978.git}"
-export AIRPLANES_DUMP978_BRANCH="${AIRPLANES_DUMP978_BRANCH:-e827042420ac615f9b9993a21535fd7def21f974}"
-
-export AIRPLANES_TAR1090_REPO="${AIRPLANES_TAR1090_REPO:-https://github.com/wiedehopf/tar1090.git}"
-export AIRPLANES_TAR1090_BRANCH="${AIRPLANES_TAR1090_BRANCH:-c2ebe61910d2e06860c849a66077455d2635f9e9}"
-
-export AIRPLANES_TAR1090_DB_REPO="${AIRPLANES_TAR1090_DB_REPO:-https://github.com/wiedehopf/tar1090-db.git}"
-export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-758ddafab66fb997de2a81d2d5a317db55aaf9be}"
-
-export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
-export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889de2a8f63f2b40133ea72a08537ce}"

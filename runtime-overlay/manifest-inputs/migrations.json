@@ -1,0 +1,23 @@
+[
+  {
+    "id": "create-service-accounts",
+    "type": "shell",
+    "run_when": "every_install",
+    "script": "migrations/0001-create-service-accounts.sh",
+    "rollback_script": "migrations/0001-create-service-accounts.rollback.sh"
+  },
+  {
+    "id": "readsb-user-groups",
+    "type": "group_membership",
+    "run_when": "every_install",
+    "user": "readsb",
+    "groups": ["plugdev", "dialout"]
+  },
+  {
+    "id": "seed-feed-env",
+    "type": "shell",
+    "run_when": "every_install",
+    "script": "migrations/0002-seed-feed-env.sh",
+    "rollback_script": "migrations/0002-seed-feed-env.rollback.sh"
+  }
+]

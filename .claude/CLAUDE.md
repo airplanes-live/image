@@ -29,16 +29,14 @@ CI (`.github/workflows/ci.yml`) runs on push to `main`/`dev` and on PRs:
 | Job | What it does |
 |---|---|
 | `shell-lint` | shellcheck + `bash -n` over stage and test scripts |
-| `shell-tests` | `bats test/` — first-run parsing, WiFi config, hostname handling, FEED_HOST override, webconfig manifest, render-status, sudoers, systemctl stubs |
+| `shell-tests` | `bats test/` — first-run parsing, WiFi config, hostname handling, FEED_HOST override, render-status, systemctl stubs. Co-checks out `airplanes-live/image-webconfig` so first-run tests can source `wifi-validators.sh` / `wifi-keyfile.sh` from there. |
 | `first-run-systemd` | Installs `airplanes-first-run.service` on the runner and starts it via `systemctl`. Dynamic counterpart to `test_first_run_unit.bats` — catches sandbox enforcement bugs (e.g. a `ProtectSystem=` re-mount that silently locks `/etc`) that chroot tests can't see |
 | `grant-sudo-systemd` | Installs `airplanes-grant-sudo.service` on the runner with a synthetic UID-1001 user and asserts the per-user `/etc/sudoers.d/099_airplanes-sudo-<name>` grant lands and `sudo -n` actually works. Same dynamic-sandbox role as `first-run-systemd`. |
 | `feed-overlay-smoke` | Checks out `airplanes-live/feed` `dev`, mounts the built image, runs `test/overlay-smoke.sh` integration |
-| `webconfig-test` | `go vet` + `go mod verify` + unit tests for `webconfig/` |
-| `webconfig-cross-build` | `webconfig` cross-compile (matrix `webconfig-cross-build-arm64`, `webconfig-cross-build-armhf`) |
 | `systemd-verify` | `systemd-analyze verify` against all `.service` files (with stubbed binaries and fetched upstream tar1090 / graphs1090 units) |
 | `feed-update-regression` | Checks out feed `dev`, runs `test/update-regression-smoke.sh` |
 
-Image builds run separately via `.github/workflows/build-image.yml` on `ubuntu-24.04-arm` (native arm64, no qemu) with per-channel artifact retention plus per-cell rootfs and first-run chroot smoke validation.
+Product builds run via `.github/workflows/build-image.yml` on `ubuntu-24.04-arm` (native arm64, no qemu). The workflow first builds and signs the runtime-overlay assets, then builds the image from those just-built local assets, then runs mounted-image, first-run chroot, boot-smoke, and webconfig-upgrade QEMU validation. Only after all checks pass does it publish: `dev-latest` as the rolling dev prerelease, or `vX.Y.Z` as a stable product release.
 
 Run a single bats file locally:
 
@@ -56,15 +54,15 @@ bats test/test_first_run_basic.bats
 stage0  stage1  stage2          ← upstream pi-gen (base OS, boot files, networking)
 stage-airplanes/                 ← fork-specific
   00-prep                        build deps + chroot hygiene (policy-rc.d, systemctl shim) + SSH posture + cloud-init/first-boot-wizard mask
-  01-install-feed                clones airplanes-live/feed, installs apl-feed
-  02-install-decoder             builds readsb + dump978
-  03-install-tar1090             tar1090 + tar1090-db
-  04-install-graphs1090          graphs1090
-  05-install-webconfig           Go webconfig (cross-compiled for arm64 + armhf)
+  01-install-feed                setup-only: airplanes-feed service account + group + state dir (the feeder readsb, mlat-client venv, feed scripts, apl-feed CLI, and feed/mlat units now arrive via the overlay at stage 02)
+  02-install-runtime-overlay     downloads + verifies the signed runtime-overlay release tarball (decode stack: readsb + dump978 + tar1090 + graphs1090 + render-status; webconfig binary + helpers + wifi libs; feeder readsb + mlat-client venv + feed scripts) and lays it at /opt/airplanes-runtime/releases/vX.Y.Z, flips `current`, and installs the managed_paths entries (symlinks + copy-mode drop-ins)
+  05-install-webconfig           setup-only: webconfig system user, state dirs, lighttpd mod_proxy + conf-enabled activation, /run tmpfiles spec (the webconfig binary/helpers/units/sudoers now arrive via the overlay at stage 02, not a clone here)
   06-firstboot                   airplanes-first-run script + claim service/timer + boot config template
+  06a-run-tmpfs                  resize /run tmpfs + dedicated /run/collectd mount
   06b-console-dashboard          ASCII dashboard renderer + tty1 service
   06c-grant-sudo                 post-cloud-init NOPASSWD sudo grants per human user
-  07-finalize                    boot perms, build artifact cleanup
+  06d-cli-ergonomics             apl-feed sudo wrapper
+  07-finalize                    boot perms, build artifact cleanup, build-manifest.json
 export-image / export-noobs      pi-gen finalization (compresses rootfs into .img and optional NOOBS archive)
 ```
 
@@ -76,22 +74,26 @@ Pi boots → cloud-init runs (handles user-data / WiFi / hostname injected by rp
 
 The state machine on FAT visible to a user pulling the SD card: `airplanes-config.txt` only = pending or failed; `airplanes-config.txt` + `airplanes-config.error.txt` = failed (read .error.txt to see what to fix); `airplanes-config.applied.txt` only = consumed successfully. The unit is sandboxed with `ProtectSystem=true` + `ReadWritePaths=/boot/firmware /usr/local/share/airplanes` + `RuntimeDirectory=airplanes` — chroot tests bypass that sandbox, so a static lint at `test/test_first_run_unit.bats` asserts the directives stay aligned with what the script actually writes.
 
-`airplanes-config.txt` keys (5-key allowlist enforced by `parse_boot_config`): `HOSTNAME`, `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY`, `FEED_HOST`. Bootstrap-only — hostname for mDNS discovery, WiFi creds for network join, FEED_HOST to point at a non-prod backend. `FEED_HOST` expands to `MLATSERVER` + `TARGET` in feed.env (synthetic; `FEED_HOST` itself doesn't leak). Operational config (location, MLAT name, MLAT on/off, gain, UAT toggling) lives in the webconfig UI at `http://<hostname>.local/`; the parse-time allowlist rejects those keys with a category-specific "where this setting actually lives" error (see `reject_unknown_boot_key`).
+`airplanes-config.txt` keys (6-key allowlist enforced by `parse_boot_config`): `HOSTNAME`, `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY`, `FEED_HOST`, `WEBSITE_URL`. Bootstrap-only — hostname for mDNS discovery, WiFi creds for network join, FEED_HOST for the ingest endpoint (ADS-B + MLAT), WEBSITE_URL for the website-API endpoint (claim, diagnostics, remote-config-sync). `FEED_HOST` expands to `MLATSERVER` + `TARGET` in feed.env (synthetic; `FEED_HOST` itself doesn't leak). `WEBSITE_URL` is renamed to `APL_FEED_WEBSITE_URL` (the env-var name apl-feed reads). Operational config (location, MLAT name, MLAT on/off, gain, UAT toggling) lives in the webconfig UI at `http://<hostname>.local/`; the parse-time allowlist rejects those keys with a category-specific "where this setting actually lives" error (see `reject_unknown_boot_key`).
 
 ### Console dashboard
 
-`airplanes-dashboard.service` owns `/dev/tty1` (HDMI) and conflicts with `getty@tty1` (masked). Renders a full-screen ASCII status every 5s via `render-status` (`stage-airplanes/06b-console-dashboard/files/usr/local/lib/airplanes/render-status`). SSH login shows the same snapshot via `/etc/update-motd.d/10-airplanes-status`. TTY2 (Alt+F2) is the fallback local console. Modes: `--snapshot`, `--live`, `--once`. Layout adapts wide vs narrow. Artwork constraints + regeneration via `chafa` are documented in `stage-airplanes/06b-console-dashboard/README.md`.
+`airplanes-dashboard.service` owns `/dev/tty1` (HDMI) and conflicts with `getty@tty1` (masked). Renders a full-screen ASCII status every 5s via `render-status` (`runtime-overlay/src/lib/airplanes/render-status`). SSH login shows the same snapshot via `/etc/update-motd.d/10-airplanes-status`. TTY2 (Alt+F2) is the fallback local console. Modes: `--snapshot`, `--live`, `--once`. Layout adapts wide vs narrow. Artwork constraints + regeneration via `chafa` are documented in `stage-airplanes/06b-console-dashboard/README.md`.
 
 ### Web UI
 
-Go server in `webconfig/` (modules: `auth`, `feedenv`, `identity`, `logs`, `server`, `status`). Built into `/usr/local/bin/airplanes-webconfig` listening on `127.0.0.1:8080`. Reverse-proxied by lighttpd on `:80`. State source of truth is `/etc/airplanes/feed.env` plus the daemon runtime state files at `/run/<service>/state` (the daemons publish; the UI reads).
+Go server lives in `airplanes-live/image-webconfig` (modules: `auth`, `feedenv`, `identity`, `logs`, `server`, `status`, `wifi`). The webconfig binary + rootfs payload (helpers, systemd units, sudoers, wifi libs) are no longer cloned/installed at stage 05 — they are baked into the **runtime overlay**. The overlay release workflow runs `stage-webconfig.sh` to download the matching `airplanes-live/image-webconfig` GitHub Release (per-arch binary + `rootfs.tar.gz` + `manifest.json` + `SHA256SUMS`), verify SHA256, and stage it into the overlay tree, pinned by `AIRPLANES_WEBCONFIG_RELEASE_TAG` (+ optional `AIRPLANES_WEBCONFIG_COMMIT_SHA`) in `config-{dev,stable}`. Stage 02 then lays those onto the image as `managed_paths` (symlinked binary/helpers/units, copy-mode sudoers); stage 05 only does the chroot-side setup (user, state dirs, lighttpd wiring). The deployed binary listens on `127.0.0.1:8080`; lighttpd reverse-proxies `:80`. State source of truth is `/etc/airplanes/feed.env` plus the daemon runtime state files at `/run/<service>/state`. There is no standalone webconfig self-update: webconfig is updated as part of the health-gated runtime-overlay self-update (atomic `current` flip with rollback), so a single overlay release versions the whole device stack together.
+
+### Wi-Fi management
+
+`/api/wifi` endpoints (list / add / update / delete / test / activate / status) proxy to a sudoers-pinned `apl-wifi` helper at `/usr/local/bin/apl-wifi`. The helper, its libs (`wifi-validators.sh`, `wifi-keyfile.sh`), the webconfig sudoers files, and the webconfig systemd units all ship from `airplanes-live/image-webconfig`'s `rootfs.tar.gz`. The helper owns atomic NetworkManager keyfile writes under `/etc/NetworkManager/system-connections/`, the connect-before-save test flow via `nmcli --wait`, and lock-out enforcement (`force_last` / `force_active_no_uplink` flags rechecked under flock). SSID/PSK/country/priority validators live at `/usr/local/lib/airplanes/wifi-validators.sh` and are sourced by both `airplanes-first-run` (boot-config flow, in image) and `apl-wifi` (UI flow, in image-webconfig) so identical inputs are accepted on either side. Managed keyfiles match `airplanes-config-wifi.nmconnection` or `airplanes-wifi-*.nmconnection`; foreign keyfiles surface read-only in the UI. `airplanes-webconfig.service` adds `/etc/NetworkManager/system-connections` to `ReadWritePaths=` because the sudo child inherits the unit's mount namespace.
 
 ## Channels
 
 | | `config-dev` | `config-stable` |
 |---|---|---|
 | `IMG_NAME` | `airplanes-feeder-dev-arm64` | `airplanes-feeder-stable-arm64` |
-| Component refs | branches (`dev` / `master`) | pinned SHAs for feed, readsb, readsb-decoder, dump978, tar1090, tar1090-db, graphs1090 |
+| Component refs | branches (`dev` / `master`) for feed + readsb; runtime overlay built from `runtime-overlay/config-dev` into the same `dev-latest` product prerelease | pinned SHAs for feed + readsb; runtime overlay built from `runtime-overlay/config-stable` into the same `vX.Y.Z` product release |
 | Compression | `xz -1` (fast rebuild) | `xz -6` (small artifact) |
 | `ENABLE_SSH` | `1` | `1` |
 
@@ -101,12 +103,14 @@ Both export via `export-image/`. Stable images are reproducible from the pinned 
 
 The feed.env schema (which webconfig writes via `configspec.WriteKeys` — `LATITUDE`, `LONGITUDE`, `ALTITUDE`, `MLAT_USER`, `MLAT_ENABLED`, `GAIN`, `UAT_INPUT`, `DUMP978_SDR_SERIAL`, `DUMP978_GAIN`), the `airplanes-first-run.service` ordering, and the daemon runtime state-file pattern at `/run/<service>/state` are coordinated with `airplanes-live/feed`. The image-shipped 978 wrappers (`airplanes-978.sh`, `dump978-fa.sh`) read `UAT_INPUT` from feed.env and publish their decisions to two separate state files — `/run/dump978-fa/state` (producer, includes the `no_hardware` reason from the wrapper's `/sys/bus/usb/devices/*/serial` probe) and `/run/airplanes-978/state` (consumer, includes the `peer_no_hardware` reason refined from the producer file). 978 is **opt-in**: `UAT_INPUT` defaults empty everywhere (webconfig, `apl-feed 978 enable`, or hand-edited feed.env are the three opt-in surfaces); on hardware without a 978-serial RTL-SDR the producer self-disables cleanly via the probe instead of restart-looping. The boot config (`airplanes-config.txt`) is bootstrap-only and no longer touches operational keys — it only writes `MLATSERVER` + `TARGET` via the `FEED_HOST` synthesis. Concretely:
 
-- `stage-airplanes/01-install-feed/` clones `airplanes-live/feed` at the ref pinned in `config-{dev,stable}` and installs `apl-feed` plus systemd units.
+- The feed stack (feeder readsb, mlat-client venv, feed scripts, `apl-feed` CLI, and the `airplanes-feed` / `airplanes-mlat` units) is built into the runtime overlay from the `airplanes-live/feed` / readsb / mlat-client refs pinned in `runtime-overlay/config-{dev,stable}` (overlay build runs `stage-feed.sh`) and laid down by stage 02 as `managed_paths`; `stage-airplanes/01-install-feed/` only creates the `airplanes-feed` service account + group + state dir.
 - `stage-airplanes/06-firstboot/00-run.sh` writes `/etc/airplanes/release-channel` (read by `feed/update.sh`'s allowlist for `AIRPLANES_FEED_BRANCH`).
 - CI's `feed-overlay-smoke` and `feed-update-regression` jobs check out feed `dev` and exercise its smoke scripts (`test/image-release-rootfs-smoke.sh`, `test/update-regression-smoke.sh`) against the built image.
 
 Changes to the boot config schema, the `airplanes-first-run` parser, or the unit ordering need a paired feed PR (typically against `feed/dev`); see `feed/.claude/rules/architecture.md` for the daemon-side contract — the daemons own the `/run/<service>/state` format and the `MLAT_ENABLED`-before-geo classifier.
 
+Wi-Fi management is image-only — `apl-wifi` writes NetworkManager keyfiles directly and does not call into `apl-feed`. The boot-config Wi-Fi keys (`WIFI_SSID` / `WIFI_PASS` / `WIFI_COUNTRY`) remain bootstrap-only; adding or removing networks via the webconfig UI does not write back to `airplanes-config.txt`. The shared `wifi-validators.sh` library ships in the overlay rootfs payload (laid at stage 02, alongside `apl-wifi`) and is sourced by stage 06's `airplanes-first-run`, so SSID/PSK rules stay aligned across both flows.
+
 ## Migration & legacy
 
-`README.md` covers the user-facing migration path from the legacy airplanes.live image (per-feeder UUID handover, claim flow). `README-advanced.md` covers pointing the feeder at non-production backends via the `FEED_HOST` boot-config key — useful for staging. Advanced topologies (bracketed IPv6, non-default beast port, multi-host fan-out) require post-boot SSH and `/etc/airplanes/feed.env` edits, not boot-config keys.
+`README.md` covers the user-facing migration path from the legacy airplanes.live image (per-feeder UUID handover, claim flow). `README-advanced.md` covers pointing the feeder at non-production backends via the `FEED_HOST` (ingest) and `WEBSITE_URL` (website API) boot-config keys — useful for staging. Advanced topologies (bracketed IPv6, non-default beast port, multi-host fan-out) require post-boot SSH and `/etc/airplanes/feed.env` edits, not boot-config keys.

@@ -20,6 +20,7 @@
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../stage-airplanes/06-firstboot/files/usr/local/sbin/airplanes-first-run"
+    export APL_WIFI_LIB_DIR="${AIRPLANES_IMAGE_WEBCONFIG_ROOT:-$BATS_TEST_DIRNAME/../../image-webconfig}/files/usr/local/lib/airplanes"
     TMP="$(mktemp -d)"
 
     export BOOT_CONFIG="$TMP/firmware/airplanes-config.txt"
@@ -46,10 +47,17 @@ setup() {
     printf 'raspberrypi\n' > "$HOSTNAME_FILE"
     printf '127.0.1.1\traspberrypi\n' > "$HOSTS_FILE"
 
+    # main() can trigger apply_hostname when BOOT_CFG carries HOSTNAME.
+    # apply_hostname calls `hostnamectl set-hostname` + `hostname` against
+    # the host; the stubs intercept those calls so the bats run can't
+    # rename the developer's machine. Must load before sourcing the script.
+    # shellcheck source=lib/host-runtime-stubs.sh
+    source "$BATS_TEST_DIRNAME/lib/host-runtime-stubs.sh"
     # shellcheck source=/dev/null
     source "$SCRIPT"
     BOOT_CFG=()
     BOOT_CFG_ERRORS=()
+    reset_host_runtime_stubs
 }
 
 teardown() { rm -rf "$TMP"; }

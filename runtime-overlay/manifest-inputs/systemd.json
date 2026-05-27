@@ -1,0 +1,21 @@
+{
+  "enable": [
+    "readsb.service",
+    "airplanes-978.service",
+    "dump978-fa.service",
+    "airplanes-tar1090-uat-sync.service",
+    "airplanes-tar1090-uat-sync.path",
+    "tar1090.service",
+    "graphs1090.service",
+    "collectd.service",
+    "airplanes-webconfig.service",
+    "airplanes-webconfig-reset.service",
+    "airplanes-feed.service",
+    "airplanes-mlat.service"
+  ],
+  "disable": [],
+  "reload_or_restart": [
+    "lighttpd.service"
+  ],
+  "daemon_reload": true
+}

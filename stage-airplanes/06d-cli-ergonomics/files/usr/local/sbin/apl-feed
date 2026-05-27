@@ -1,0 +1,57 @@
+#!/bin/sh
+# Image-only interactive-UX wrapper for apl-feed.
+#
+# The canonical binary is /usr/local/bin/apl-feed (installed by the feed
+# scripts). Most subcommands need root because they read or write
+# /etc/airplanes/feed.env or restart systemd units. On this image the
+# rpi-imager-created human user has NOPASSWD: ALL via
+# airplanes-grant-sudo.service, so requiring a literal `sudo` prefix on
+# every call is friction without security value — this wrapper transparently
+# elevates the privileged subcommands.
+#
+# Path resolution: stage2's 05-path.diff puts /usr/local/sbin ahead of
+# /usr/local/bin in the non-root user PATH, so this file shadows the binary
+# for interactive shells and any user-side scripts. Webconfig and systemd
+# units invoke /usr/local/bin/apl-feed by absolute path and bypass this
+# wrapper entirely.
+
+set -eu
+
+BIN="${APL_FEED_BIN:-/usr/local/bin/apl-feed}"
+
+# Root already — nothing to elevate.
+if [ "$(id -u)" -eq 0 ]; then
+    exec "$BIN" "$@"
+fi
+
+# Truly read-only subcommands: no sudo needed.
+# Anything that reads /etc/airplanes/feeder-claim-secret (status), writes
+# state (id set, claim register, apply, mlat, 978, diagnostics, backup,
+# restore, import, config) or restarts services must go through sudo.
+case "${1:-}" in
+    ''|-h|--help|schema)
+        exec "$BIN" "$@"
+        ;;
+esac
+
+# Probe for passwordless sudo. airplanes-grant-sudo.service runs after
+# cloud-final.service; on a very fast first SSH the NOPASSWD drop-in may not
+# exist yet. Surface that clearly instead of letting `sudo -n` emit its
+# generic "a password is required" message.
+if ! sudo -n -v >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+apl-feed: passwordless sudo not yet available for this user.
+
+This usually means airplanes-grant-sudo.service has not finished running on
+first boot. Check its status and retry in a moment:
+
+    systemctl status airplanes-grant-sudo.service
+
+Or run the command explicitly with sudo:
+
+    sudo apl-feed ...
+EOF
+    exit 1
+fi
+
+exec sudo -n -- "$BIN" "$@"

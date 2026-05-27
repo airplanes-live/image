@@ -9,8 +9,22 @@ ConditionPathExists=!/var/lib/airplanes/grant-sudo-done
 # where rpi-imager-supplied users actually appear on disk. Without this
 # ordering, the script may race the user creation and find an empty
 # /etc/passwd to grant against.
+#
+# WantedBy=cloud-init.target (NOT multi-user.target). A previous version
+# used WantedBy=multi-user.target and got silently dropped from the boot
+# transaction by systemd's ordering-cycle breaker:
+#
+#   grant-sudo  Before multi-user.target   (implicit, oneshot WantedBy=)
+#   multi-user  Before cloud-final.service (cloud-final After=multi-user)
+#   cloud-final Before grant-sudo          (our After=cloud-final.service)
+#
+# cloud-init.target activates after cloud-final completes and is itself
+# WantedBy=multi-user.target, so pulling us into its transaction lands us
+# in the right phase without the cycle. We deliberately don't set
+# Wants=cloud-final.service — cloud-init.target already pulls it in, and
+# adding the redundant Wants= re-introduces the same cycle resolution
+# pressure.
 After=cloud-final.service
-Wants=cloud-final.service
 
 [Service]
 Type=oneshot
@@ -54,4 +68,4 @@ RestrictAddressFamilies=AF_UNIX
 PrivateNetwork=yes
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=cloud-init.target

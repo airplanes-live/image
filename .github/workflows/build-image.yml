@@ -6,8 +6,16 @@ name: build-image
 #         gh workflow run build-image.yml -R airplanes-live/image \
 #             -f channel=dev --ref <pr-branch>
 #   push to dev — post-merge validation. Every merge to dev rebuilds.
-#   push to a stable/v* tag — release build with channel=stable. Cut a tag
-#       on main: `git tag stable/v0.1.0 && git push origin stable/v0.1.0`.
+#   push to a v* tag — release build with channel=stable. Cut a tag
+#       on main: `git tag v0.1.0 && git push origin v0.1.0`.
+#   pull_request — runs on PRs that touch image-build inputs (pi-gen stages,
+#       configs, build scripts, runtime overlay, this workflow). PR runs
+#       always build the dev channel; they upload the image as an artifact
+#       but never publish a release or push a tag. The paths filter keeps
+#       PRs that only touch tests, docs, or unrelated files from spending
+#       the multi-hour native-arm64 build budget. cancel-in-progress under
+#       the existing concurrency block tears down stale runs when a PR is
+#       updated, so only the latest commit's build holds a slot.
 
 on:
   workflow_dispatch:
@@ -16,16 +24,296 @@ on:
         type: choice
         options: [stable, dev]
         default: dev
+      version:
+        description: 'Stable product version X.Y.Z. Required when channel=stable and publishing a tagged release is not used.'
+        type: string
+        required: false
   push:
-    branches: [dev]
-    tags: ['stable/v*']
+    # Heavy run on both dev (CHANNEL=dev, branch-tracking pins) and main
+    # (CHANNEL=stable, the same SHAs the next stable release would publish).
+    # v* tag pushes still produce the actual release artifact via the
+    # same build path. Having a green run on the main commit lets tag
+    # rulesets gate `v*` tag creation on prior CI status.
+    branches: [dev, main]
+    tags: ['v*']
+  pull_request:
+    # Fire on PRs that affect what the image build produces OR the
+    # boot-smoke test harness that consumes
+    # the built artifact. test/boot-smoke/ is included so changes to
+    # extra-probe.sh and friends are validated end-to-end against a
+    # freshly built image; without it a probe regression would only
+    # surface after the change merged and the next image-build PR ran.
+    # Other test/ paths (BATS suites) are intentionally excluded —
+    # they're covered by ci.yml's shell-tests job and don't need the
+    # multi-hour native-arm64 build budget.
+    paths:
+      - 'stage-airplanes/**'
+      - 'stage0/**'
+      - 'stage1/**'
+      - 'stage2/**'
+      - 'config-dev'
+      - 'config-stable'
+      - 'runtime-overlay/**'
+      - 'scripts/**'
+      - 'depends'
+      - 'Dockerfile'
+      - 'build.sh'
+      - 'build-docker.sh'
+      - 'export-image/**'
+      - 'export-noobs/**'
+      - 'test/boot-smoke/**'
+      - '.github/workflows/build-image.yml'
 
 permissions:
   contents: read
 
 jobs:
+  resolve-product:
+    name: Resolve product release identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      channel: ${{ steps.resolve.outputs.channel }}
+      version: ${{ steps.resolve.outputs.version }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+      should_publish: ${{ steps.resolve.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve
+        id: resolve
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUT_CHANNEL: ${{ github.event.inputs.channel }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: bash runtime-overlay/scripts/release-workflow/resolve-channel-and-tags.sh
+
+  build-runtime:
+    name: Build runtime-overlay-${{ matrix.arch }}
+    needs: resolve-product
+    runs-on: ubuntu-24.04-arm
+    # Build inside Debian trixie, not the Ubuntu runner userspace, so
+    # decoder binaries link against the same SONAMEs the deployed image
+    # carries (for example Debian's librtlsdr.so.0 instead of Ubuntu's
+    # librtlsdr.so.2).
+    container:
+      image: debian:trixie-slim
+      # stage-tar1090.sh and stage-graphs1090.sh use bwrap. The Debian
+      # container needs a privileged runtime for that namespace setup on
+      # this host; signing still happens in a separate job with secrets.
+      options: --privileged
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      matrix:
+        arch: [arm64]
+      fail-fast: false
+    env:
+      CHANNEL: ${{ needs.resolve-product.outputs.channel }}
+      VERSION: ${{ needs.resolve-product.outputs.version }}
+      COMMIT_SHA: ${{ needs.resolve-product.outputs.commit_sha }}
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Bootstrap container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install runtime build dependencies
+        run: |
+          apt-get install -y --no-install-recommends \
+              build-essential \
+              libusb-1.0-0-dev \
+              pkg-config \
+              librtlsdr-dev \
+              libncurses-dev \
+              zlib1g-dev \
+              libzstd-dev \
+              libboost-system-dev \
+              libboost-program-options-dev \
+              libboost-regex-dev \
+              libboost-filesystem-dev \
+              libsoapysdr-dev \
+              liblzma-dev \
+              libssl-dev \
+              jq \
+              python3-jsonschema \
+              python3-pip \
+              python3-venv \
+              python3-dev \
+              lighttpd \
+              shellcheck \
+              bubblewrap \
+              minisign \
+              file \
+              curl \
+              wget \
+              unzip \
+              bash-builtins \
+              rrdtool \
+              collectd-core \
+              libpython3.13
+          pip3 install --break-system-packages rfc3339-validator || true
+
+      - name: Build unsigned runtime assets
+        run: |
+          bash runtime-overlay/scripts/release-workflow/build-runtime-assets.sh \
+              --channel "$CHANNEL" \
+              --version "$VERSION" \
+              --commit-sha "$COMMIT_SHA" \
+              --arch "${{ matrix.arch }}" \
+              --output-dir "$RUNNER_TEMP/runtime-assets" \
+              --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-assets-unsigned-${{ matrix.arch }}
+          path: ${{ runner.temp }}/runtime-assets
+          retention-days: 7
+          if-no-files-found: error
+
+  verify-runtime:
+    name: Verify runtime-overlay gates
+    needs: [resolve-product, build-runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CHANNEL: ${{ needs.resolve-product.outputs.channel }}
+      VERSION: ${{ needs.resolve-product.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install runtime gate dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              jq \
+              python3-jsonschema \
+              python3-pip \
+              shellcheck \
+              lighttpd \
+              systemd \
+              file \
+              ca-certificates \
+              gh
+          pip3 install --break-system-packages rfc3339-validator || true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-assets-unsigned-arm64
+          path: ${{ runner.temp }}/runtime-assets
+
+      - name: Re-extract runtime tree from tarball
+        # actions/upload-artifact/download-artifact strips Unix mode bits
+        # from loose files. The tarball preserves them, so restore the
+        # tree before running exec-bit-check and any future mode-aware gate.
+        run: |
+          set -euo pipefail
+          tarball="$RUNNER_TEMP/runtime-assets/runtime-overlay-arm64.tar.gz"
+          if [[ ! -f "$tarball" ]]; then
+              echo "::error::expected runtime tarball missing: $tarball" >&2
+              ls -la "$RUNNER_TEMP/runtime-assets/" >&2
+              exit 1
+          fi
+          rm -rf -- "$RUNNER_TEMP/runtime-assets/tree/v$VERSION"
+          mkdir -p "$RUNNER_TEMP/runtime-assets/tree"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP/runtime-assets/tree"
+          if [[ ! -d "$RUNNER_TEMP/runtime-assets/tree/v$VERSION" ]]; then
+              echo "::error::tarball did not produce expected v$VERSION dir" >&2
+              tar -tzf "$tarball" | head -20 >&2
+              exit 1
+          fi
+
+      - name: Run runtime release gates
+        run: |
+          bash runtime-overlay/scripts/release-workflow/verify-gates.sh \
+              --release-dir "$RUNNER_TEMP/runtime-assets/tree/v$VERSION" \
+              --channel "$CHANNEL"
+
+  sign-runtime:
+    name: Sign runtime-overlay assets
+    needs: [resolve-product, verify-runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-assets-unsigned-arm64
+          path: ${{ runner.temp }}/runtime-assets
+
+      - name: Sign runtime SHA256SUMS
+        env:
+          MINISIGN_PRIVKEY: ${{ secrets.RUNTIME_RELEASE_MINISIGN_PRIVKEY }}
+        run: |
+          set -euo pipefail
+          sums="$RUNNER_TEMP/runtime-assets/runtime-SHA256SUMS"
+          [[ -f "$sums" ]] || { echo "::error::runtime-SHA256SUMS missing"; exit 1; }
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+              echo "" | minisign -G \
+                  -p "$RUNNER_TEMP/runtime-assets/runtime-test.pub" \
+                  -s "$RUNNER_TEMP/runtime-test.sec" \
+                  -W >/dev/null 2>&1
+              echo "" | minisign -Sm "$sums" \
+                  -s "$RUNNER_TEMP/runtime-test.sec" \
+                  -W \
+                  -x "$RUNNER_TEMP/runtime-assets/runtime-SHA256SUMS.minisig" >/dev/null 2>&1
+              rm -f -- "$RUNNER_TEMP/runtime-test.sec"
+          else
+              if [[ -z "${MINISIGN_PRIVKEY:-}" ]]; then
+                  echo "::error::secret RUNTIME_RELEASE_MINISIGN_PRIVKEY is not set"
+                  exit 1
+              fi
+              privkey_path="$RUNNER_TEMP/minisign.key"
+              trap "shred -u -- '$privkey_path' 2>/dev/null || rm -f -- '$privkey_path'" EXIT
+              umask 077
+              printenv MINISIGN_PRIVKEY > "$privkey_path"
+              ( cd "$RUNNER_TEMP/runtime-assets" && \
+                minisign -Sm runtime-SHA256SUMS \
+                    -s "$privkey_path" \
+                    -W \
+                    -x runtime-SHA256SUMS.minisig \
+                    -t "airplanes.live runtime overlay ${{ needs.resolve-product.outputs.release_tag }}" )
+          fi
+          (cd "$RUNNER_TEMP/runtime-assets" && sha256sum -c runtime-SHA256SUMS)
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-assets-signed-arm64
+          path: ${{ runner.temp }}/runtime-assets
+          retention-days: 7
+          if-no-files-found: error
+
   build:
-    name: build-${{ github.event.inputs.channel || (startsWith(github.ref, 'refs/tags/stable/') && 'stable') || 'dev' }}-${{ matrix.arch }}
+    name: build-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    needs: [resolve-product, sign-runtime]
     strategy:
       matrix:
         # armhf code paths exist but firmware package set has not been
@@ -34,19 +322,22 @@ jobs:
         arch: [arm64]
       fail-fast: false
     concurrency:
-      group: image-build-${{ github.event.inputs.channel || (startsWith(github.ref, 'refs/tags/stable/') && 'stable') || 'dev' }}-${{ matrix.arch }}-${{ github.ref }}
+      group: image-build-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}-${{ github.ref }}
       cancel-in-progress: true
     # Native arm64 runner: host arch matches our target arch, so the entire
-    # pi-gen build runs without qemu-user-aarch64 emulation. Eliminates the
-    # ~5-10x emulation overhead on stage-airplanes/02-install-decoder (readsb +
-    # dump978 compiles), where the bulk of build time used to live. Free for
-    # public repos on free-plan orgs as of GitHub's Jan 2025 announcement.
+    # pi-gen build runs without qemu-user-aarch64 emulation. Free for public
+    # repos on free-plan orgs as of GitHub's Jan 2025 announcement.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     env:
-      CHANNEL: ${{ github.event.inputs.channel || (startsWith(github.ref, 'refs/tags/stable/') && 'stable') || 'dev' }}
+      CHANNEL: ${{ needs.resolve-product.outputs.channel }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-assets-signed-${{ matrix.arch }}
+          path: ${{ runner.temp }}/runtime-assets
 
       - name: Load channel config
         run: |
@@ -84,7 +375,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
               quilt parted debootstrap \
               zerofree zip dosfstools libarchive-tools libcap2-bin rsync \
-              xz-utils file bc qemu-utils kpartx gpg pigz xxd arch-test
+              xz-utils file bc qemu-utils kpartx gpg pigz xxd arch-test \
+              minisign
           sudo ln -sf /bin/true /usr/local/bin/qemu-arm
 
       - name: Build
@@ -94,13 +386,19 @@ jobs:
           ARCHIVE_FILENAME: airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}
           DEPLOY_COMPRESSION: xz
           IMG_SUFFIX: ""
+          AIRPLANES_RUNTIME_RELEASE_ASSET_DIR: ${{ runner.temp }}/runtime-assets
+          AIRPLANES_RUNTIME_BUILD_TEST_PUBKEY: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          AIRPLANES_RUNTIME_MINISIGN_PUBKEY: ${{ runner.temp }}/runtime-assets/runtime-test.pub
         run: sudo -E ./build.sh -c "config-$CHANNEL"
 
-      - name: Mounted-image upgrade smoke
-        env:
-          AIRPLANES_IMAGE_PATH: deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz
-          AIRPLANES_IMAGE_CONTRACT: new
-        run: sudo -E bash feed/test/mounted-image-upgrade.sh
+      # Mounted-image upgrade smoke (feed/test/mounted-image-upgrade.sh) is
+      # removed: it tested that feed/update.sh doesn't drift the webconfig
+      # surface on the new image. Feed/update.sh no longer runs on the new
+      # image — the feed stack ships through the runtime overlay and the
+      # orchestrator has no feed step. The webconfig-drift regression surface
+      # is now covered by boot-smoke + the runtime-overlay-upgrade QEMU test.
+      # The feed-repo CI continues to test feed/update.sh against the new
+      # image contract via the ci.yml feed-update-regression job.
 
       - name: First-run chroot smoke
         run: sudo -E bash scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz"
@@ -111,6 +409,195 @@ jobs:
           path: deploy/
           if-no-files-found: error
 
+  boot-smoke:
+    # End-to-end boot of the just-built image under QEMU on a native arm64
+    # runner. Reuses feed/test/image-boot.sh for the QEMU launch + service
+    # health probes + feed-update idempotency; image-specific assertions
+    # (boot-config apply state, lighttpd, webconfig HTTP, sshd) ride along
+    # via test/boot-smoke/extra-probe.sh, sourced post-reboot through the
+    # AIRPLANES_BOOT_SMOKE_EXTRA_SETUP hook on image-boot.sh.
+    needs: [resolve-product, build]
+    name: boot-smoke-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        arch: [arm64]
+      fail-fast: false
+    env:
+      CHANNEL: ${{ needs.resolve-product.outputs.channel }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Load channel config
+        run: |
+          set -a
+          # shellcheck disable=SC1090
+          source "config-$CHANNEL"
+          set +a
+          echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_BRANCH" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/feed
+          ref: ${{ env.AIRPLANES_FEED_BRANCH }}
+          path: feed
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
+          path: deploy
+
+      - name: Install QEMU smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            binutils \
+            cpio \
+            curl \
+            gh \
+            initramfs-tools-core \
+            git \
+            jq \
+            kmod \
+            parted \
+            p7zip-full \
+            qemu-system-arm \
+            qemu-user-static \
+            rsync \
+            file \
+            unzip \
+            xz-utils \
+            zstd
+
+      - name: Run image boot smoke
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AIRPLANES_IMAGE_PATH: ${{ github.workspace }}/deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz
+          AIRPLANES_IMAGE_CONTRACT: new
+          AIRPLANES_IMAGE_CHANNEL: ${{ env.CHANNEL }}
+          AIRPLANES_IMAGE_ARCH: ${{ matrix.arch }}
+          AIRPLANES_BOOT_SMOKE_EXTRA_SETUP: ${{ github.workspace }}/test/boot-smoke/setup.sh
+          AIRPLANES_BOOT_SMOKE_WORK_DIR: ${{ runner.temp }}/airplanes-image-boot
+          # Preserve qemu-logs across the cleanup trap so the failure-artifact
+          # upload step below can read them.
+          AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR: '1'
+        run: |
+          sudo --preserve-env=GH_TOKEN,AIRPLANES_IMAGE_PATH,AIRPLANES_IMAGE_CONTRACT,AIRPLANES_IMAGE_CHANNEL,AIRPLANES_IMAGE_ARCH,AIRPLANES_BOOT_SMOKE_EXTRA_SETUP,AIRPLANES_BOOT_SMOKE_WORK_DIR,AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR \
+            bash feed/test/image-boot.sh
+
+      - name: Upload QEMU logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: boot-smoke-${{ env.CHANNEL }}-${{ matrix.arch }}-logs
+          path: ${{ runner.temp }}/airplanes-image-boot/qemu-logs
+          if-no-files-found: warn
+
+  runtime-overlay-upgrade:
+    # End-to-end QEMU upgrade+rollback test: boots the built image, drives
+    # runtime-self-update.sh against synthetic GOOD + BROKEN overlay releases
+    # signed with a test key, asserts convergence then rollback, reboots and
+    # verifies the rolled-back release persists.
+    needs: [resolve-product, sign-runtime, build]
+    name: runtime-overlay-upgrade-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        arch: [arm64]
+      fail-fast: false
+    env:
+      CHANNEL: ${{ needs.resolve-product.outputs.channel }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Load channel config
+        run: |
+          set -a
+          # shellcheck disable=SC1090
+          source "config-$CHANNEL"
+          set +a
+          echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_BRANCH" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/feed
+          ref: ${{ env.AIRPLANES_FEED_BRANCH }}
+          path: feed
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-assets-signed-${{ matrix.arch }}
+          path: ${{ runner.temp }}/runtime-assets
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
+          path: deploy
+
+      - name: Install QEMU smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            binutils \
+            cpio \
+            curl \
+            gh \
+            initramfs-tools-core \
+            git \
+            jq \
+            kmod \
+            parted \
+            p7zip-full \
+            qemu-system-arm \
+            qemu-user-static \
+            rsync \
+            file \
+            unzip \
+            xz-utils \
+            zstd \
+            minisign
+
+      - name: Pre-build synthetic overlay releases (good + broken)
+        env:
+          PREBUILT_DIR: ${{ runner.temp }}/runtime-prebuilt
+          SIGNED_ASSET_DIR: ${{ runner.temp }}/runtime-assets
+          OVERLAY_DIR: ${{ github.workspace }}/runtime-overlay
+        run: |
+          # shellcheck source=test/boot-smoke/lib/runtime-upgrade-helpers.sh
+          . test/boot-smoke/lib/runtime-upgrade-helpers.sh
+          build_synthetic_runtime_releases_prebuild \
+              "$SIGNED_ASSET_DIR" "$OVERLAY_DIR" "$PREBUILT_DIR"
+
+      - name: Run image boot smoke (runtime-overlay-upgrade variant)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AIRPLANES_IMAGE_PATH: ${{ github.workspace }}/deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz
+          AIRPLANES_IMAGE_CONTRACT: new
+          AIRPLANES_IMAGE_CHANNEL: ${{ env.CHANNEL }}
+          AIRPLANES_IMAGE_ARCH: ${{ matrix.arch }}
+          AIRPLANES_BOOT_SMOKE_EXTRA_SETUP: ${{ github.workspace }}/test/boot-smoke/setup.sh
+          AIRPLANES_BOOT_SMOKE_WORK_DIR: ${{ runner.temp }}/airplanes-image-boot-upgrade
+          AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR: '1'
+          AIRPLANES_BOOT_SMOKE_TEST_RUNTIME_UPGRADE: '1'
+          AIRPLANES_BOOT_SMOKE_PREBUILT_RUNTIME_RELEASES: ${{ runner.temp }}/runtime-prebuilt
+          AIRPLANES_BOOT_SMOKE_MAX_BOOT_ATTEMPTS: '3'
+          AIRPLANES_BOOT_SMOKE_QEMU_TIMEOUT: '25m'
+        run: |
+          sudo --preserve-env=GH_TOKEN,AIRPLANES_IMAGE_PATH,AIRPLANES_IMAGE_CONTRACT,AIRPLANES_IMAGE_CHANNEL,AIRPLANES_IMAGE_ARCH,AIRPLANES_BOOT_SMOKE_EXTRA_SETUP,AIRPLANES_BOOT_SMOKE_WORK_DIR,AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR,AIRPLANES_BOOT_SMOKE_TEST_RUNTIME_UPGRADE,AIRPLANES_BOOT_SMOKE_PREBUILT_RUNTIME_RELEASES,AIRPLANES_BOOT_SMOKE_MAX_BOOT_ATTEMPTS,AIRPLANES_BOOT_SMOKE_QEMU_TIMEOUT \
+            bash feed/test/image-boot.sh
+
+      - name: Upload QEMU logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-overlay-upgrade-${{ env.CHANNEL }}-${{ matrix.arch }}-logs
+          path: ${{ runner.temp }}/airplanes-image-boot-upgrade/qemu-logs
+          if-no-files-found: warn
+
   publish-dev-latest:
     # Maintain a single rolling `dev-latest` GitHub prerelease that always
     # points at the most recent successful push-to-dev build. Downstream
@@ -119,8 +606,11 @@ jobs:
     # rather than the workflow-artifact API; releases don't expire, so the
     # 90-day artifact retention window is no longer a coverage concern.
     name: Update rolling dev-latest prerelease
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && success()
+    needs: [resolve-product, sign-runtime, build, boot-smoke, runtime-overlay-upgrade]
+    if: |
+      needs.resolve-product.outputs.release_tag == 'dev-latest'
+      && needs.resolve-product.outputs.should_publish == 'true'
+      && success()
     runs-on: ubuntu-24.04
     permissions:
       # Scoped to this job only — the `build` job stays at the workflow-level
@@ -145,10 +635,15 @@ jobs:
           name: image-dev-arm64
           path: deploy
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-assets-signed-arm64
+          path: ${{ runner.temp }}/runtime-assets
+
       - name: Upsert dev-latest prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.resolve-product.outputs.commit_sha }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
@@ -182,16 +677,39 @@ jobs:
           # (same cp source), so running the generator against $asset and
           # overriding only `url` is correct.
           immutable_url="https://github.com/$GITHUB_REPOSITORY/releases/download/dev-latest/$immutable_basename"
-          scripts/make-imager-manifest.sh --image-url "$immutable_url" "$asset"
+          # Build identity for the rpi-imager OS-list entry. $SHA is the full
+          # 40-char github.sha; the script slices to 12 chars internally to
+          # match $short_sha above. build_time uses publish-job run time at
+          # second precision so the name (HH:MMZ) plus the description
+          # (HH:MM:SS UTC) disambiguate same-day and same-minute reruns.
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          scripts/make-imager-manifest.sh \
+              --image-url "$immutable_url" \
+              --commit-sha "$SHA" \
+              --build-time "$build_time" \
+              "$asset"
           manifest="${asset%.img.xz}.rpi-imager-manifest.json"
           if [[ ! -f "$manifest" ]]; then
               echo "manifest not produced at expected path: $manifest" >&2
               exit 1
           fi
 
+          runtime_assets="$RUNNER_TEMP/runtime-assets"
+          for runtime_asset in \
+              runtime-overlay-arm64.tar.gz \
+              runtime-manifest.json \
+              runtime-SHA256SUMS \
+              runtime-SHA256SUMS.minisig \
+              runtime-PROVENANCE.md; do
+              [[ -f "$runtime_assets/$runtime_asset" ]] \
+                  || { echo "missing runtime asset: $runtime_assets/$runtime_asset" >&2; exit 1; }
+          done
+          runtime_version="$(jq -r '.version' "$runtime_assets/runtime-manifest.json")"
+
           notes="Updated automatically on every push to dev. Overwritten in place; not a per-build release. For stable builds, see release tags.
 
-          Built from $GITHUB_REPOSITORY @ ${SHA}."
+          Built from $GITHUB_REPOSITORY @ ${SHA}.
+          Runtime overlay: ${runtime_version}."
 
           # Ensure the release exists before any asset upload. gh release
           # upload fails with "release not found" for the first ever push;
@@ -203,6 +721,7 @@ jobs:
               gh release create dev-latest --prerelease \
                   --title "Bleeding-edge dev build (rolling)" \
                   --notes "$notes" \
+                  --target "$SHA" \
                   -R "$GITHUB_REPOSITORY"
           fi
 
@@ -220,6 +739,11 @@ jobs:
           #      previous immutable .xz, which the pruner keeps around so
           #      in-flight rpi-imager downloads against the old manifest
           #      still complete.
+          gh release upload dev-latest "$runtime_assets/runtime-overlay-arm64.tar.gz" --clobber -R "$GITHUB_REPOSITORY"
+          gh release upload dev-latest "$runtime_assets/runtime-PROVENANCE.md" --clobber -R "$GITHUB_REPOSITORY"
+          gh release upload dev-latest "$runtime_assets/runtime-SHA256SUMS" --clobber -R "$GITHUB_REPOSITORY"
+          gh release upload dev-latest "$runtime_assets/runtime-SHA256SUMS.minisig" --clobber -R "$GITHUB_REPOSITORY"
+          gh release upload dev-latest "$runtime_assets/runtime-manifest.json" --clobber -R "$GITHUB_REPOSITORY"
           gh release upload dev-latest "$immutable_path" -R "$GITHUB_REPOSITORY"
           gh release upload dev-latest "$manifest" --clobber -R "$GITHUB_REPOSITORY"
           # Refresh body to reflect the SHA whose assets we just uploaded.
@@ -276,13 +800,117 @@ jobs:
               gh api --method DELETE "$asset_url"
           done
 
+  publish-stable-release:
+    # Stable product releases are published only after the runtime overlay,
+    # image build, mounted/chroot checks, boot smoke, and the runtime-overlay
+    # upgrade+rollback QEMU test all succeeded. The release is created as a
+    # draft first; draft releases are ignored by the on-device stable updater.
+    name: Publish stable product release
+    needs: [resolve-product, sign-runtime, build, boot-smoke, runtime-overlay-upgrade]
+    if: |
+      needs.resolve-product.outputs.channel == 'stable'
+      && needs.resolve-product.outputs.should_publish == 'true'
+      && startsWith(needs.resolve-product.outputs.release_tag, 'v')
+      && success()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: stable-release-${{ github.repository }}-${{ needs.resolve-product.outputs.release_tag }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-stable-arm64
+          path: deploy
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-assets-signed-arm64
+          path: ${{ runner.temp }}/runtime-assets
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve-product.outputs.release_tag }}
+          SHA: ${{ needs.resolve-product.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(deploy/airplanes-feeder-stable-*.img.xz)
+          shopt -u nullglob
+          if (( ${#images[@]} != 1 )); then
+              echo "expected exactly 1 airplanes-feeder-stable-*.img.xz under deploy/, found ${#images[@]}" >&2
+              ls -la deploy/ >&2 || true
+              exit 1
+          fi
+          image="${images[0]}"
+          image_basename="$(basename -- "$image")"
+          image_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$image_basename"
+          scripts/make-imager-manifest.sh \
+              --image-url "$image_url" \
+              "$image"
+          image_manifest="${image%.img.xz}.rpi-imager-manifest.json"
+          [[ -f "$image_manifest" ]] || { echo "manifest not produced: $image_manifest" >&2; exit 1; }
+
+          runtime_assets="$RUNNER_TEMP/runtime-assets"
+          for runtime_asset in \
+              runtime-overlay-arm64.tar.gz \
+              runtime-manifest.json \
+              runtime-SHA256SUMS \
+              runtime-SHA256SUMS.minisig \
+              runtime-PROVENANCE.md; do
+              [[ -f "$runtime_assets/$runtime_asset" ]] \
+                  || { echo "missing runtime asset: $runtime_assets/$runtime_asset" >&2; exit 1; }
+          done
+          runtime_version="$(jq -r '.version' "$runtime_assets/runtime-manifest.json")"
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+              printf '# airplanes.live feeder %s\n\n' "$RELEASE_TAG"
+              printf 'Flashable image and runtime overlay update assets for %s.\n\n' "$RELEASE_TAG"
+              printf -- '- Source: `%s @ %s`\n' "$GITHUB_REPOSITORY" "$SHA"
+              printf -- '- Runtime overlay: `%s`\n' "$runtime_version"
+              printf -- '- Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > "$notes"
+
+          if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json id >/dev/null 2>&1; then
+              echo "release already exists: $RELEASE_TAG" >&2
+              exit 1
+          fi
+
+          gh release create "$RELEASE_TAG" \
+              --draft \
+              --title "$RELEASE_TAG" \
+              --notes-file "$notes" \
+              --target "$SHA" \
+              -R "$GITHUB_REPOSITORY"
+
+          gh release upload "$RELEASE_TAG" "$runtime_assets/runtime-overlay-arm64.tar.gz" -R "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" "$runtime_assets/runtime-PROVENANCE.md" -R "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" "$runtime_assets/runtime-SHA256SUMS" -R "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" "$runtime_assets/runtime-SHA256SUMS.minisig" -R "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" "$runtime_assets/runtime-manifest.json" -R "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" "$image" -R "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" "$image_manifest" -R "$GITHUB_REPOSITORY"
+
+          gh release edit "$RELEASE_TAG" --draft=false --latest -R "$GITHUB_REPOSITORY"
+
   cleanup-dev-artifacts:
     # Keep only the newest image-dev-arm64 artifact. Without this, every dev
     # push leaves a ~700MB artifact behind for the default 90-day retention,
-    # piling up to hundreds of GB. Gated to canonical dev pushes so manual
-    # workflow_dispatch runs (even with channel=dev) can't delete the latest.
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && success()
+    # piling up to hundreds of GB. Gated to the dev branch + dev channel:
+    # manual workflow_dispatch runs from the dev branch with channel=dev
+    # (the default) participate; runs from feature branches, or with
+    # channel=stable, do not — so feature-branch experiments cannot prune
+    # the canonical artifact.
+    needs: [resolve-product, build]
+    if: |
+      needs.resolve-product.outputs.release_tag == 'dev-latest'
+      && needs.resolve-product.outputs.should_publish == 'true'
+      && success()
     runs-on: ubuntu-24.04
     permissions:
       actions: write

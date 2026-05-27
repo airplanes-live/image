@@ -1,0 +1,1749 @@
+#!/bin/bash
+# Render the airplanes.live feeder status dashboard.
+#
+# Modes & layouts:
+#   --snapshot   one-shot, no cursor moves, exit 0 (used by update-motd.d).
+#                Banner-stack: 20-col ASCII icon on the left, Unicode-box
+#                header (title / tagline / build) on the right form the
+#                top banner; full-width status block prints below.
+#   --live       loop forever (default for the systemd service): home
+#                cursor, render frame, erase from cursor to end-of-screen,
+#                sleep 5. Banner-on-top: 135-col banner above the
+#                full-width 80-col status block.
+#   --once       one-shot WITH a screen clear (manual `apl-status` use).
+#                Same banner-stack layout as --snapshot.
+#
+# A runtime width guard (term_cols) falls back to narrower layouts
+# when the terminal isn't wide enough:
+#   --live      >= 135 cols → wide banner; >= 74 cols → narrow banner;
+#               otherwise the small 40-col logo above the full status block.
+#   --snapshot/--once need >= 80 cols for the new banner-stack layout;
+#               below that they fall back to the legacy icon + 38-col
+#               compact panel side-by-side (and below ~60 cols to a plain
+#               text header + compact panel, no icon).
+#
+# Reads only local files, systemctl, and nmcli (queried with --rescan no
+# so it never initiates a WiFi scan). Tolerates every input being absent
+# (degrades to "-" or "(...)" strings instead of failing). Wraps
+# systemctl / nmcli calls in `timeout 2` so a stalled dbus cannot freeze
+# SSH login when this script runs as the update-motd.d snapshot.
+
+set -u
+LC_ALL=C
+
+# ---- Path overrides (env vars; defaults are the rootfs locations). ---------
+: "${PATHS_FEEDER_ID:=/etc/airplanes/feeder-id}"
+: "${PATHS_RELEASE_CHANNEL:=/etc/airplanes/release-channel}"
+: "${PATHS_MANIFEST:=/etc/airplanes/build-manifest.json}"
+: "${PATHS_CLAIM_SECRET:=/etc/airplanes/feeder-claim-secret}"
+: "${PATHS_CLAIM_PENDING:=/etc/airplanes/feeder-claim-secret.pending}"
+: "${PATHS_CLAIM_VERSION:=/etc/airplanes/feeder-claim-secret.version}"
+: "${PATHS_AIRCRAFT_JSON:=/run/readsb/aircraft.json}"
+: "${PATHS_THERMAL:=/sys/class/thermal/thermal_zone0/temp}"
+: "${PATHS_LOGO:=/usr/local/share/airplanes/logo.txt}"
+: "${PATHS_BANNER:=/usr/local/share/airplanes/banner.txt}"
+: "${PATHS_BANNER_NARROW:=/usr/local/share/airplanes/banner-narrow.txt}"
+: "${PATHS_ICON:=/usr/local/share/airplanes/icon.txt}"
+: "${PATHS_STATE_FILE_MLAT:=/run/airplanes-mlat/state}"
+: "${PATHS_STATE_FILE_FEED:=/run/airplanes-feed/state}"
+: "${PATHS_STATE_FILE_978:=/run/airplanes-978/state}"
+: "${PATHS_STATE_FILE_DUMP978FA:=/run/dump978-fa/state}"
+: "${PATHS_STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
+: "${PATHS_SYSFS_NET:=/sys/class/net}"
+# Absolute path: the MOTD wrapper deliberately strips /usr/local/bin from
+# PATH, so PATH-relative invocation would silently fail on SSH login.
+: "${PATHS_PIHEALTH_BIN:=/usr/local/bin/airplanes-webconfig}"
+
+# State reader. Defensive — if the lib is missing (mid-update transient or
+# pi-gen build older than feed PR 1+2), fall back to a stub so consumers
+# degrade to systemd-only rendering.
+if [[ -r "$PATHS_STATE_READER_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$PATHS_STATE_READER_LIB"
+else
+    airplanes_read_state() { return 1; }
+fi
+
+readonly LOGO_WIDTH=40
+readonly BANNER_WIDTH=135
+readonly BANNER_NARROW_WIDTH=74
+readonly ICON_WIDTH=20
+readonly STATUS_PANEL_WIDTH=38
+# Snapshot header switches to icon+text when ICON_WIDTH + 2 (gutter) +
+# the worst-case right-column row width fit; below that it's text-only.
+# Worst case is the UAT row with the `partial` token: 2 (indent) +
+# SVC_LABEL_WIDTH (29) + 2 (sep) + 7 ("partial") = 40 cells. The
+# constant computes that from SVC_LABEL_WIDTH so future label edits
+# don't silently re-introduce wrap. SVC_LABEL_WIDTH is filled in below
+# right after SVC_DISPLAY_LABELS is declared.
+
+readonly UNITS=(
+    airplanes-feed.service
+    airplanes-mlat.service
+    readsb.service
+    dump978-fa.service
+    airplanes-978.service
+)
+
+# Display services drive rendering; separate from UNITS (which drives
+# systemd priming) so a grouped service like UAT (consumer + producer
+# combined) can't accidentally render its underlying units as standalone
+# rows. The mapping from display id to underlying unit(s) lives in
+# service_display_state(); these two arrays only carry id + label.
+readonly SVC_DISPLAY_IDS=(feed mlat readsb uat978)
+readonly SVC_DISPLAY_LABELS=(
+    "Data upload (feed)"
+    "Aircraft triangulation (mlat)"
+    "ADS-B decoder (readsb)"
+    "UAT receiver (978)"
+)
+_svc_label_width=0
+for _label in "${SVC_DISPLAY_LABELS[@]}"; do
+    (( ${#_label} > _svc_label_width )) && _svc_label_width=${#_label}
+done
+readonly SVC_LABEL_WIDTH=$_svc_label_width
+# Longest plain status token. Bumping it (e.g. by adding a new state in
+# svc_token_text) automatically widens SNAPSHOT_ICON_MIN_COLS below so
+# the icon column doesn't push the worst row past the terminal width.
+readonly SVC_TOKEN_MAX_WIDTH=7  # 'partial'
+readonly SVC_ROW_MAX_WIDTH=$(( 2 + SVC_LABEL_WIDTH + 2 + SVC_TOKEN_MAX_WIDTH ))
+readonly SNAPSHOT_ICON_MIN_COLS=$(( ICON_WIDTH + 2 + SVC_ROW_MAX_WIDTH ))
+unset _label _svc_label_width
+
+# Random tagline pool — verbatim copy of the 9 EN strings rendered in the
+# website navigation header (website/website/templates/_base/nav.html).
+# Picked once at script load via $RANDOM so live mode (5s repaint loop)
+# doesn't reshuffle every frame. AIRPLANES_STATUS_TAGLINE_INDEX overrides
+# the random pick — used by bats and the chroot smoke test for
+# deterministic output.
+readonly TAGLINES=(
+    "Unfiltered flight data"
+    "Signal desk"
+    "Community-Run"
+    "For enthusiasts"
+    "Aviation 24/7"
+    "Independent"
+    "Passionate"
+    "Here for you."
+    "No compromises"
+)
+# Force base-10 with `10#…` so leading-zero values like `08` don't trip
+# Bash's "invalid octal" arithmetic error (which would leak to stderr,
+# and the MOTD wrapper does not scrub stderr from the renderer).
+TAGLINE_INDEX=""
+if [[ "${AIRPLANES_STATUS_TAGLINE_INDEX:-}" =~ ^[0-9]+$ ]]; then
+    _override_idx=$(( 10#$AIRPLANES_STATUS_TAGLINE_INDEX ))
+    if (( _override_idx < ${#TAGLINES[@]} )); then
+        TAGLINE_INDEX=$_override_idx
+    fi
+    unset _override_idx
+fi
+[[ -z "$TAGLINE_INDEX" ]] && TAGLINE_INDEX=$(( RANDOM % ${#TAGLINES[@]} ))
+readonly TAGLINE_INDEX
+
+# ---- Color (gated on TTY-ness of stdout + non-dumb $TERM). -----------------
+ESC=$'\e'
+_use_color() {
+    [[ -t 1 ]] || return 1
+    case "${TERM:-}" in
+        ""|dumb) return 1 ;;
+    esac
+    return 0
+}
+if _use_color; then
+    C_RESET="${ESC}[0m"
+    C_DIM="${ESC}[2m"
+    C_BOLD="${ESC}[1m"
+    C_OK="${ESC}[32m"
+    C_WARN="${ESC}[33m"
+    C_FAIL="${ESC}[31m"
+    C_HDR="${ESC}[36m"
+else
+    C_RESET="" C_DIM="" C_BOLD="" C_OK="" C_WARN="" C_FAIL="" C_HDR=""
+fi
+
+# Map a pi-health severity token to its colour. Unknown tokens (and "na")
+# fall back to dim — same treatment as an inactive/unknown service row.
+pihealth_color() {
+    case "$1" in
+        ok)   printf '%s' "$C_OK"   ;;
+        warn) printf '%s' "$C_WARN" ;;
+        err)  printf '%s' "$C_FAIL" ;;
+        *)    printf '%s' "$C_DIM"  ;;
+    esac
+}
+
+# ---- String sanitization. Strips non-printable, clamps length. -------------
+# Defends against weird hostnames / channel strings landing in our framebuffer
+# and emitting terminal escape sequences when we render as root.
+sanitize() {
+    local s="${1-}" maxlen="${2:-64}" out
+    out="$(printf '%s' "$s" | LC_ALL=C tr -cd ' -~')"
+    printf '%s' "${out:0:$maxlen}"
+}
+
+# ---- Defensive readers (each returns "" on any failure). -------------------
+read_feeder_id() {
+    [[ -r "$PATHS_FEEDER_ID" ]] || return 0
+    local v
+    v="$(head -n1 "$PATHS_FEEDER_ID" 2>/dev/null | tr -d '[:space:]')"
+    sanitize "$v" 36
+}
+
+read_channel() {
+    [[ -r "$PATHS_RELEASE_CHANNEL" ]] || return 0
+    local v
+    v="$(head -n1 "$PATHS_RELEASE_CHANNEL" 2>/dev/null | tr -d '[:space:]')"
+    # 10-char clamp: realistic values are "dev" / "stable"; this keeps the
+    # snapshot header (`feed sha=abc1234 (channel=stable)`) inside
+    # STATUS_PANEL_WIDTH=38 even when /etc/airplanes/release-channel has
+    # been hand-edited with a longer string.
+    sanitize "$v" 10
+}
+
+# Pull the airplanes_feed component SHA (the user-visible "what version of the
+# feed software is running"). manifest schema lives in
+# image/stage-airplanes/07-finalize. Returns short (7 char) SHA or "".
+read_build_short_sha() {
+    [[ -r "$PATHS_MANIFEST" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    local sha
+    sha="$(jq -r '.components.airplanes_feed // empty' "$PATHS_MANIFEST" 2>/dev/null)"
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+    printf '%s' "${sha:0:7}"
+}
+
+# Claim state. NEVER reads secret contents; existence-check only. Mirrors
+# the file lifecycle in feed/scripts/apl-feed/claim.sh: register writes
+# .pending then mv's it to the final secret on success, so .pending without
+# a final secret means a registration was started but not confirmed; rotate
+# writes .pending alongside an existing final secret.
+# States:
+#   unclaimed                 — no secret, no pending: never registered
+#   registration-pending      — .pending exists, no final secret
+#   rotation-pending          — .pending exists AND final secret exists
+#   registered (vN)           — final secret + version file
+#   secret-saved              — final secret without version file
+claim_state() {
+    local version
+    local has_final=0 has_pending=0
+    [[ -f "$PATHS_CLAIM_SECRET" ]] && has_final=1
+    [[ -f "$PATHS_CLAIM_PENDING" ]] && has_pending=1
+    if (( has_pending )); then
+        if (( has_final )); then
+            printf 'rotation-pending'
+        else
+            printf 'registration-pending'
+        fi
+        return
+    fi
+    if (( ! has_final )); then
+        printf 'unclaimed'
+        return
+    fi
+    if [[ -r "$PATHS_CLAIM_VERSION" ]]; then
+        version="$(head -n1 "$PATHS_CLAIM_VERSION" 2>/dev/null | tr -d '[:space:]')"
+        if [[ "$version" =~ ^[0-9]+$ ]]; then
+            printf 'registered (v%s)' "$version"
+            return
+        fi
+    fi
+    printf 'secret-saved'
+}
+
+# True (rc 0) if the airplanes-mlat wrapper would early-exit with "MLAT
+# DISABLED + sleep 3600". Mirrors the predicate in feed/scripts/airplanes-mlat.sh:
+# MLAT_ENABLED=false || GEO_CONFIGURED != true. Falls back to legacy
+# USER=0|disable when MLAT_ENABLED isn't set yet (a feed.env from before
+# the schema split, or a daemon read between a legacy webconfig write and
+# the next update.sh sweep).
+# Classify the airplanes-mlat daemon's runtime decision.
+# Echoes "<state> <reason>" on a single line.
+#   state   ∈ { enabled, disabled, misconfigured, failed, inactive, unknown }
+#   reason  is a stable token; "-" when no reason applies.
+#
+# Daemon publishes its decision to /run/airplanes-mlat/state when active or
+# transitioning. For the failed terminal state with ExecMainStatus=64
+# (strict misconfig fail), the file persists across the failure via
+# RuntimeDirectoryPreserve=yes and we surface its reason. Otherwise we
+# render systemd-derived state.
+mlat_config_state() {
+    local active_state="$1"
+    local decision reason exit_code
+    case "$active_state" in
+        active|activating|reloading)
+            if decision="$(airplanes_read_state "$PATHS_STATE_FILE_MLAT" state)" \
+                && reason="$(airplanes_read_state "$PATHS_STATE_FILE_MLAT" reason)"; then
+                printf '%s %s' "$decision" "$reason"
+                return
+            fi
+            printf 'unknown -'
+            ;;
+        failed)
+            exit_code="$(_unit_prop airplanes-mlat.service ExecMainStatus)"
+            if [[ "$exit_code" == "64" ]]; then
+                if reason="$(airplanes_read_state "$PATHS_STATE_FILE_MLAT" reason)" && [[ -n "$reason" ]]; then
+                    printf 'misconfigured %s' "$reason"
+                    return
+                fi
+                printf 'misconfigured unknown'
+                return
+            fi
+            printf 'failed exit_%s' "${exit_code:-unknown}"
+            ;;
+        *)
+            printf 'inactive -'
+            ;;
+    esac
+}
+
+# Classify a 978-family daemon's runtime decision. The two units have
+# separate state files (dump978-fa.sh owns /run/dump978-fa/state with the
+# producer's hardware-probe reasons; airplanes-978.sh owns the existing
+# /run/airplanes-978/state with the consumer's classifier including
+# peer_no_hardware refined from the producer file). Echoes
+# "<state> <reason>" on a single line. The failed-branch consults the
+# unit-specific ExecMainStatus so a self-disable (exit 64) is treated as a
+# config decision even when the state-reader couldn't open the file.
+_978_config_state() {
+    local active_state="$1" unit="${2:-airplanes-978.service}"
+    local state_file decision reason exit_code
+    case "$unit" in
+        dump978-fa.service)    state_file="$PATHS_STATE_FILE_DUMP978FA" ;;
+        airplanes-978.service) state_file="$PATHS_STATE_FILE_978" ;;
+        *)                     state_file="$PATHS_STATE_FILE_978" ;;
+    esac
+    case "$active_state" in
+        active|activating|reloading)
+            if decision="$(airplanes_read_state "$state_file" state)" \
+                && reason="$(airplanes_read_state "$state_file" reason)"; then
+                printf '%s %s' "$decision" "$reason"
+                return
+            fi
+            printf 'unknown -'
+            ;;
+        failed)
+            exit_code="$(_unit_prop "$unit" ExecMainStatus)"
+            if [[ "$exit_code" == "64" ]]; then
+                if decision="$(airplanes_read_state "$state_file" state)" \
+                    && reason="$(airplanes_read_state "$state_file" reason)"; then
+                    printf '%s %s' "$decision" "$reason"
+                    return
+                fi
+                printf 'misconfigured unknown'
+                return
+            fi
+            printf 'failed exit_%s' "${exit_code:-unknown}"
+            ;;
+        *)
+            printf 'inactive -'
+            ;;
+    esac
+}
+
+# Compute SD_MLAT_NOTE from the airplanes-mlat daemon's published state.
+# Caller passes the unit's ActiveState (typically from _unit_prop). Reads
+# only the daemon-owned /run/airplanes-mlat/state — never feed.env. Empty
+# note means no message to display (e.g. enabled-ok, or daemon never ran).
+# On a fresh image MLAT_ENABLED defaults to false AND geo is unset; the
+# daemon's classifier reports reason=mlat_enabled_false (MLAT_ENABLED wins
+# over geo), so we cross-check geo_configured from the same state file
+# and surface the location call-to-action when geo is also unset. That
+# way the operator sees what to do first rather than a passive
+# "disabled in config."
+_compute_mlat_note() {
+    local active_state="$1"
+    local mlat_state mlat_reason
+    read -r mlat_state mlat_reason <<<"$(mlat_config_state "$active_state")"
+    SD_MLAT_NOTE=""
+    case "$mlat_state" in
+        disabled)
+            case "$mlat_reason" in
+                mlat_enabled_false)
+                    local geo_configured
+                    geo_configured="$(airplanes_read_state "$PATHS_STATE_FILE_MLAT" geo_configured)" || geo_configured=""
+                    if [[ "$geo_configured" == "true" ]]; then
+                        SD_MLAT_NOTE="${C_DIM}MLAT disabled in config.${C_RESET}"
+                    else
+                        SD_MLAT_NOTE="${C_WARN}Set lat/lon/alt to enable MLAT.${C_RESET}"
+                    fi
+                    ;;
+                geo_not_configured) SD_MLAT_NOTE="${C_WARN}Set lat/lon/alt to enable MLAT.${C_RESET}" ;;
+                latitude_zero)      SD_MLAT_NOTE="${C_WARN}Set lat to enable MLAT.${C_RESET}" ;;
+                longitude_zero)     SD_MLAT_NOTE="${C_WARN}Set lon to enable MLAT.${C_RESET}" ;;
+            esac
+            ;;
+        misconfigured)
+            SD_MLAT_NOTE="${C_FAIL}MLAT misconfigured.${C_RESET}"
+            ;;
+        unknown)
+            SD_MLAT_NOTE="${C_WARN}MLAT state unknown.${C_RESET}"
+            ;;
+    esac
+}
+
+# Service state. Bounded by `timeout 2` so stalled dbus / systemd cannot
+# freeze us (critical for the snapshot path that runs at SSH login).
+# For airplanes-mlat the renderer also wants the reason token; this
+# variant returns "<state> <reason>" so callers can plumb both through.
+unit_state_with_reason() {
+    local unit="$1" enabled enabled_rc active_state
+    if ! command -v systemctl >/dev/null 2>&1; then
+        printf 'unknown -'
+        return
+    fi
+    # The per-frame prime timed out — every property lookup would be
+    # empty. Surface 'timeout' (rendered as the dim '?' marker) so the
+    # dashboard reflects the dbus stall instead of falsely reporting
+    # 'fail' on healthy units.
+    if (( SD_UNIT_PROPS_PRIMED == 2 )); then
+        printf 'timeout -'
+        return
+    fi
+    # MLAT: classify via daemon's published state file.
+    if [[ "$unit" == 'airplanes-mlat.service' ]]; then
+        active_state="$(_unit_prop "$unit" ActiveState)"
+        case "$active_state" in
+            active|activating|reloading|failed)
+                local config_state config_reason
+                read -r config_state config_reason <<<"$(mlat_config_state "$active_state")"
+                case "$config_state" in
+                    disabled)      printf 'disabled-by-config %s' "$config_reason"; return ;;
+                    misconfigured) printf 'misconfigured %s' "$config_reason"; return ;;
+                    failed)        printf 'fail %s' "$config_reason"; return ;;
+                    unknown)       printf 'unknown -'; return ;;
+                    enabled)       ;;  # fall through to plain ok
+                esac
+                ;;
+        esac
+    fi
+    # 978: classify via each daemon's published state file. The two units
+    # have separate decision files; _978_config_state picks the right one.
+    if [[ "$unit" == 'dump978-fa.service' || "$unit" == 'airplanes-978.service' ]]; then
+        active_state="$(_unit_prop "$unit" ActiveState)"
+        case "$active_state" in
+            active|activating|reloading|failed)
+                local config_state_978 config_reason_978
+                read -r config_state_978 config_reason_978 <<<"$(_978_config_state "$active_state" "$unit")"
+                case "$config_state_978" in
+                    disabled)
+                        # no_hardware is a SDR-absent self-disable that the
+                        # user can act on (plug in the dongle); render it
+                        # as wait/warn so it doesn't blend in with the
+                        # uat_disabled grey.
+                        case "$config_reason_978" in
+                            no_hardware) printf 'wait %s' "$config_reason_978"; return ;;
+                            *)           printf 'disabled-by-config %s' "$config_reason_978"; return ;;
+                        esac ;;
+                    misconfigured) printf 'misconfigured %s' "$config_reason_978"; return ;;
+                    failed)        printf 'fail %s' "$config_reason_978"; return ;;
+                    unknown)       printf 'unknown -'; return ;;
+                    enabled)
+                        # peer_no_hardware: airplanes-978 is up but the
+                        # producer reported no SDR. Render an idle tile
+                        # rather than the green :OK that would mislead.
+                        case "$config_reason_978" in
+                            peer_no_hardware) printf 'idle %s' "$config_reason_978"; return ;;
+                            *)                ;;  # fall through to plain ok
+                        esac ;;
+                esac
+                ;;
+        esac
+    fi
+    # Cached path: derive enabled/active from the frame-primed cache. No
+    # forks. UnitFileState's vocabulary covers everything is-enabled
+    # produced for our generic cases (masked / disabled / enabled / static).
+    if (( SD_UNIT_PROPS_PRIMED == 1 )); then
+        enabled="$(_unit_prop "$unit" UnitFileState)"
+        case "$enabled" in
+            masked) printf 'masked -'; return ;;
+        esac
+        active_state="$(_unit_prop "$unit" ActiveState)"
+        case "$active_state" in
+            active|reloading) printf 'ok -'; return ;;
+        esac
+        case "$enabled" in
+            disabled) printf 'disabled -' ;;
+            *)        printf 'fail -' ;;
+        esac
+        return
+    fi
+    # Fallback path (PRIMED=0: test path, no _prime_unit_props called;
+    # PRIMED=3: prime failed for a reason other than timeout). Per-unit
+    # live forks with the existing rc-capture and 124-short-circuit so a
+    # stalled dbus does not double the wall-clock budget per unit.
+    enabled="$(timeout 2 systemctl is-enabled "$unit" 2>/dev/null)"
+    enabled_rc=$?
+    if (( enabled_rc == 124 )); then
+        printf 'timeout -'
+        return
+    fi
+    case "$enabled" in
+        masked) printf 'masked -'; return ;;
+    esac
+
+    local active_rc
+    timeout 2 systemctl is-active --quiet "$unit" 2>/dev/null
+    active_rc=$?
+    case "$active_rc" in
+        0)   printf 'ok -';      return ;;
+        124) printf 'timeout -'; return ;;
+    esac
+    case "$enabled" in
+        disabled) printf 'disabled -' ;;
+        *)        printf 'fail -' ;;
+    esac
+}
+
+# Backwards-compatible wrapper — most callers only want the state token.
+unit_state() {
+    local with_reason
+    with_reason="$(unit_state_with_reason "$1")"
+    printf '%s' "${with_reason%% *}"
+}
+
+# Aircraft snapshot. Returns "<count>|<msgs>|<now>" or "||" on any failure.
+read_aircraft_snapshot() {
+    [[ -r "$PATHS_AIRCRAFT_JSON" ]] || { printf '||'; return; }
+    if ! command -v jq >/dev/null 2>&1; then
+        # No jq → can't trust grep parsing. Codex-recommended: render unavailable.
+        printf '||'
+        return
+    fi
+    local out
+    out="$(timeout 2 jq -r '"\(.aircraft|length)|\(.messages//0)|\(.now//0)"' \
+        "$PATHS_AIRCRAFT_JSON" 2>/dev/null)"
+    if [[ -z "$out" ]]; then
+        printf '||'
+        return
+    fi
+    printf '%s' "$out"
+}
+
+read_cpu_temp_c() {
+    [[ -r "$PATHS_THERMAL" ]] || return 0
+    local raw
+    raw="$(head -n1 "$PATHS_THERMAL" 2>/dev/null)"
+    [[ "$raw" =~ ^[0-9]+$ ]] || return 0
+    awk -v r="$raw" 'BEGIN { printf "%.1f", r/1000 }'
+}
+
+read_load_1m() {
+    local v
+    v="$(awk '{print $1}' /proc/loadavg 2>/dev/null)"
+    sanitize "$v" 8
+}
+
+read_uptime_human() {
+    local up_s
+    up_s="$(awk '{print int($1)}' /proc/uptime 2>/dev/null)"
+    [[ "$up_s" =~ ^[0-9]+$ ]] || return 0
+    local d=$(( up_s/86400 )) h=$(( (up_s%86400)/3600 )) m=$(( (up_s%3600)/60 ))
+    if   (( d > 0 )); then printf '%dd %dh %dm' "$d" "$h" "$m"
+    elif (( h > 0 )); then printf '%dh %dm' "$h" "$m"
+    else                    printf '%dm' "$m"
+    fi
+}
+
+# IPv4 URL. Empty when no scoped global address is found.
+read_url_ip() {
+    local ip
+    ip="$(ip -4 -o addr show scope global 2>/dev/null \
+            | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+    ip="$(sanitize "$ip" 39)"  # IPv4 max length
+    [[ -n "$ip" ]] && printf 'http://%s' "$ip"
+}
+
+# .local URL. Suppressed when hostname is the Pi OS default `raspberrypi`
+# (collides with every other default-hostname Pi on the LAN — mDNS
+# resolution is undefined) or `localhost`.
+read_url_local() {
+    local h
+    h="$(hostname -s 2>/dev/null || true)"
+    h="$(sanitize "$h" 32)"
+    [[ -z "$h" || "$h" == "localhost" || "$h" == "raspberrypi" ]] && return 0
+    printf 'http://%s.local' "$h"
+}
+
+# Joined IP-or-.local string, kept for the full-width formatter and unit
+# tests that depend on the historical contract: "(not connected)" when
+# both URL parts are empty, joined with "  or  " otherwise.
+read_local_urls() {
+    local ip h parts=()
+    ip="$(read_url_ip)"
+    h="$(read_url_local)"
+    [[ -n "$ip" ]] && parts+=("$ip")
+    [[ -n "$h" ]] && parts+=("$h")
+    if (( ${#parts[@]} == 0 )); then
+        printf '%s' '(not connected)'
+        return
+    fi
+    local IFS='@'  # join via odd separator we then rewrite (avoid $* glob)
+    local joined="${parts[*]}"
+    printf '%s' "${joined//@/  or  }"
+}
+
+# ---- Network status (nmcli + /sys/class/net). -----------------------------
+# Reports each managed ethernet/WiFi interface and its state so a fresh
+# feeder bring-up can see whether the WiFi keyfile actually associated.
+# All nmcli calls are wrapped in `timeout 2` and pass `--rescan no` to
+# avoid initiating a scan; a stalled NM dbus can't freeze SSH login.
+
+# Thin testable wrappers — bats overrides via PATH-stub of nmcli, or by
+# redefining these functions after sourcing.
+_nm_dev_status() {
+    timeout 2 nmcli -t -f DEVICE,TYPE,STATE dev status 2>/dev/null
+}
+
+_nm_dev_wifi_list() {
+    local iface="$1"
+    # `--rescan no` MUST follow the `dev wifi list` subcommand. nmcli 1.52
+    # rejects the global-position form ("Option '--rescan' is unknown",
+    # exit 2), which previously silently dropped the WiFi row from the
+    # dashboard because stderr was redirected to /dev/null.
+    timeout 2 nmcli -t -f IN-USE,SIGNAL,SSID dev wifi list ifname "$iface" --rescan no 2>/dev/null
+}
+
+_read_eth_speed_mbps() {
+    local iface="$1"
+    local f="$PATHS_SYSFS_NET/$iface/speed"
+    [[ -r "$f" ]] || return 0
+    head -n1 "$f" 2>/dev/null | tr -d '[:space:]'
+}
+
+# Format an integer Mbps reading. Invalid / <=0 / -1 → "up"; clean Gbps
+# multiples render as N Gbps; everything else as N Mbps. Keeps 2.5 GbE
+# (2500) readable as "2500 Mbps" rather than "2 Gbps".
+_fmt_eth_speed() {
+    local mbps="${1:-}"
+    if [[ ! "$mbps" =~ ^[0-9]+$ ]] || (( mbps <= 0 )); then
+        printf 'up'
+        return
+    fi
+    if (( mbps >= 1000 && mbps % 1000 == 0 )); then
+        printf '%d Gbps' $(( mbps / 1000 ))
+    else
+        printf '%d Mbps' "$mbps"
+    fi
+}
+
+# Reverse `nmcli -t`'s escaping. nmcli escapes literal '\' as '\\' and
+# literal ':' as '\:'. Two-pass swap via a placeholder so a SSID like
+# `\:` (escaped to `\\\:`) survives the round-trip.
+_unescape_nmcli_field() {
+    local s="${1-}"
+    s="${s//\\\\/$'\x01'}"
+    s="${s//\\:/:}"
+    s="${s//$'\x01'/\\}"
+    printf '%s' "$s"
+}
+
+# Single-iface ethernet line. Empty when state isn't reportable.
+_eth_line_for() {
+    local iface="$1" state="$2" speed_raw speed_fmt
+    case "$state" in
+        connected)
+            speed_raw="$(_read_eth_speed_mbps "$iface")"
+            speed_fmt="$(_fmt_eth_speed "$speed_raw")"
+            printf '%s: %s\n' "$iface" "$speed_fmt"
+            ;;
+        prepare|config|ip-config|ip-check|secondaries)
+            printf '%s: connecting…\n' "$iface"
+            ;;
+        failed)
+            printf '%s: link failed\n' "$iface"
+            ;;
+    esac
+}
+
+# Single-iface wifi line. Composes "iface: ssid NN%" (SSID and signal
+# both optional — hidden SSID drops the SSID, missing signal drops the
+# %, totally bare connected falls back to "iface: up").
+_wifi_line_for() {
+    local iface="$1" state="$2"
+    local wl signal="" ssid="" parts
+    case "$state" in
+        connected)
+            while IFS= read -r wl; do
+                if [[ "$wl" =~ ^\*:([0-9]+):(.*)$ ]]; then
+                    signal="${BASH_REMATCH[1]}"
+                    ssid="$(_unescape_nmcli_field "${BASH_REMATCH[2]}")"
+                    ssid="$(sanitize "$ssid" 32)"
+                    break
+                fi
+            done < <(_nm_dev_wifi_list "$iface")
+            parts="$iface:"
+            [[ -n "$ssid" ]] && parts+=" $ssid"
+            if [[ "$signal" =~ ^[0-9]+$ ]] && (( signal >= 0 && signal <= 100 )); then
+                parts+=" ${signal}%"
+            fi
+            [[ "$parts" == "$iface:" ]] && parts+=" up"
+            printf '%s\n' "$parts"
+            ;;
+        prepare|config|ip-config|ip-check|secondaries)
+            printf '%s: associating…\n' "$iface"
+            ;;
+        failed)
+            printf '%s: failed (WIFI_PASS?)\n' "$iface"
+            ;;
+    esac
+}
+
+# Top-level: emit 0..N display lines, eth first then wifi. Returns 0
+# unconditionally so callers gating on rc don't trip on the no-output
+# case.
+read_network_lines() {
+    local nm_status iface type state line
+    local -a eth_lines=() wifi_lines=()
+
+    nm_status="$(_nm_dev_status)"
+    [[ -z "$nm_status" ]] && return 0
+
+    while IFS=: read -r iface type state; do
+        iface="$(sanitize "$iface" 16)"
+        [[ -z "$iface" ]] && continue
+        case "$type" in
+            ethernet)
+                line="$(_eth_line_for "$iface" "$state")"
+                [[ -n "$line" ]] && eth_lines+=("$line")
+                ;;
+            wifi)
+                line="$(_wifi_line_for "$iface" "$state")"
+                [[ -n "$line" ]] && wifi_lines+=("$line")
+                ;;
+        esac
+    done <<< "$nm_status"
+
+    for line in "${eth_lines[@]}"; do printf '%s\n' "$line"; done
+    for line in "${wifi_lines[@]}"; do printf '%s\n' "$line"; done
+    return 0
+}
+
+# ---- Terminal-width helper. ------------------------------------------------
+# Returns the visible terminal width in columns. Defaults to 80 when stdout
+# is not a TTY (update-motd.d capture, bats `run`, or a piped invocation)
+# or when `tput` is unavailable, so the renderer's layout decisions stay
+# deterministic.
+term_cols() {
+    local cols=""
+    if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+        cols="$(tput cols 2>/dev/null || true)"
+    fi
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+    printf '%s' "$cols"
+}
+
+# ---- Artwork loader. -------------------------------------------------------
+# Reads $1 into the array named by $3, validates each line is exactly $2
+# display columns wide, and rejects CRLF. On any failure the array is
+# emptied and rc != 0; callers fall back to a layout that doesn't need
+# the artwork.
+#
+# Width is measured by bash's ${#var}, which counts characters when the
+# locale supports multibyte. The script's top-level `LC_ALL=C` would
+# otherwise count bytes, so we switch to C.UTF-8 with `local` (auto-
+# scoped to this function) before measuring. Avoids an awk dependency
+# whose multibyte support varies (gawk: yes, mawk: no).
+load_artwork() {
+    local path="$1" expected_cols="$2"
+    local -n arr_ref="$3"
+    local LC_ALL=C.UTF-8
+    arr_ref=()
+    [[ -r "$path" ]] || return 1
+    local line
+    while IFS= read -r line; do
+        if [[ "$line" == *$'\r'* ]]; then
+            arr_ref=()
+            return 1
+        fi
+        if (( ${#line} != expected_cols )); then
+            arr_ref=()
+            return 1
+        fi
+        arr_ref+=("$line")
+    done < "$path"
+    (( ${#arr_ref[@]} > 0 ))
+}
+
+# ---- Per-frame state for msgs/sec (live mode only). -----------------------
+PREV_MSGS=""
+PREV_TS=""
+
+# ---- Status data globals (populated by collect_status_data). --------------
+SD_ID=""
+SD_CHANNEL=""
+SD_BUILD=""
+SD_CLAIM=""
+SD_URLS_JOINED=""
+SD_URL_IP=""
+SD_URL_LOCAL=""
+SD_AIRCRAFT_CNT=""
+SD_MPS="-"
+SD_MLAT_NOTE=""
+SD_MLAT_WARN=""
+SD_978_NOTE=""
+SD_CPU_TEMP=""
+SD_UPTIME=""
+SD_LOAD=""
+SD_PIHEALTH_SEVERITY=""
+SD_PIHEALTH_SUMMARY=""
+declare -a SD_NETWORK_LINES=()
+
+# ---- Per-frame cache of systemd unit properties. --------------------------
+# collect_status_data primes this with ONE `systemctl show` covering every
+# UNITS member, then unit_state* / mlat_config_state / _978_config_state
+# read from it instead of forking systemctl per unit. Cuts ~12 forks (and
+# the matching `timeout 2` budget per call) down to 1 prime per frame.
+#
+# SD_UNIT_PROPS_PRIMED values:
+#   0  not primed (snapshot/test paths that call helpers directly)
+#   1  primed successfully — cache populated
+#   2  prime timed out (rc 124) — helpers should surface 'timeout'
+#   3  prime failed for another reason (no systemctl, non-zero rc)
+#
+# -gA so the assoc-array nature survives being sourced inside a function
+# (bats's `setup()` sources us; without -g the declaration is local to
+# setup and lost in the @test body, which then assigns to a fresh
+# indexed array and the dotted subscripts trigger arithmetic eval).
+declare -gA SD_UNIT_PROPS=()
+SD_UNIT_PROPS_PRIMED=0
+
+# Run ONE `systemctl show` for every UNITS member with every property the
+# renderer needs, then parse blocks (separated by blank lines) keyed by
+# Id= so we survive systemd alias collapse / reorder. -p is repeated
+# rather than comma-joined for portability across systemd versions.
+_prime_unit_props() {
+    SD_UNIT_PROPS=()
+    SD_UNIT_PROPS_PRIMED=0
+    if ! command -v systemctl >/dev/null 2>&1; then
+        SD_UNIT_PROPS_PRIMED=3
+        return
+    fi
+    # `|| rc=$?` so callers running under `set -e` (notably bats's @test
+    # bodies — set -e is on per @test) don't abort here when timeout
+    # exits 124 or systemctl returns non-zero. In production the dispatcher
+    # shell has set -e off and the construct is equivalent.
+    local out rc=0
+    out="$(timeout 2 systemctl show \
+        -p Id -p ActiveState -p UnitFileState -p ExecMainStatus \
+        -- "${UNITS[@]}" 2>/dev/null)" || rc=$?
+    case "$rc" in
+        0)   SD_UNIT_PROPS_PRIMED=1 ;;
+        124) SD_UNIT_PROPS_PRIMED=2; return 0 ;;
+        *)   SD_UNIT_PROPS_PRIMED=3; return 0 ;;
+    esac
+    local line key value idx=0 flush_id
+    local -A block=()
+    while IFS= read -r line; do
+        if [[ -z "$line" ]]; then
+            if (( ${#block[@]} > 0 )); then
+                flush_id="${block[Id]:-${UNITS[idx]:-}}"
+                for key in "${!block[@]}"; do
+                    SD_UNIT_PROPS["${flush_id}.${key}"]="${block[$key]}"
+                done
+                block=()
+                (( idx++ )) || true
+            fi
+            continue
+        fi
+        key="${line%%=*}"
+        value="${line#*=}"
+        block["$key"]="$value"
+    done <<<"$out"
+    # Trailing block (no terminating blank line — `systemctl show` doesn't
+    # always emit one after the last unit).
+    if (( ${#block[@]} > 0 )); then
+        flush_id="${block[Id]:-${UNITS[idx]:-}}"
+        for key in "${!block[@]}"; do
+            SD_UNIT_PROPS["${flush_id}.${key}"]="${block[$key]}"
+        done
+    fi
+}
+
+# Returns the cached property when priming this frame succeeded;
+# returns empty (no fork) when priming TIMED OUT (PRIMED=2) so we
+# don't multiply the dbus stall budget with per-unit retries; falls
+# back to a per-unit live `systemctl show` when priming has not been
+# attempted (PRIMED=0: bats-test path) OR priming failed for a reason
+# other than timeout (PRIMED=3: no systemctl, or non-zero rc that wasn't
+# 124). Without the PRIMED=3 fallback, the MLAT / 978 special-case
+# branches in unit_state_with_reason would see empty ActiveState and
+# silently render `ok` for a daemon whose published state is
+# `disabled-by-config` or `misconfigured`.
+_unit_prop() {
+    local unit="$1" prop="$2"
+    case "$SD_UNIT_PROPS_PRIMED" in
+        1) printf '%s' "${SD_UNIT_PROPS[${unit}.${prop}]-}" ;;
+        2) ;;
+        *) timeout 2 systemctl show --property="$prop" --value "$unit" 2>/dev/null || true ;;
+    esac
+}
+
+# Populate the SD_* globals from disk / systemctl. msgs/s rate is computed
+# only in live mode so snapshot/once stay deterministic and side-effect
+# free.
+collect_status_data() {
+    local mode="$1"
+
+    # Prime the per-frame unit-property cache before any code that reads
+    # systemd state. Subsequent reads (this function, unit_state*,
+    # mlat_config_state, _978_config_state) prefer the cache.
+    _prime_unit_props
+
+    SD_ID="$(read_feeder_id)"
+    SD_CHANNEL="$(read_channel)"
+    SD_BUILD="$(read_build_short_sha)"
+    SD_CLAIM="$(claim_state)"
+    SD_URLS_JOINED="$(read_local_urls)"
+    SD_URL_IP="$(read_url_ip)"
+    SD_URL_LOCAL="$(read_url_local)"
+
+    local snap msgs now
+    snap="$(read_aircraft_snapshot)"
+    IFS='|' read -r SD_AIRCRAFT_CNT msgs now <<< "$snap"
+    [[ "$msgs" =~ ^[0-9]+$ ]] || msgs=""
+    [[ "$now" =~ ^[0-9]+(\.[0-9]+)?$ ]] || now=""
+
+    SD_MPS='-'
+    if [[ "$mode" == "live" ]] \
+        && [[ -n "$msgs" && -n "$now" \
+            && -n "$PREV_MSGS" && -n "$PREV_TS" ]]; then
+        local d_msgs d_t
+        d_msgs=$(( msgs - PREV_MSGS ))
+        d_t="$(awk -v a="$now" -v b="$PREV_TS" 'BEGIN{printf "%.3f", a-b}')"
+        # readsb restart resets the messages counter, producing a negative
+        # delta. Don't print a bogus negative rate; show "-" and let the
+        # next tick re-baseline.
+        if (( d_msgs < 0 )); then
+            SD_MPS='-'
+        elif awk -v dt="$d_t" 'BEGIN{exit (dt<=0)}'; then
+            SD_MPS="$(awk -v m="$d_msgs" -v dt="$d_t" \
+                'BEGIN{printf "%.1f", m/dt}')"
+        fi
+    fi
+    PREV_MSGS="$msgs"
+    PREV_TS="$now"
+
+    # MLAT note. Set by _compute_mlat_note from the daemon's published
+    # decision in /run/airplanes-mlat/state — no feed.env reads.
+    _compute_mlat_note "$(_unit_prop airplanes-mlat.service ActiveState)"
+    # SD_MLAT_WARN aliases SD_MLAT_NOTE so the panel renderers below
+    # don't need wholesale edits — both names point at the same content.
+    SD_MLAT_WARN="$SD_MLAT_NOTE"
+
+    # 978 note. Driven by the daemons' published decisions. Renders only
+    # when the user needs to act — misconfigured UAT_INPUT or a no-hardware
+    # signal from the producer-side probe. Plain disabled (UAT off in
+    # config) is intentional and silent; enabled with a working SDR is its
+    # own success shown via the service markers. No legacy fallback path:
+    # older images without these state files leave SD_978_NOTE empty.
+    SD_978_NOTE=""
+    local _dump978_active_state _dump978_state _dump978_reason
+    _dump978_active_state="$(_unit_prop dump978-fa.service ActiveState)"
+    read -r _dump978_state _dump978_reason <<<"$(_978_config_state "$_dump978_active_state" dump978-fa.service)"
+    if [[ "$_dump978_state" == "disabled" && "$_dump978_reason" == "no_hardware" ]]; then
+        SD_978_NOTE="${C_WARN}No 978 SDR detected — plug in dongle or disable UAT.${C_RESET}"
+    fi
+    if [[ -z "$SD_978_NOTE" ]]; then
+        local _978_active_state _978_state _978_reason
+        _978_active_state="$(_unit_prop airplanes-978.service ActiveState)"
+        read -r _978_state _978_reason <<<"$(_978_config_state "$_978_active_state" airplanes-978.service)"
+        case "$_978_state" in
+            misconfigured)
+                case "$_978_reason" in
+                    uat_input_invalid) SD_978_NOTE="${C_FAIL}UAT_INPUT invalid (fix config).${C_RESET}" ;;
+                    *)                 SD_978_NOTE="${C_FAIL}978 misconfigured.${C_RESET}" ;;
+                esac
+                ;;
+        esac
+    fi
+
+    SD_CPU_TEMP="$(read_cpu_temp_c)"
+    SD_UPTIME="$(read_uptime_human)"
+    SD_LOAD="$(read_load_1m)"
+
+    # Hardware health: severity<TAB>summary from `airplanes-webconfig --hardware`.
+    # Absolute binary path (MOTD strips /usr/local/bin from PATH). timeout(1)
+    # bounds wall-clock; the Go side uses a shorter 2s ctx so a wedged probe
+    # surfaces as a graceful "na" before the shell SIGTERM kicks in. An old
+    # binary lacking the flag exits 2 from flag.Parse and the row is omitted.
+    SD_PIHEALTH_SEVERITY=""
+    SD_PIHEALTH_SUMMARY=""
+    local _pihealth_raw _pihealth_sev _pihealth_sum
+    if _pihealth_raw="$(timeout 3 "$PATHS_PIHEALTH_BIN" --hardware 2>/dev/null)"; then
+        # First line only; require a tab separator; allowlist severity tokens.
+        _pihealth_raw="${_pihealth_raw%%$'\n'*}"
+        if [[ "$_pihealth_raw" == *$'\t'* ]]; then
+            _pihealth_sev="${_pihealth_raw%%$'\t'*}"
+            _pihealth_sum="${_pihealth_raw#*$'\t'}"
+            case "$_pihealth_sev" in
+                ok|warn|err|na)
+                    SD_PIHEALTH_SEVERITY="$_pihealth_sev"
+                    # Strip control bytes as a belt-and-braces guard against
+                    # terminal-escape injection via a misbehaving probe.
+                    SD_PIHEALTH_SUMMARY="$(printf '%s' "$_pihealth_sum" | LC_ALL=C tr -d '\000-\037\177')"
+                    ;;
+            esac
+        fi
+    fi
+
+    mapfile -t SD_NETWORK_LINES < <(read_network_lines)
+}
+
+# ---- Color helpers shared by both formatters. -----------------------------
+claim_color() {
+    case "$1" in
+        registered*)
+            printf '%b%s%b' "$C_OK" "$1" "$C_RESET" ;;
+        secret-saved|rotation-pending|registration-pending)
+            printf '%b%s%b' "$C_WARN" "$1" "$C_RESET" ;;
+        *)
+            printf '%b%s%b — apl-feed claim register' \
+                "$C_WARN" "$1" "$C_RESET" ;;
+    esac
+}
+
+# Compact variant: never inlines the action hint (it gets its own line in
+# the panel below), so an unclaimed feeder doesn't overflow the 38-col
+# panel.
+claim_color_compact() {
+    case "$1" in
+        registered*)
+            printf '%b%s%b' "$C_OK" "$1" "$C_RESET" ;;
+        secret-saved|rotation-pending|registration-pending)
+            printf '%b%s%b' "$C_WARN" "$1" "$C_RESET" ;;
+        *)
+            printf '%b%s%b' "$C_WARN" "$1" "$C_RESET" ;;
+    esac
+}
+
+# Combined UAT (978) state — folds the consumer (airplanes-978) and
+# producer (dump978-fa) into a single display classifier. The matrix:
+#   - either unit fail/masked/misconfigured/timeout → propagate (consumer wins ties)
+#   - either unit unknown → unknown
+#   - both ok → ok
+#   - consumer ok, producer wait/disabled-by-config/disabled → partial
+#   - consumer idle (producer has no SDR) → idle
+#   - consumer off, producer ok → partial
+#   - consumer off, producer wait/disabled-by-config/disabled → disabled-by-config
+#   - anything else → unknown (defensive — new states never silently render ok)
+_978_combined_state() {
+    local consumer producer
+    consumer="$(unit_state airplanes-978.service)"
+    producer="$(unit_state dump978-fa.service)"
+    case "$consumer" in
+        fail|masked|misconfigured|timeout) printf '%s' "$consumer"; return ;;
+    esac
+    case "$producer" in
+        fail|masked|misconfigured|timeout) printf '%s' "$producer"; return ;;
+    esac
+    case "$consumer" in unknown) printf 'unknown'; return ;; esac
+    case "$producer" in unknown) printf 'unknown'; return ;; esac
+    case "$consumer" in
+        ok)
+            case "$producer" in
+                ok)                                printf 'ok' ;;
+                wait|disabled-by-config|disabled)  printf 'partial' ;;
+                *)                                 printf 'unknown' ;;
+            esac ;;
+        idle)
+            printf 'idle' ;;
+        disabled-by-config|disabled)
+            case "$producer" in
+                ok)                                printf 'partial' ;;
+                wait|disabled-by-config|disabled)  printf 'disabled-by-config' ;;
+                *)                                 printf 'unknown' ;;
+            esac ;;
+        *)
+            printf 'unknown' ;;
+    esac
+}
+
+# Resolve a display id to a state classifier. Wraps unit_state for
+# single-unit services and _978_combined_state for the grouped uat978
+# row. The grouped resolver still triggers individual unit_state calls,
+# which hit the per-frame property cache primed in collect_status_data.
+service_display_state() {
+    case "$1" in
+        feed)   unit_state airplanes-feed.service ;;
+        mlat)   unit_state airplanes-mlat.service ;;
+        readsb) unit_state readsb.service ;;
+        uat978) _978_combined_state ;;
+        *)      printf 'unknown' ;;
+    esac
+}
+
+# Plain (uncolored) status token for a classifier. Padding/alignment runs
+# on this string; coloring wraps the result. Keeps Bash's ${#var}
+# alignment honest — ANSI escape bytes never enter the column accounting.
+svc_token_text() {
+    case "$1" in
+        ok)                            printf 'OK' ;;
+        fail)                          printf 'FAIL' ;;
+        misconfigured)                 printf '!!' ;;
+        masked)                        printf 'MASK' ;;
+        disabled|disabled-by-config)   printf 'off' ;;
+        wait)                          printf 'wait' ;;
+        idle)                          printf 'idle' ;;
+        partial)                       printf 'partial' ;;
+        *)                             printf '?' ;;
+    esac
+}
+
+# Color sequence for a classifier (use with $C_RESET to close).
+svc_token_color() {
+    case "$1" in
+        ok)                            printf '%s' "$C_OK" ;;
+        fail|misconfigured|masked)     printf '%s' "$C_FAIL" ;;
+        disabled|disabled-by-config)   printf '%s' "$C_DIM" ;;
+        wait|idle|partial)             printf '%s' "$C_WARN" ;;
+        timeout)                       printf '%s' "$C_DIM" ;;
+        *)                             printf '%s' "$C_WARN" ;;
+    esac
+}
+
+# Emit one indented row per display service to stdout. $1 is the indent
+# string (2 spaces in the full layout, matches the URL/network rows in
+# the compact layout). Labels are right-padded to SVC_LABEL_WIDTH; the
+# token is colored separately so ANSI escapes don't break the padding.
+# Worst case width for the new "partial" token (only producible by
+# uat978): 2 + 29 + 2 + 7 = 40 cells. This is 2 cells over
+# STATUS_PANEL_WIDTH but still well within the 58-cell right column in
+# the snapshot side-by-side layout (cols >= 80 - ICON_WIDTH - 2 = 58).
+display_service_rows() {
+    local indent="$1"
+    local id state token_text token_color label
+    local i
+    for (( i = 0; i < ${#SVC_DISPLAY_IDS[@]}; i++ )); do
+        id="${SVC_DISPLAY_IDS[$i]}"
+        label="${SVC_DISPLAY_LABELS[$i]}"
+        state="$(service_display_state "$id")"
+        token_text="$(svc_token_text "$state")"
+        token_color="$(svc_token_color "$state")"
+        printf '%s%-*s  %s%s%s\n' \
+            "$indent" "$SVC_LABEL_WIDTH" "$label" \
+            "$token_color" "$token_text" "$C_RESET"
+    done
+}
+
+# ---- Status-line builders. Each writes into the STATUS_LINES array. -------
+declare -a STATUS_LINES
+
+# Full 80-col status (today's format) — used for live and as the HDMI
+# narrow-fallback companion to the small logo.
+build_status_lines_full() {
+    local mode="$1"
+    STATUS_LINES=()
+
+    STATUS_LINES+=("$(printf '%bAccess%b      %s' "$C_BOLD" "$C_RESET" "$SD_URLS_JOINED")")
+    if (( ${#SD_NETWORK_LINES[@]} > 0 )); then
+        local joined="" net_line
+        for net_line in "${SD_NETWORK_LINES[@]}"; do
+            joined+="${joined:+, }$net_line"
+        done
+        # 12-cell label column ("Network     ") leaves 68 cells for the
+        # joined value before we hit the 80-col budget. Spill to
+        # multi-row (matching the compact layout) when too wide.
+        if (( ${#joined} <= 68 )); then
+            STATUS_LINES+=("$(printf '%bNetwork%b     %s' "$C_BOLD" "$C_RESET" "$joined")")
+        else
+            STATUS_LINES+=("$(printf '%bNetwork%b' "$C_BOLD" "$C_RESET")")
+            for net_line in "${SD_NETWORK_LINES[@]}"; do
+                STATUS_LINES+=("            $net_line")
+            done
+        fi
+    fi
+    STATUS_LINES+=("$(printf '%bFeeder ID%b   %s' "$C_BOLD" "$C_RESET" "${SD_ID:-(not yet generated)}")")
+    STATUS_LINES+=("$(printf '%bClaim%b       %s' "$C_BOLD" "$C_RESET" "$(claim_color "$SD_CLAIM")")")
+    STATUS_LINES+=("")
+
+    STATUS_LINES+=("$(printf '%bServices%b' "$C_BOLD" "$C_RESET")")
+    local svc_line
+    while IFS= read -r svc_line; do
+        STATUS_LINES+=("$svc_line")
+    done < <(display_service_rows "  ")
+    STATUS_LINES+=("")
+
+    if [[ "$mode" == "snapshot" ]]; then
+        STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s   %s' \
+            "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" "$SD_MLAT_WARN")")
+    else
+        STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s   msgs/s: %s   %s' \
+            "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" "$SD_MPS" "$SD_MLAT_WARN")")
+    fi
+    if [[ -n "$SD_978_NOTE" ]]; then
+        STATUS_LINES+=("            $SD_978_NOTE")
+    fi
+    STATUS_LINES+=("$(printf '%bBuild%b       channel=%s  sha=%s' \
+        "$C_BOLD" "$C_RESET" "${SD_CHANNEL:-?}" "${SD_BUILD:-?}")")
+
+    if [[ -n "$SD_CPU_TEMP" ]]; then
+        STATUS_LINES+=("$(printf '%bSystem%b      uptime %s%s%s   load %s%s%s   CPU %s%s°C%s' \
+            "$C_BOLD" "$C_RESET" \
+            "$C_DIM" "${SD_UPTIME:--}" "$C_RESET" \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET" \
+            "$C_DIM" "$SD_CPU_TEMP" "$C_RESET")")
+    else
+        STATUS_LINES+=("$(printf '%bSystem%b      uptime %s%s%s   load %s%s%s' \
+            "$C_BOLD" "$C_RESET" \
+            "$C_DIM" "${SD_UPTIME:--}" "$C_RESET" \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET")")
+    fi
+
+    # Hardware health — one row, coloured by severity. Omitted when the
+    # probe binary is missing, fails, or returns a disallowed severity.
+    if [[ -n "$SD_PIHEALTH_SEVERITY" ]]; then
+        local _ph_color
+        _ph_color="$(pihealth_color "$SD_PIHEALTH_SEVERITY")"
+        STATUS_LINES+=("$(printf '%bHardware%b    %b%s%b' \
+            "$C_BOLD" "$C_RESET" "$_ph_color" "$SD_PIHEALTH_SUMMARY" "$C_RESET")")
+    fi
+
+    if [[ "$mode" != "snapshot" ]]; then
+        STATUS_LINES+=("")
+        STATUS_LINES+=("$(printf '%bLocal login moved to TTY2 (Alt+F2). Refreshing every 5s.%b' \
+            "$C_DIM" "$C_RESET")")
+    fi
+}
+
+# Truncate a plain-ASCII string to the panel width, appending "..." when
+# it would otherwise overflow. Operates on bytes; only safe for the
+# ASCII-only fields we feed it (URLs, ID prefix).
+_compact_truncate() {
+    local s="$1"
+    local max="$STATUS_PANEL_WIDTH"
+    if (( ${#s} > max )); then
+        printf '%s...' "${s:0:$((max - 3))}"
+    else
+        printf '%s' "$s"
+    fi
+}
+
+# Compact 38-col status panel — used for snapshot/once side-by-side.
+# Every line, after ANSI strip, is <= STATUS_PANEL_WIDTH cells wide.
+build_status_lines_compact() {
+    STATUS_LINES=()
+
+    # Access — header on its own line, URLs indented two spaces.
+    STATUS_LINES+=("$(printf '%bAccess%b' "$C_BOLD" "$C_RESET")")
+    if [[ -n "$SD_URL_IP" || -n "$SD_URL_LOCAL" ]]; then
+        [[ -n "$SD_URL_IP" ]] && STATUS_LINES+=("  $(_compact_truncate "$SD_URL_IP")")
+        [[ -n "$SD_URL_LOCAL" ]] && STATUS_LINES+=("  $(_compact_truncate "$SD_URL_LOCAL")")
+    else
+        STATUS_LINES+=("  (not connected)")
+    fi
+
+    # Network — one row per managed iface, omitted entirely when nothing
+    # is reportable. `_compact_truncate` runs on the indented row so a
+    # long SSID can't push past STATUS_PANEL_WIDTH.
+    if (( ${#SD_NETWORK_LINES[@]} > 0 )); then
+        STATUS_LINES+=("$(printf '%bNetwork%b' "$C_BOLD" "$C_RESET")")
+        local net_line
+        for net_line in "${SD_NETWORK_LINES[@]}"; do
+            STATUS_LINES+=("$(_compact_truncate "  $net_line")")
+        done
+    fi
+
+    # Feeder ID — first 8 chars of the UUID (full UUID stays in
+    # /etc/airplanes/feeder-id for support reference). Empty file falls
+    # back to the same "(not yet generated)" string the full layout uses.
+    local id_short
+    if [[ -n "$SD_ID" ]]; then
+        id_short="${SD_ID:0:8}"
+    else
+        id_short="(not yet generated)"
+    fi
+    # 11-char label section keeps Feeder ID / Claim / Feed / Build /
+    # System / continuation-indent visually aligned in the panel. (The
+    # full-width formatter uses 12-char alignment because it has the
+    # column budget; the compact panel doesn't.)
+    STATUS_LINES+=("$(printf '%bFeeder ID%b  %s' "$C_BOLD" "$C_RESET" "$id_short")")
+
+    # Claim — colored value on its own row. The MOTD intentionally drops
+    # the `apl-feed claim register` action hint that used to live on
+    # the next line; first-boot users see the hint plenty of times via
+    # the webconfig + claim QR flow and don't need it on every SSH login.
+    STATUS_LINES+=("$(printf '%bClaim%b      %s' "$C_BOLD" "$C_RESET" "$(claim_color_compact "$SD_CLAIM")")")
+
+    STATUS_LINES+=("")
+
+    # Services — header + one labelled row per display service. The
+    # uat978 row groups dump978-fa + airplanes-978 into a single
+    # user-meaningful "UAT receiver" status; see _978_combined_state.
+    STATUS_LINES+=("$(printf '%bServices%b' "$C_BOLD" "$C_RESET")")
+    local svc_line
+    while IFS= read -r svc_line; do
+        STATUS_LINES+=("$svc_line")
+    done < <(display_service_rows "  ")
+    STATUS_LINES+=("")
+
+    # Feed (compact never shows msgs/s — that's a live-only signal).
+    # Label column width is 11, matching Feeder ID / Claim / Services /
+    # System below — the panel reads as one consistent column. The
+    # Build line that used to live here moved into the snapshot banner
+    # header (rendered by render_snapshot_with_header) so the version
+    # gets prime real-estate instead of competing with system stats.
+    STATUS_LINES+=("$(printf '%bFeed%b       aircraft: %s' \
+        "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}")")
+
+    # System — split across two indented rows so a worst-case "999d 23h
+    # 59m" + load + CPU never crosses 38 cols. ASCII "C" (no ° degree
+    # sign) keeps the second row to ASCII-only and shaves one cell.
+    STATUS_LINES+=("$(printf '%bSystem%b     uptime %s%s%s' \
+        "$C_BOLD" "$C_RESET" \
+        "$C_DIM" "${SD_UPTIME:--}" "$C_RESET")")
+    if [[ -n "$SD_CPU_TEMP" ]]; then
+        STATUS_LINES+=("$(printf '           load %s%s%s CPU %s%s%sC' \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET" \
+            "$C_DIM" "$SD_CPU_TEMP" "$C_RESET")")
+    else
+        STATUS_LINES+=("$(printf '           load %s%s%s' \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET")")
+    fi
+
+    # Hardware health — one row, coloured by severity. ASCII-only summary
+    # from the Go side, so _compact_truncate's byte-oriented cut won't
+    # mangle multibyte characters. Indent matches the System row's label
+    # column. Truncated to STATUS_PANEL_WIDTH on the bare summary text;
+    # the colour escape sequences are added after truncation so they don't
+    # consume budget.
+    if [[ -n "$SD_PIHEALTH_SEVERITY" ]]; then
+        local _ph_color _ph_label _ph_indent _ph_avail _ph_summary
+        _ph_color="$(pihealth_color "$SD_PIHEALTH_SEVERITY")"
+        _ph_label="Hardware   "
+        _ph_avail=$(( STATUS_PANEL_WIDTH - ${#_ph_label} ))
+        _ph_summary="$SD_PIHEALTH_SUMMARY"
+        if (( ${#_ph_summary} > _ph_avail )); then
+            _ph_summary="${_ph_summary:0:$((_ph_avail - 3))}..."
+        fi
+        STATUS_LINES+=("$(printf '%b%s%b%b%s%b' \
+            "$C_BOLD" "$_ph_label" "$C_RESET" "$_ph_color" "$_ph_summary" "$C_RESET")")
+    fi
+
+    if [[ -n "$SD_MLAT_WARN" ]]; then
+        STATUS_LINES+=("")
+        STATUS_LINES+=("$SD_MLAT_WARN")
+    fi
+
+    if [[ -n "$SD_978_NOTE" ]]; then
+        STATUS_LINES+=("")
+        STATUS_LINES+=("$SD_978_NOTE")
+    fi
+}
+
+# Snapshot/once full-width status — used under the banner-stack layout
+# when cols >= 80. Mockup ordering: Feeder ID → Claim → Access → Network →
+# Services → Feed → System → Hardware → notes. Full UUID feeder ID. No
+# `apl-feed claim register` hint (first-boot users see the hint via
+# webconfig + claim QR flow; the MOTD/once path drops it). Pi-health
+# summary truncated to fit the 80-col budget. URLs and network interfaces
+# spill onto indented continuation rows so the label column is consistent.
+build_status_lines_snapshot() {
+    STATUS_LINES=()
+
+    # Feeder ID — full UUID (sanitised to 36 chars by read_feeder_id).
+    STATUS_LINES+=("$(printf '%bFeeder ID%b   %s' \
+        "$C_BOLD" "$C_RESET" "${SD_ID:-(not yet generated)}")")
+
+    # Claim — coloured value, no action hint.
+    STATUS_LINES+=("$(printf '%bClaim%b       %s' \
+        "$C_BOLD" "$C_RESET" "$(claim_color_compact "$SD_CLAIM")")")
+
+    # Access — label + first URL, indented continuation for the second.
+    if [[ -n "$SD_URL_IP" || -n "$SD_URL_LOCAL" ]]; then
+        local urls=() i
+        [[ -n "$SD_URL_IP" ]] && urls+=("$SD_URL_IP")
+        [[ -n "$SD_URL_LOCAL" ]] && urls+=("$SD_URL_LOCAL")
+        STATUS_LINES+=("$(printf '%bAccess%b      %s' \
+            "$C_BOLD" "$C_RESET" "${urls[0]}")")
+        for (( i = 1; i < ${#urls[@]}; i++ )); do
+            STATUS_LINES+=("            ${urls[i]}")
+        done
+    else
+        STATUS_LINES+=("$(printf '%bAccess%b      (not connected)' \
+            "$C_BOLD" "$C_RESET")")
+    fi
+
+    # Network — label + first iface, indented continuations.
+    if (( ${#SD_NETWORK_LINES[@]} > 0 )); then
+        STATUS_LINES+=("$(printf '%bNetwork%b     %s' \
+            "$C_BOLD" "$C_RESET" "${SD_NETWORK_LINES[0]}")")
+        local i
+        for (( i = 1; i < ${#SD_NETWORK_LINES[@]}; i++ )); do
+            STATUS_LINES+=("            ${SD_NETWORK_LINES[i]}")
+        done
+    fi
+
+    STATUS_LINES+=("")
+
+    # Services — label inline with first row, indented continuations.
+    # Capturing display_service_rows output with empty indent lets us
+    # apply the 12-cell label column manually.
+    local svc_lines=() svc_line
+    while IFS= read -r svc_line; do
+        svc_lines+=("$svc_line")
+    done < <(display_service_rows "")
+    if (( ${#svc_lines[@]} > 0 )); then
+        STATUS_LINES+=("$(printf '%bServices%b    %s' \
+            "$C_BOLD" "$C_RESET" "${svc_lines[0]}")")
+        local i
+        for (( i = 1; i < ${#svc_lines[@]}; i++ )); do
+            STATUS_LINES+=("            ${svc_lines[i]}")
+        done
+    fi
+
+    STATUS_LINES+=("")
+
+    # Feed — aircraft count only (msgs/s requires two samples, live-only).
+    STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s' \
+        "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}")")
+
+    # System — uptime + load + (optional) CPU, comma-separated.
+    if [[ -n "$SD_CPU_TEMP" ]]; then
+        STATUS_LINES+=("$(printf '%bSystem%b      uptime %s%s%s, load %s%s%s, CPU %s%sC%s' \
+            "$C_BOLD" "$C_RESET" \
+            "$C_DIM" "${SD_UPTIME:--}" "$C_RESET" \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET" \
+            "$C_DIM" "$SD_CPU_TEMP" "$C_RESET")")
+    else
+        STATUS_LINES+=("$(printf '%bSystem%b      uptime %s%s%s, load %s%s%s' \
+            "$C_BOLD" "$C_RESET" \
+            "$C_DIM" "${SD_UPTIME:--}" "$C_RESET" \
+            "$C_DIM" "${SD_LOAD:--}" "$C_RESET")")
+    fi
+
+    # Hardware — one row, coloured by severity. Summary truncated to fit
+    # 80 - 12-char label column.
+    if [[ -n "$SD_PIHEALTH_SEVERITY" ]]; then
+        local _ph_color _ph_label _ph_avail _ph_summary
+        _ph_color="$(pihealth_color "$SD_PIHEALTH_SEVERITY")"
+        _ph_label="Hardware    "
+        _ph_avail=$(( 80 - ${#_ph_label} ))
+        _ph_summary="$SD_PIHEALTH_SUMMARY"
+        if (( ${#_ph_summary} > _ph_avail )); then
+            _ph_summary="${_ph_summary:0:$((_ph_avail - 3))}..."
+        fi
+        STATUS_LINES+=("$(printf '%b%s%b%b%s%b' \
+            "$C_BOLD" "$_ph_label" "$C_RESET" \
+            "$_ph_color" "$_ph_summary" "$C_RESET")")
+    fi
+
+    # Trailing notes — blank-separated, after Hardware.
+    if [[ -n "$SD_MLAT_WARN" ]]; then
+        STATUS_LINES+=("")
+        STATUS_LINES+=("$SD_MLAT_WARN")
+    fi
+    if [[ -n "$SD_978_NOTE" ]]; then
+        STATUS_LINES+=("")
+        STATUS_LINES+=("$SD_978_NOTE")
+    fi
+}
+
+# ---- Layout renderers. ----------------------------------------------------
+# Each consumes STATUS_LINES (already populated) and writes the frame to
+# stdout. Choose the right layout in render_once based on mode + cols.
+
+render_banner_stack() {
+    # Wide banner above full status. Falls through narrow banner → small
+    # logo → no-art if successive files are missing/malformed.
+    local artwork=()
+    if ! load_artwork "$PATHS_BANNER" "$BANNER_WIDTH" artwork; then
+        if ! load_artwork "$PATHS_BANNER_NARROW" "$BANNER_NARROW_WIDTH" artwork; then
+            load_artwork "$PATHS_LOGO" "$LOGO_WIDTH" artwork || artwork=()
+        fi
+    fi
+    if (( ${#artwork[@]} > 0 )); then
+        printf '%s' "$C_HDR"
+        printf '%s\n' "${artwork[@]}"
+        printf '%s\n' "$C_RESET"
+    fi
+    printf '%s\n' "${STATUS_LINES[@]}"
+}
+
+render_banner_narrow_stack() {
+    # Narrow (~74-col) banner above full status. Used by --live when the
+    # terminal is too narrow for the wide banner but wide enough for the
+    # compact one. Falls back to the small logo, then to no-art.
+    local artwork=()
+    if ! load_artwork "$PATHS_BANNER_NARROW" "$BANNER_NARROW_WIDTH" artwork; then
+        load_artwork "$PATHS_LOGO" "$LOGO_WIDTH" artwork || artwork=()
+    fi
+    if (( ${#artwork[@]} > 0 )); then
+        printf '%s' "$C_HDR"
+        printf '%s\n' "${artwork[@]}"
+        printf '%s\n' "$C_RESET"
+    fi
+    printf '%s\n' "${STATUS_LINES[@]}"
+}
+
+render_snapshot_with_header() {
+    # Snapshot layout (--snapshot / --once): small ASCII icon on the left
+    # (when the terminal has room), with a 3-line header (airplanes.live
+    # / random tagline / feed version) above the compact status panel on
+    # the right. When the terminal is narrower than
+    # SNAPSHOT_ICON_MIN_COLS, the icon column is dropped and the header
+    # text stacks above the status panel.
+    local cols="$1"
+    local tagline="${TAGLINES[$TAGLINE_INDEX]}"
+    local version_line
+    version_line="$(printf 'feed sha=%s (channel=%s)' "${SD_BUILD:-?}" "${SD_CHANNEL:-?}")"
+    local header=(
+        "$(printf '%bairplanes.live%b' "$C_BOLD" "$C_RESET")"
+        "$(printf '%b%s%b' "$C_DIM" "$tagline" "$C_RESET")"
+        "$(printf '%b%s%b' "$C_DIM" "$version_line" "$C_RESET")"
+        ""
+    )
+    local right=("${header[@]}" "${STATUS_LINES[@]}")
+
+    local icon=() use_icon=0
+    if (( cols >= SNAPSHOT_ICON_MIN_COLS )) \
+        && load_artwork "$PATHS_ICON" "$ICON_WIDTH" icon; then
+        use_icon=1
+    fi
+    if (( use_icon == 0 )); then
+        printf '%s\n' "${right[@]}"
+        return
+    fi
+
+    local icon_n=${#icon[@]}
+    local right_n=${#right[@]}
+    local n=$(( icon_n > right_n ? icon_n : right_n ))
+    local pad i
+    pad="$(printf '%*s' "$ICON_WIDTH" '')"
+    for (( i = 0; i < n; i++ )); do
+        if (( i < icon_n )); then
+            printf '%s%s%s  %s\n' "$C_HDR" "${icon[i]}" "$C_RESET" "${right[i]:-}"
+        else
+            printf '%s  %s\n' "$pad" "${right[i]:-}"
+        fi
+    done
+}
+
+# Centred row inside the snapshot header box. plain_content must be
+# ANSI-free — colour escapes are applied AROUND the padded plain text so
+# width math stays correct.
+_render_box_centered_row() {
+    local inner_width="$1" plain="$2" content_color="${3:-}"
+    local total_pad=$(( inner_width - ${#plain} ))
+    local pad_left=$(( total_pad / 2 ))
+    local pad_right=$(( total_pad - pad_left ))
+    printf '%b│%b%*s%b%s%b%*s%b│%b' \
+        "$C_HDR" "$C_RESET" \
+        "$pad_left" "" \
+        "$content_color" "$plain" "$C_RESET" \
+        "$pad_right" "" \
+        "$C_HDR" "$C_RESET"
+}
+
+# Populate HEADER_BOX_LINES (Unicode-box header) from the three plain-text
+# inputs. Box layout: top border / title row / subtitle row / divider /
+# build row / bottom border. Box width is sized to the longest input plus
+# 2 spaces of padding on each side. Always emits Unicode box-drawing
+# glyphs (the existing live banner already ships block elements, so the
+# renderer's UTF-8 floor is the same).
+declare -a HEADER_BOX_LINES=()
+build_header_box() {
+    local title="$1" subtitle="$2" build_line="$3"
+    local pad=2
+    local max=${#title}
+    (( ${#subtitle} > max )) && max=${#subtitle}
+    (( ${#build_line} > max )) && max=${#build_line}
+    local inner=$(( max + 2 * pad ))
+
+    local hline
+    hline="$(printf '─%.0s' $(seq 1 "$inner"))"
+
+    HEADER_BOX_LINES=()
+    HEADER_BOX_LINES+=("$(printf '%b┌%s┐%b' "$C_HDR" "$hline" "$C_RESET")")
+    HEADER_BOX_LINES+=("$(_render_box_centered_row "$inner" "$title" "$C_BOLD")")
+    HEADER_BOX_LINES+=("$(_render_box_centered_row "$inner" "$subtitle" "$C_DIM")")
+    HEADER_BOX_LINES+=("$(printf '%b├%s┤%b' "$C_HDR" "$hline" "$C_RESET")")
+    HEADER_BOX_LINES+=("$(_render_box_centered_row "$inner" "$build_line" "$C_DIM")")
+    HEADER_BOX_LINES+=("$(printf '%b└%s┘%b' "$C_HDR" "$hline" "$C_RESET")")
+}
+
+render_snapshot_banner_stack() {
+    # Snapshot/once banner-stack layout: icon (ICON_WIDTH cells) + 2-space
+    # gutter + 6-line Unicode header box, with the box vertically centred
+    # against the icon. The full-width status block (build_status_lines_snapshot)
+    # prints below the banner.
+    # Width assumption: caller already verified cols >= 80. If the icon
+    # artwork can't be loaded (missing/malformed), the box prints flush
+    # left without the icon column — banner still rendered.
+    local cols="$1"
+    local tagline="${TAGLINES[$TAGLINE_INDEX]}"
+    local title="airplanes.live"
+    local build_line
+    build_line="$(printf 'feed sha=%s (channel=%s)' \
+        "${SD_BUILD:-?}" "${SD_CHANNEL:-?}")"
+
+    build_header_box "$title" "$tagline" "$build_line"
+
+    local icon=() use_icon=0
+    if load_artwork "$PATHS_ICON" "$ICON_WIDTH" icon; then
+        use_icon=1
+    fi
+
+    if (( use_icon )); then
+        local icon_h=${#icon[@]}
+        local box_h=${#HEADER_BOX_LINES[@]}
+        local total_h=$(( icon_h > box_h ? icon_h : box_h ))
+        # Vertically centre the box against the icon column.
+        local box_offset=$(( (icon_h - box_h) / 2 ))
+        (( box_offset < 0 )) && box_offset=0
+        local icon_pad
+        icon_pad="$(printf '%*s' "$ICON_WIDTH" '')"
+        local i box_idx
+        for (( i = 0; i < total_h; i++ )); do
+            local left_part right_part=""
+            if (( i < icon_h )); then
+                left_part="${C_HDR}${icon[i]}${C_RESET}"
+            else
+                left_part="$icon_pad"
+            fi
+            box_idx=$(( i - box_offset ))
+            if (( box_idx >= 0 && box_idx < box_h )); then
+                right_part="${HEADER_BOX_LINES[box_idx]}"
+            fi
+            printf '%s  %s\n' "$left_part" "$right_part"
+        done
+    else
+        printf '%s\n' "${HEADER_BOX_LINES[@]}"
+    fi
+
+    printf '\n'
+    printf '%s\n' "${STATUS_LINES[@]}"
+}
+
+render_vertical_full_with_logo() {
+    # --live fallback when cols < BANNER_WIDTH: print the small logo above
+    # the full-width status block.
+    local logo=()
+    if load_artwork "$PATHS_LOGO" "$LOGO_WIDTH" logo; then
+        printf '%s' "$C_HDR"
+        printf '%s\n' "${logo[@]}"
+        printf '%s\n' "$C_RESET"
+    fi
+    printf '%s\n' "${STATUS_LINES[@]}"
+}
+
+# ---- Single-frame entry point. --------------------------------------------
+# Existing bats tests call `render_once live` directly; keep the name and
+# preserve the side effect on PREV_MSGS / PREV_TS.
+#
+# Optional second argument: a pre-computed terminal width. The --live
+# dispatcher passes one because its stdout is redirected to a frame
+# buffer file (so an internal `term_cols()` would see a non-tty and
+# wrongly fall back to 80, losing the 135-col banner layout).
+render_once() {
+    local mode="${1:-live}"
+    collect_status_data "$mode"
+    local cols="${2:-}"
+    [[ -z "$cols" ]] && cols="$(term_cols)"
+
+    case "$mode" in
+        live)
+            build_status_lines_full live
+            if (( cols >= BANNER_WIDTH )); then
+                render_banner_stack
+            elif (( cols >= BANNER_NARROW_WIDTH )); then
+                render_banner_narrow_stack
+            else
+                render_vertical_full_with_logo
+            fi
+            ;;
+        snapshot|once)
+            # Wide enough for the new banner-stack layout: full-width
+            # status block under an icon + boxed-header banner. Below the
+            # 80-col floor (rare for SSH MOTD / apl-status), fall back to
+            # the legacy icon + 38-col compact panel so narrow terminals
+            # don't wrap.
+            if (( cols >= 80 )); then
+                build_status_lines_snapshot
+                render_snapshot_banner_stack "$cols"
+            else
+                build_status_lines_compact
+                render_snapshot_with_header "$cols"
+            fi
+            ;;
+        *)
+            # Defensive fallthrough for unknown modes — render the live
+            # layout, matching the historical dispatcher behaviour.
+            build_status_lines_full live
+            render_vertical_full_with_logo
+            ;;
+    esac
+}
+
+# ---- Live-mode loop (HDMI console). ---------------------------------------
+# Double-buffered repaint that avoids the 1-2 s "screen flashes to black"
+# the naive clear-then-redraw produced. Each frame:
+#   1. Render to a tmpfile in the CURRENT shell (not via $(…)) so
+#      PREV_MSGS / PREV_TS updates inside render_once persist across
+#      iterations and msgs/s keeps computing.
+#   2. Paint in place: cursor home, then each line + \e[K (erase to EOL,
+#      so a shorter new line clears the previous frame's trailing chars),
+#      then \e[J (erase any leftover rows below if the new frame is
+#      shorter). The screen is never blanked between frames.
+# Cols are queried once per frame from /dev/tty so the wide-banner layout
+# fires on a 135-col tty1; gated on `[[ -t 1 ]]` so the bats test path
+# (stdout redirected to a file) still falls back to 80 → vertical layout.
+_dispatch_live() {
+    local frame_file
+    # Bail before hiding the cursor or installing traps if the tmpfile
+    # can't be created — otherwise an empty `frame_file` would survive
+    # the loop, `>"$frame_file"` would fail with "ambiguous redirect"
+    # every 5s, and we'd be left painting cursor-home + \e[J onto a
+    # blank screen every iteration.
+    if ! frame_file="$(mktemp "${TMPDIR:-/tmp}/airplanes-dashboard.XXXXXX")"; then
+        printf 'render-status: mktemp failed; aborting --live\n' >&2
+        exit 1
+    fi
+    # Hide the caret for the lifetime of the loop so in-flight repaints
+    # don't show a cursor stepping line-by-line. The EXIT trap does
+    # cleanup; the signal traps explicitly `exit` so an in-flight
+    # `sleep 5` actually terminates (a trap that runs and returns
+    # without exiting just resumes the interrupted command, and
+    # systemd's SIGTERM would hang the unit on stop).
+    printf '%s[?25l' "$ESC"
+    # shellcheck disable=SC2064  # expand $ESC + $frame_file at trap-register time
+    trap "rm -f '$frame_file'; printf '%s[?25h' '$ESC'" EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    local cols
+    while :; do
+        cols=""
+        if [[ -t 1 ]]; then
+            cols="$(stty size </dev/tty 2>/dev/null \
+                | awk 'NF==2 && $2 ~ /^[0-9]+$/ {print $2}')"
+        fi
+        [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+        # Run as a statement (not in $(…)) so PREV_MSGS / PREV_TS persist.
+        render_once live "$cols" > "$frame_file"
+        printf '%s[H' "$ESC"
+        while IFS= read -r line; do
+            printf '%s%s[K\n' "$line" "$ESC"
+        done < "$frame_file"
+        printf '%s[J' "$ESC"
+        sleep 5
+    done
+}
+
+# ---- Mode dispatcher. ------------------------------------------------------
+# Skip when sourced (bats tests source us to call helpers directly).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    mode="${1:---live}"
+    case "$mode" in
+        --snapshot)
+            render_once snapshot
+            ;;
+        --once)
+            printf '%s[2J%s[H' "$ESC" "$ESC"
+            render_once once
+            ;;
+        --live|*)
+            _dispatch_live
+            ;;
+    esac
+fi

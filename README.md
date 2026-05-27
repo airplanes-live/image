@@ -6,6 +6,7 @@
   <a href="https://github.com/airplanes-live/image/actions/workflows/ci.yml"><img src="https://github.com/airplanes-live/image/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
   <a href="https://github.com/airplanes-live/image/actions/workflows/build-image.yml"><img src="https://github.com/airplanes-live/image/actions/workflows/build-image.yml/badge.svg?branch=dev" alt="Build image"></a>
   <a href="https://github.com/airplanes-live/image/releases"><img src="https://img.shields.io/github/v/release/airplanes-live/image?include_prereleases&display_name=tag&label=release" alt="Latest release"></a>
+  <a href="https://github.com/airplanes-live/image/releases"><img src="https://img.shields.io/github/downloads/airplanes-live/image/total?label=downloads" alt="Downloads"></a>
 </p>
 
 # airplanes.live feeder image
@@ -25,6 +26,7 @@ Download the latest stable `.img.xz` from the [Releases](https://github.com/airp
 - `HOSTNAME` — set this if you run more than one Pi on your network (otherwise they'll all collide on `raspberrypi.local`). E.g. `HOSTNAME=airplanes-feeder` makes the Pi reachable at `airplanes-feeder.local`.
 - `WIFI_SSID`, `WIFI_PASS`, `WIFI_COUNTRY` — only if you're not on Ethernet.
 - `FEED_HOST` — leave commented out for production. Only set this if you're pointing at a non-production backend.
+- `WEBSITE_URL` — leave commented out for production. Independent of `FEED_HOST`; points the feeder's claim / diagnostics / remote-config-sync POSTs at a non-production website.
 
 Eject, insert into the Pi, connect SDR + antenna, power on. After ~2 minutes the feeder is online — browse to `http://<hostname>.local/` (or `http://raspberrypi.local/` if you didn't set `HOSTNAME`). **Set your receiver location (latitude / longitude / altitude) and MLAT display name in the web UI** — that's where they live now.
 
@@ -37,6 +39,8 @@ The boot config file is consumed on every boot: a successful apply renames it to
 1. On the [Releases](https://github.com/airplanes-live/image/releases) page, open the latest stable release and copy the URL of the `.rpi-imager-manifest.json` asset. (For testing the bleeding-edge build, use the manifest on the [`dev-latest`](https://github.com/airplanes-live/image/releases/tag/dev-latest) pre-release instead.)
 2. In Imager, click the gear icon at the bottom of the OS list → **Custom Repository** → paste the URL.
 3. Pick airplanes.live from the OS list, select your microSD card, click **Next**, then **Edit Settings** to configure hostname, WiFi, and SSH. Save and write.
+
+The OS-list entry's name carries a `· <sha> · <HH:MM>Z` suffix on dev builds — compare it against the `dev-latest` release body to confirm Imager has fetched the current manifest (and is not flashing a cached earlier-today build).
 
 Imager downloads and flashes the image for you. After first boot, browse to `http://<hostname>.local/` to set your receiver location and MLAT display name via the web UI.
 
@@ -73,6 +77,14 @@ The web UI at `http://<hostname>.local/` is the recommended way to change settin
 - UAT 978 MHz input (if you have a second SDR for UAT)
 
 It writes `/etc/airplanes/feed.env` atomically and restarts services as needed. Command-line users can SSH in and edit `/etc/airplanes/feed.env` directly, then `sudo systemctl restart airplanes-feed.service` (and `airplanes-mlat.service` for MLAT changes).
+
+### Forgot the web UI password?
+
+The web UI password is set on your first visit and can't be recovered — but you can clear it and set a new one. There's no in-UI reset: you're locked out, so the trigger lives on the SD card instead.
+
+Power off the Pi and remove the microSD card, then mount its FAT (boot) partition on another computer and create an empty file named `airplanes-reset-password` in `/boot/firmware/` (alongside `airplanes-config.txt`; make sure the name has no `.txt` or other extension). Reinsert the card and power on. On boot the feeder clears the stored password and deletes the marker, and the next visit to `http://<hostname>.local/` takes you back to the password-setup screen. Your feeder ID, location, and other settings are left untouched.
+
+If you have SSH access you can skip pulling the card — `sudo touch /boot/firmware/airplanes-reset-password && sudo reboot` does the same thing.
 
 ---
 
