@@ -13,8 +13,8 @@
 # ---------------------------------------------------------------------------
 # Update-orchestrator e2e probe — drives POST /api/orchestrator/start with
 # every sub-helper stubbed out at its absolute path so the orchestrator's
-# three-phase sequencing (apt → feed → runtime) is exercised end-to-end
-# without actually mutating apt / feed / runtime. The bats coverage at
+# two-phase sequencing (apt → runtime) is exercised end-to-end without
+# actually mutating apt / runtime. The bats coverage at
 # test/runtime-overlay/test_orchestrator_sequence.bats exercises the
 # orchestrator script in isolation; this probe exercises the click-flow
 # (HTTP -> sudoers -> systemd-run -> orchestrator -> state-file) the SPA
@@ -57,7 +57,7 @@ _orch_binary=/opt/airplanes-runtime/current/lib/airplanes-update-orchestrator
 # Absolute paths the orchestrator invokes for each step. Kept in sync with
 # the script's defaults block.
 _orch_apt_get=/usr/bin/apt-get
-_orch_feed_update=/usr/local/share/airplanes/update.sh
+# _orch_feed_update removed — the orchestrator no longer has a feed step.
 _orch_runtime_update=/opt/airplanes-runtime/current/lib/runtime-self-update.sh
 
 _orch_state_file=/run/airplanes/orchestrator.state
@@ -302,7 +302,7 @@ _orch_dump_diagnostics() {
     _orch_diag_emit "image-probe: bind-mount evidence (probe-side):"
     _orch_diag_run mount
     local _t
-    for _t in "${_orch_apt_get:-}" "${_orch_feed_update:-}" \
+    for _t in "${_orch_apt_get:-}" \
               "${_orch_runtime_update:-}"; do
         [[ -n "$_t" ]] || continue
         _orch_diag_emit "  target: $_t"
@@ -549,7 +549,6 @@ _orch_run_probe() {
         rm -f -- "$_orch_state_file"
 
         _orch_bind_stub "$_orch_apt_get"          apt
-        _orch_bind_stub "$_orch_feed_update"      feed
         _orch_bind_stub "$_orch_runtime_update"   runtime
 
         # Cross-namespace visibility check: the orchestrator runs in a
@@ -564,7 +563,7 @@ _orch_run_probe() {
         # diagnostic before the POST instead of an opaque step
         # failure 5–10 seconds later.
         local _t expect_payload="" line
-        for _t in "$_orch_apt_get" "$_orch_feed_update" \
+        for _t in "$_orch_apt_get" \
                   "$_orch_runtime_update"; do
             line="$(stat -Lc '%d:%i' -- "$_t" 2>/dev/null || true)"
             if [[ -z "$line" ]]; then
@@ -576,7 +575,7 @@ _orch_run_probe() {
         local transient_payload
         # shellcheck disable=SC2016  # $TARGETS expands inside the transient unit, not at quoting time.
         transient_payload="$(timeout 15s systemd-run --pipe --wait --collect --quiet \
-            --setenv=TARGETS="$_orch_apt_get $_orch_feed_update $_orch_runtime_update" \
+            --setenv=TARGETS="$_orch_apt_get $_orch_runtime_update" \
             /bin/bash -c '
                 set +e
                 for t in $TARGETS; do
@@ -750,11 +749,17 @@ _orch_run_probe() {
         # step=done without all phases having run if a future refactor
         # short-circuits the sequencer.
         local missing="" s
-        for s in apt feed runtime; do
+        for s in apt runtime; do
             [[ -f "$_orch_marker_dir/${s}.ok" ]] || missing+=" $s"
         done
         if [[ -n "$missing" ]]; then
             _orch_fail "orchestrator probe: missing per-step marker(s):${missing}"
+        fi
+        # Feed + webconfig ship inside the runtime overlay now — the
+        # orchestrator has no separate feed step, so a feed marker must NOT
+        # appear.
+        if [[ -f "$_orch_marker_dir/feed.ok" ]]; then
+            _orch_fail "orchestrator probe: unexpected feed.ok marker (orchestrator should have no feed step)"
         fi
 
         # Call-count assertions on the sequence log. apt-get is
@@ -767,26 +772,22 @@ _orch_run_probe() {
         # rc clean so set -e doesn't trip, and grep's own '0' output
         # is what we want without an extra echo 0 (which would emit
         # `0\n0` and trip the (( )) check downstream).
-        local apt_calls feed_calls runtime_calls
+        local apt_calls runtime_calls
         apt_calls=$(grep -c '^[^ ]* apt ' "$_orch_call_log" 2>/dev/null || true)
-        feed_calls=$(grep -c '^[^ ]* feed ' "$_orch_call_log" 2>/dev/null || true)
         runtime_calls=$(grep -c '^[^ ]* runtime ' "$_orch_call_log" 2>/dev/null || true)
-        : "${apt_calls:=0}" "${feed_calls:=0}" "${runtime_calls:=0}"
+        : "${apt_calls:=0}" "${runtime_calls:=0}"
         if (( apt_calls != 2 )); then
             _orch_fail "orchestrator probe: apt was invoked $apt_calls times (want 2: 'update' + '-y upgrade')"
-        fi
-        if (( feed_calls != 1 )); then
-            _orch_fail "orchestrator probe: feed stub was invoked $feed_calls times (want 1)"
         fi
         if (( runtime_calls != 1 )); then
             _orch_fail "orchestrator probe: runtime stub was invoked $runtime_calls times (want 1)"
         fi
 
-        # Sequence assertion: apt before feed before runtime. The bats
-        # coverage pins this for the orchestrator script in isolation;
-        # we re-check here because a regression in the trampoline or
-        # systemd-run plumbing could in principle reorder the actual
-        # execution.
+        # Sequence assertion: apt before runtime. The bats coverage pins this
+        # for the orchestrator script in isolation; we re-check here because a
+        # regression in the trampoline or systemd-run plumbing could in
+        # principle reorder the actual execution. The orchestrator is now a
+        # two-step sequence (apt → runtime); there is no feed step.
         #
         # `|| true` on each pipeline: pipefail is on (inherited from
         # run.sh's `set -euo pipefail`), and the grep|head|cut shape
@@ -796,15 +797,14 @@ _orch_run_probe() {
         # pipe after one line so grep can also get SIGPIPE (rc=141)
         # on a matching but multi-line input. We want the assertions
         # to be the only place that fails.
-        local apt_first feed_first rt_first
+        local apt_first rt_first
         apt_first=$(grep -n '^[^ ]* apt update$' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
-        feed_first=$(grep -n '^[^ ]* feed ' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
         rt_first=$(grep -n '^[^ ]* runtime ' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
-        if [[ -z "$apt_first" || -z "$feed_first" || -z "$rt_first" ]]; then
-            _orch_fail "orchestrator probe: sequence log missing one of apt/feed/runtime entries (log: $(cat "$_orch_call_log"))"
+        if [[ -z "$apt_first" || -z "$rt_first" ]]; then
+            _orch_fail "orchestrator probe: sequence log missing one of apt/runtime entries (log: $(cat "$_orch_call_log"))"
         fi
-        if ! (( apt_first < feed_first && feed_first < rt_first )); then
-            _orch_fail "orchestrator probe: step order wrong — apt=$apt_first feed=$feed_first runtime=$rt_first (want strict ascending)"
+        if ! (( apt_first < rt_first )); then
+            _orch_fail "orchestrator probe: step order wrong — apt=$apt_first runtime=$rt_first (want apt before runtime)"
         fi
 
         # Runtime sanity bound. See the budget comment above.
@@ -876,20 +876,11 @@ _orch_run_probe() {
         [[ "$_orch_health_code" == "200" ]] \
             || _orch_fail "orchestrator probe: health endpoint returned $_orch_health_code after orchestrator finished + unit drained (want 200)"
 
-        # SIGHUP proof: step_feed_hup in the orchestrator and the
-        # systemd-run ExecStopPost both send SIGHUP to webconfig. The
-        # schema cache reload logs an identifiable line on each HUP.
-        # Without this check, a regression that drops either HUP would
-        # still pass (webconfig keeps serving /health regardless). We
-        # don't pin the exact count — systemd ordering between the
-        # orchestrator's intra-run kill and ExecStopPost can collapse
-        # under tight timing — but at least one entry must land within
-        # the probe window.
-        if ! journalctl -u airplanes-webconfig.service \
-                --no-pager --since "@$post_start_epoch" 2>&1 \
-                | grep -qiE 'sighup|schema.*reload|reloading'; then
-            _orch_fail "orchestrator probe: webconfig journal shows no SIGHUP/schema-reload entries since orchestrator POST (feed-step HUP and/or ExecStopPost HUP did not fire?)"
-        fi
+        # The feed-step SIGHUP to webconfig is gone — the orchestrator no
+        # longer has a feed step (feed-env schema changes now ride the runtime
+        # overlay's atomic webconfig+feed swap), so there is no post-feed HUP
+        # to assert here. The webconfig /health check above already proves the
+        # service is responsive after the orchestrator run.
 
         # Tear down — paired with the trap above. Drop the trap
         # explicitly so the diagnostic dump only fires on failure.
@@ -897,7 +888,7 @@ _orch_run_probe() {
         # Verify cleanup landed — a leaked bind on /usr/bin/apt-get
         # would break the next apt operation on this VM.
         local leaked=""
-        for s in "$_orch_apt_get" "$_orch_feed_update" \
+        for s in "$_orch_apt_get" \
                  "$_orch_runtime_update"; do
             if mountpoint -q "$s" 2>/dev/null; then
                 leaked+=" $s"
@@ -908,7 +899,7 @@ _orch_run_probe() {
         fi
         trap - EXIT
 
-        echo "image-probe: orchestrator e2e probe passed (elapsed=${elapsed}s, all 3 markers + sequence + HTTP cross-check)"
+        echo "image-probe: orchestrator e2e probe passed (elapsed=${elapsed}s, apt + runtime markers + sequence + HTTP cross-check)"
     )
     local sub_rc=$?
     if (( sub_rc != 0 )); then
