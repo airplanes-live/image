@@ -30,9 +30,10 @@ HOSTNAME_FILE="${HOSTNAME_FILE:-/etc/hostname}"
 HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 
 # Shared Wi-Fi predicate + keyfile-writer libraries, also consumed by
-# /usr/local/bin/apl-wifi (webconfig flow). Production install location is
-# /usr/local/lib/airplanes; bats tests set APL_WIFI_LIB_DIR to the source-tree
-# path under stage-airplanes/05-install-webconfig/files/.
+# /usr/local/bin/apl-wifi (webconfig flow). The libs ship from
+# airplanes-live/image-webconfig via the runtime overlay; production install
+# location is /usr/local/lib/airplanes. Bats tests point APL_WIFI_LIB_DIR at the
+# image-webconfig source checkout (AIRPLANES_IMAGE_WEBCONFIG_ROOT in CI).
 APL_WIFI_LIB_DIR="${APL_WIFI_LIB_DIR:-/usr/local/lib/airplanes}"
 # shellcheck source=/dev/null
 . "$APL_WIFI_LIB_DIR/wifi-validators.sh"
