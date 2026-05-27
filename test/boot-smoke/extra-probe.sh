@@ -970,6 +970,7 @@ _runtime_drive_update() {
     local asset_dir="$1"
     AIRPLANES_RUNTIME_RELEASE_ASSET_DIR="$asset_dir" \
     AIRPLANES_RUNTIME_OVERLAY_TAG="local-assets" \
+    AIRPLANES_RUNTIME_MIN_FREE_BYTES=0 \
         /opt/airplanes-runtime/current/lib/runtime-self-update.sh
 }
 
