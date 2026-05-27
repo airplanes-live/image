@@ -137,14 +137,31 @@ generate_feeder_id() {
 	if [[ -f "$FEEDER_ID_FILE" ]]; then
 		return 0
 	fi
-	if [[ ! -f "$CREATE_UUID" ]]; then
-		log "create-uuid.sh missing at $CREATE_UUID; skipping feeder-id generation"
-		return 1
+	if [[ -f "$CREATE_UUID" ]]; then
+		if ! bash "$CREATE_UUID"; then
+			log "create-uuid.sh exited non-zero"
+			return 1
+		fi
+		return 0
 	fi
-	if ! bash "$CREATE_UUID"; then
-		log "create-uuid.sh exited non-zero"
+	# Feed overlay delivers the feed stack via managed_paths; the legacy
+	# $GIT/create-uuid.sh is no longer on disk. Generate the feeder-id
+	# inline (same logic, simplified). Legacy-UUID migration is no longer
+	# needed on the new image (no $IPATH/airplanes-uuid to migrate from).
+	log "create-uuid.sh not found; generating feeder-id inline"
+	local uuid
+	uuid="$(cat /proc/sys/kernel/random/uuid)" || {
+		log "failed to read /proc/sys/kernel/random/uuid"
 		return 1
-	fi
+	}
+	local etc_dir
+	etc_dir="$(dirname "$FEEDER_ID_FILE")"
+	mkdir -p "$etc_dir"
+	local tmp="$FEEDER_ID_FILE.$$"
+	printf '%s\n' "$uuid" > "$tmp"
+	chmod 0644 "$tmp"
+	mv -f "$tmp" "$FEEDER_ID_FILE"
+	log "feeder-id=$uuid (generated inline)"
 }
 
 # Verify the BOOT_CONFIG directory accepts create/rename/unlink before any
