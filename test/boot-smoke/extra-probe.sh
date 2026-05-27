@@ -1039,24 +1039,6 @@ _runtime_upgrade_probe() {
     assert_service_healthy airplanes-webconfig.service
     echo "image-probe: GOOD convergence passed (current=v$_runtime_good_version)"
 
-    # Re-baseline feed's idempotency snapshot now that the overlay has been
-    # swapped to v9.9.99. The feed harness runs assert_binaries_unchanged on
-    # every entry to the 'updated' phase, comparing the feed binary's mtime
-    # against a snapshot frozen at first boot. With feed overlay-delivered,
-    # /usr/local/share/airplanes/feed-airplanes is a managed-path symlink
-    # into the active release dir; the GOOD install re-pointed it, changing
-    # the underlying inode and mtime. Re-baseline here (before the BROKEN
-    # drive) so the snapshot reflects the post-GOOD steady state — which is
-    # also the post-BROKEN-rollback state (v9.9.99 in both cases). This
-    # makes the re-baseline resilient to the BROKEN drive's rollback timing.
-    if [[ -f /var/lib/airplanes-boot-smoke/snapshot-mtimes ]]; then
-        stat -c '%Y %n' \
-            /usr/local/share/airplanes/feed-airplanes \
-            /usr/local/share/airplanes/venv/bin/mlat-client \
-            > /var/lib/airplanes-boot-smoke/snapshot-mtimes
-        echo "image-probe: re-baselined feed idempotency snapshot after GOOD overlay swap"
-    fi
-
     # --- BROKEN vN+1 : expect rollback to the GOOD release ------------------
     echo "image-probe: driving runtime-self-update to BROKEN release"
     local pre_broken_ver="$_runtime_good_version"
@@ -1076,6 +1058,24 @@ _runtime_upgrade_probe() {
     assert_service_healthy airplanes-feed.service
     assert_service_healthy airplanes-webconfig.service
     echo "image-probe: BROKEN rollback passed (current=v$post_broken_ver, state=$upg_state)"
+
+    # Re-baseline feed's idempotency snapshot. The GOOD→BROKEN→rollback cycle
+    # changed the managed-path symlink's target mtime: the GOOD install
+    # extracted v9.9.99, the BROKEN install extracted v9.9.100, and the rollback
+    # re-laid v9.9.99's managed paths. Even though the rollback returns to
+    # v9.9.99, the re-lay creates new symlinks with fresh lstat() timestamps.
+    # The feed harness's assert_binaries_unchanged compares this snapshot against
+    # a fresh stat after the next run_feed_update; feed's update.sh takes the
+    # version-match fast path and doesn't touch the binary, so feed-airplanes's
+    # mtime must match. Snapshot here — at the final steady state just before
+    # the persistence reboot — so the comparison is against the correct baseline.
+    if [[ -f /var/lib/airplanes-boot-smoke/snapshot-mtimes ]]; then
+        stat -c '%Y %n' \
+            /usr/local/share/airplanes/feed-airplanes \
+            /usr/local/share/airplanes/venv/bin/mlat-client \
+            > /var/lib/airplanes-boot-smoke/snapshot-mtimes
+        echo "image-probe: re-baselined feed idempotency snapshot after rollback"
+    fi
 
     # Persist the expected post-reboot version + mark pass 1 done, then reboot
     # to verify the rolled-back release survives. The harness re-runs the
