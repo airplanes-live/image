@@ -78,7 +78,7 @@ for dir in "$RELEASE_DIR/share/airplanes" "$RELEASE_DIR/lib" "$RELEASE_DIR/migra
     [[ -d "$dir" ]] || continue
     while IFS= read -r -d '' f; do
         shell_files+=("$f")
-    done < <(find "$dir" -type f -name '*.sh' -print0)
+    done < <(find "$dir" -type f -name '*.sh' -not -path '*/venv/*' -print0)
 done
 shopt -u nullglob
 if [[ "${#shell_files[@]}" -gt 0 ]]; then

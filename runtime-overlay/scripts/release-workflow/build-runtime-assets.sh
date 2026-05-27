@@ -158,6 +158,30 @@ if [[ -n "$FEED_OVERLAY_REPO" && -n "$FEED_OVERLAY_BRANCH" \
         --mlat-ref "$MLAT_CLIENT_BRANCH" \
         --arch "$ARCH" \
         --output-dir "$staging"
+
+    # Fold the mlat venv's Python ABI and content hash into the manifest compat
+    # block. The ABI lets the on-device preflight refuse a release whose venv
+    # was built against a Python the running base OS no longer ships; the hash
+    # lets a post-extraction smoke confirm the on-device tree matches.
+    # stage-feed.sh writes both files when it builds the venv.
+    if [[ -f "$staging/mlat_python_abi" ]]; then
+        abi="$(tr -d '[:space:]' < "$staging/mlat_python_abi")"
+        if [[ -n "$abi" ]]; then
+            tmp_compat="$(mktemp "$staging/.compat.XXXXXX")"
+            jq --arg abi "$abi" '. + {mlat_python_abi: $abi}' \
+                "$staging/compat.json" > "$tmp_compat"
+            mv -f -- "$tmp_compat" "$staging/compat.json"
+        fi
+    fi
+    if [[ -f "$staging/mlat_venv_sha256" ]]; then
+        venv_hash="$(tr -d '[:space:]' < "$staging/mlat_venv_sha256")"
+        if [[ -n "$venv_hash" ]]; then
+            tmp_compat="$(mktemp "$staging/.compat.XXXXXX")"
+            jq --arg h "$venv_hash" '. + {mlat_venv_sha256: $h}' \
+                "$staging/compat.json" > "$tmp_compat"
+            mv -f -- "$tmp_compat" "$staging/compat.json"
+        fi
+    fi
 fi
 
 if [[ -d "$overlay_dir/src/share/airplanes" ]]; then

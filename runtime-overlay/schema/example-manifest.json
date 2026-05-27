@@ -8,6 +8,8 @@
   "arches": ["arm64"],
   "compat": {
     "base_os_codename": "trixie",
+    "mlat_python_abi": "cp313",
+    "mlat_venv_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "requires_webconfig": ">=2.1.0,<2.3.0",
     "requires_feed_contract": ">=14"
   },
@@ -20,6 +22,10 @@
     "webconfig": {
       "commit_sha": "feedface0000feedface0000feedface00001234",
       "version": "2.2.0"
+    },
+    "mlat_client": {
+      "commit_sha": "ba5eba11ba5eba11ba5eba11ba5eba11ba5eba11",
+      "version": "master"
     }
   },
   "managed_paths": [
@@ -72,6 +78,11 @@
       "mode": "symlink",
       "link": "/usr/local/share/airplanes/readsb.sh",
       "target": "/opt/airplanes-runtime/current/share/airplanes/readsb.sh"
+    },
+    {
+      "mode": "symlink",
+      "link": "/usr/local/share/airplanes/venv",
+      "target": "/opt/airplanes-runtime/current/share/airplanes/venv"
     },
     {
       "mode": "symlink",

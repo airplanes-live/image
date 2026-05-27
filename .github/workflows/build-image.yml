@@ -155,6 +155,8 @@ jobs:
               jq \
               python3-jsonschema \
               python3-pip \
+              python3-venv \
+              python3-dev \
               lighttpd \
               shellcheck \
               bubblewrap \
