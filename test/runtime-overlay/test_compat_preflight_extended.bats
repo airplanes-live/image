@@ -150,3 +150,66 @@ JSON
         run airplanes_runtime_run_compat_preflight "$m" "$TARGET_ROOT"
     [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Python ABI (mlat_python_abi)
+# ---------------------------------------------------------------------------
+
+# Stub a python3 at the target root that reports a specific ABI tag.
+_stub_python3() {
+    local target_root="$1" abi_tag="$2"
+    install -d -m 755 "$target_root/usr/bin"
+    cat > "$target_root/usr/bin/python3" <<PYEOF
+#!/bin/sh
+# Stub python3 that emits only the ABI tag.
+if [ "\$1" = "-c" ]; then
+    echo "$abi_tag"
+fi
+PYEOF
+    chmod 755 "$target_root/usr/bin/python3"
+}
+
+@test "preflight: passes when mlat_python_abi matches" {
+    local d="$BATS_TEST_TMPDIR/rel"
+    install -d "$d"
+    local m
+    m="$(mk_manifest_with_floor "$d" 1 "1.0.0" "mlat_python_abi=cp313")"
+    _stub_python3 "$TARGET_ROOT" "cp313"
+    run airplanes_runtime_run_compat_preflight "$m" "$TARGET_ROOT"
+    [ "$status" -eq 0 ]
+}
+
+@test "preflight: rejects wrong mlat_python_abi" {
+    local d="$BATS_TEST_TMPDIR/rel"
+    install -d "$d"
+    local m
+    m="$(mk_manifest_with_floor "$d" 1 "1.0.0" "mlat_python_abi=cp313")"
+    _stub_python3 "$TARGET_ROOT" "cp312"
+    run airplanes_runtime_run_compat_preflight "$m" "$TARGET_ROOT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"cp313"* ]]
+    [[ "$output" == *"cp312"* ]]
+}
+
+@test "preflight: rejects missing python3 when mlat_python_abi set" {
+    local d="$BATS_TEST_TMPDIR/rel"
+    install -d "$d"
+    local m
+    m="$(mk_manifest_with_floor "$d" 1 "1.0.0" "mlat_python_abi=cp313")"
+    # No python3 stub — the helper should return empty.
+    run airplanes_runtime_run_compat_preflight "$m" "$TARGET_ROOT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"python3 is not installed"* ]]
+}
+
+@test "preflight: skips python abi check when not declared" {
+    local d="$BATS_TEST_TMPDIR/rel"
+    install -d "$d"
+    local m
+    m="$(mk_manifest_with_floor "$d" 1 "1.0.0" "base_os_codename=fakecodename")"
+    install -d -m 755 "$TARGET_ROOT/etc"
+    printf 'VERSION_CODENAME=fakecodename\n' > "$TARGET_ROOT/etc/os-release"
+    # No mlat_python_abi in manifest — should pass without python3 present.
+    run airplanes_runtime_run_compat_preflight "$m" "$TARGET_ROOT"
+    [ "$status" -eq 0 ]
+}

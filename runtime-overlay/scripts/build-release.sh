@@ -196,6 +196,13 @@ for snippet in components managed_paths mutable_paths systemd migrations compat;
     rm -f -- "$STAGING_DIR/$snippet.json"
 done
 
+# Strip the per-component metadata atoms the stage helpers drop at the staging
+# root (components.<key>.sha / .version, and the mlat venv ABI / hash files).
+# They are folded into the manifest upstream; the release tree on a feeder must
+# carry only on-device assets, not the build-time bookkeeping.
+rm -f -- "$STAGING_DIR"/components.*.sha "$STAGING_DIR"/components.*.version
+rm -f -- "$STAGING_DIR/mlat_python_abi" "$STAGING_DIR/mlat_venv_sha256"
+
 # Compose manifest.json. The renderer is responsible for canonical key
 # ordering (jq -S) and atomic write.
 airplanes_runtime_render_manifest \

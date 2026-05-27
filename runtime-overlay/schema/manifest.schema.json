@@ -91,6 +91,16 @@
           "description": "Required Debian suite codename (e.g. 'trixie'). Updater compares against the installed OS and refuses on mismatch.",
           "minLength": 1
         },
+        "mlat_python_abi": {
+          "type": "string",
+          "description": "CPython ABI tag (e.g. 'cp313') the prebuilt mlat-client venv was built against. The updater refuses on mismatch with the installed python3, since the compiled C extension is ABI-locked.",
+          "pattern": "^cp[0-9]{2,3}$"
+        },
+        "mlat_venv_sha256": {
+          "type": "string",
+          "description": "SHA256 over the staged mlat-client venv tree (sorted file list + contents). Pins exactly what shipped; a post-extraction smoke can confirm the on-device tree matches.",
+          "pattern": "^[0-9a-f]{64}$"
+        },
         "requires_webconfig": { "$ref": "#/$defs/semverRange" },
         "requires_feed_contract": { "$ref": "#/$defs/semverRange" },
         "min_image_base": { "$ref": "#/$defs/semverRange" }

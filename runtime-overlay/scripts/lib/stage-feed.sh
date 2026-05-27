@@ -198,6 +198,32 @@ for unit in airplanes-feed.service airplanes-mlat.service; do
     fi
 done
 
+# Gate airplanes-mlat.service on the prebuilt venv this overlay ships. The
+# wrapper execs /usr/local/share/airplanes/venv/bin/mlat-client; without the
+# venv the unit would restart-loop on a missing interpreter. ConditionPathExists
+# makes systemd skip the unit cleanly (inactive, condition-failed) on a
+# decoder-only release rather than start-fail it. We inject the condition here
+# (overlay side, where the venv is owned) rather than in the feed repo, whose
+# unit is also consumed by the standalone installer that builds the venv at the
+# same path. Idempotent: only add it if not already present.
+mlat_unit="$OUTPUT_DIR/systemd/airplanes-mlat.service"
+if [[ -f "$mlat_unit" ]] && ! grep -q '^ConditionPathExists=' "$mlat_unit"; then
+    # Insert the condition into the [Unit] section, after the Description line.
+    tmp_unit="$(mktemp)"
+    awk '
+        /^\[Unit\]/ { print; in_unit = 1; next }
+        in_unit && /^Description=/ {
+            print
+            print "ConditionPathExists=/usr/local/share/airplanes/venv/bin/mlat-client"
+            next
+        }
+        /^\[/ && !/^\[Unit\]/ { in_unit = 0 }
+        { print }
+    ' "$mlat_unit" > "$tmp_unit"
+    install -m 0644 "$tmp_unit" "$mlat_unit"
+    rm -f -- "$tmp_unit"
+fi
+
 # Stage .shellcheckrc so the verify-gates shellcheck over the release tree
 # honours the feed repo's suppressions (SC2034: unused-looking associative
 # array keys that are actually consumed by callers via source). Without it,
@@ -236,15 +262,118 @@ install -m 0644 "$feed_env_root/etc/airplanes/feed.env" \
 printf '%s' "$FEED_SHA" > "$OUTPUT_DIR/components.feed_scripts.sha"
 printf '%s' "${FEED_REF}" > "$OUTPUT_DIR/components.feed_scripts.version"
 
-# The mlat-client venv is NOT staged here. Its prebuilt overlay delivery is a
-# follow-up: building the venv at the on-device target path and wiring it as a
-# managed_path needs its own shebang + content-hash smoke and free-space
-# preflight, which are out of scope for this change. Conditional MLAT semantics
-# (the updater treating unconfigured mlat as inactive-success, never a rollback
-# trigger) are implemented in runtime-self-update.sh / install-common.sh here;
-# the airplanes-mlat wrapper self-disables (sleeps) on a fresh image, so the
-# absence of the venv does not break the fresh-image feed path. --mlat-repo /
-# --mlat-ref are accepted but currently only recorded, not consumed.
-echo "stage-feed: mlat-client venv delivery deferred (pin recorded: $MLAT_REPO @ $MLAT_REF)"
+# ---------------------------------------------------------------------------
+# 3. Build the mlat-client Python venv at the on-device target path
+# ---------------------------------------------------------------------------
+#
+# A Python venv embeds the absolute path it was created at into every
+# console-script shebang (and into pyvenv.cfg). The airplanes-mlat wrapper
+# execs /usr/local/share/airplanes/venv/bin/mlat-client, so the venv MUST be
+# built at that exact path inside the container — not at a relative or
+# container-scoped path — or the on-device shebangs would point at a directory
+# that does not exist. We build there, verify the shebangs, then copy the tree
+# verbatim into the overlay staging dir (cp -a does not rewrite shebangs).
 
-echo "stage-feed: staged feed artifacts (feed_readsb=$READSB_SHA feed_scripts=$FEED_SHA)"
+# The venv MUST live at the path the airplanes-mlat wrapper execs. Overridable
+# only for tests (which can't write under /usr/local without root); production
+# always builds at the real on-device path so shebangs resolve.
+VENV_TARGET="${AIRPLANES_VENV_TARGET:-/usr/local/share/airplanes/venv}"
+# Test seam: a local source dir short-circuits the network clone. Production
+# always clones the pinned mlat-client ref.
+MLAT_SRC="${AIRPLANES_MLAT_SRC_DIR:-$SCRATCH_DIR/mlat-src}"
+if [[ -n "${AIRPLANES_MLAT_SRC_DIR:-}" ]]; then
+    echo "stage-feed: using local mlat-client source at $MLAT_SRC"
+    MLAT_SHA="$(git -C "$MLAT_SRC" rev-parse HEAD 2>/dev/null || printf '%s' "${MLAT_REF}")"
+else
+    echo "stage-feed: cloning mlat-client from $MLAT_REPO @ $MLAT_REF"
+    fetch_repo "$MLAT_SRC" "$MLAT_REPO" "$MLAT_REF"
+    MLAT_SHA="$(git -C "$MLAT_SRC" rev-parse HEAD)"
+fi
+
+PYTHON_BIN="${AIRPLANES_PYTHON_BIN:-/usr/bin/python3}"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    die "python interpreter not found: $PYTHON_BIN (install python3 + python3-venv)"
+fi
+
+# Record the interpreter's CPython ABI tag (e.g. cp313) so the on-device
+# preflight can refuse a venv built against a Python the running base OS no
+# longer ships. The compiled mlat-client C extension is ABI-locked to it.
+PYTHON_ABI="$("$PYTHON_BIN" - <<'PY'
+import sys
+print("cp%d%d" % (sys.version_info[0], sys.version_info[1]))
+PY
+)"
+if [[ -z "$PYTHON_ABI" ]]; then
+    die "could not determine python ABI tag from $PYTHON_BIN"
+fi
+
+# Build at the literal on-device path. The container is ephemeral, so writing
+# under /usr/local is safe and keeps shebangs correct without post-hoc
+# rewriting. Wipe any stale tree first for idempotent local re-runs.
+rm -rf -- "$VENV_TARGET"
+install -d -m 0755 "$(dirname "$VENV_TARGET")"
+echo "stage-feed: building mlat-client venv at $VENV_TARGET ($PYTHON_ABI)"
+"$PYTHON_BIN" -m venv "$VENV_TARGET"
+# shellcheck disable=SC1091
+source "$VENV_TARGET/bin/activate"
+# mlat-client's setup.py imports asyncore (removed in 3.12+); pyasyncore
+# backfills it. setuptools/wheel are needed for the source build.
+python3 -m pip install --no-input --disable-pip-version-check wheel setuptools
+python3 -c "import asyncore" 2>/dev/null || python3 -m pip install --no-input pyasyncore
+( cd "$MLAT_SRC" && python3 -m pip install --no-input . )
+deactivate
+
+if [[ ! -x "$VENV_TARGET/bin/mlat-client" ]]; then
+    die "venv build produced no mlat-client at $VENV_TARGET/bin/mlat-client"
+fi
+
+# Shebang invariant: every console script in the venv must point its
+# interpreter at the venv's own python under the on-device path. A shebang
+# resolving anywhere else means the venv was built at the wrong path and would
+# fail to launch on device.
+shebang_bad=""
+for script in "$VENV_TARGET"/bin/*; do
+    [[ -f "$script" ]] || continue
+    # Only text scripts carry a #! line; skip the python symlinks/binaries.
+    IFS= read -r firstline < "$script" || true
+    case "$firstline" in
+        '#!'*)
+            if [[ "$firstline" != "#!$VENV_TARGET/"* ]]; then
+                shebang_bad+="$(basename "$script"): $firstline"$'\n'
+            fi
+            ;;
+    esac
+done
+if [[ -n "$shebang_bad" ]]; then
+    {
+        echo "stage-feed: venv shebangs do not resolve under $VENV_TARGET:"
+        printf '%s' "$shebang_bad"
+    } >&2
+    exit 1
+fi
+
+# Copy the venv into the overlay tree verbatim. cp -a preserves the absolute
+# shebangs and the exec bits; the on-device path equals the build path so no
+# rewriting is needed. Wipe any prior copy first so an idempotent re-run does
+# not nest the tree (cp -a SRC DEST/ copies INTO DEST when DEST exists).
+install -d -m 0755 "$OUTPUT_DIR/share/airplanes"
+rm -rf -- "$OUTPUT_DIR/share/airplanes/venv"
+cp -a "$VENV_TARGET" "$OUTPUT_DIR/share/airplanes/venv"
+
+# Content hash over the staged venv tree (sorted file list + contents) so the
+# manifest can pin exactly what shipped and a smoke test can confirm the
+# on-device tree matches after extraction.
+VENV_HASH="$(
+    cd "$OUTPUT_DIR/share/airplanes/venv" \
+        && find . -type f -print0 | LC_ALL=C sort -z \
+        | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+)"
+
+printf '%s' "$MLAT_SHA" > "$OUTPUT_DIR/components.mlat_client.sha"
+printf '%s' "${MLAT_REF}" > "$OUTPUT_DIR/components.mlat_client.version"
+printf '%s' "$PYTHON_ABI" > "$OUTPUT_DIR/mlat_python_abi"
+printf '%s' "$VENV_HASH" > "$OUTPUT_DIR/mlat_venv_sha256"
+
+echo "stage-feed: staged mlat-client venv (mlat_client=$MLAT_SHA abi=$PYTHON_ABI hash=${VENV_HASH:0:12})"
+
+echo "stage-feed: staged feed artifacts (feed_readsb=$READSB_SHA feed_scripts=$FEED_SHA mlat_client=$MLAT_SHA)"

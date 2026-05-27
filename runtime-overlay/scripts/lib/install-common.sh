@@ -1974,6 +1974,21 @@ _airplanes_runtime_read_os_codename() {
     printf ''
 }
 
+# Read the installed CPython ABI tag (e.g. "cp313") from the target root's
+# python3 interpreter. Build mode uses the host python3; runtime mode uses the
+# chroot's /usr/bin/python3. Missing → empty.
+_airplanes_runtime_read_python_abi() {
+    local target_root="$1"
+    local py="${target_root}/usr/bin/python3"
+    # In build mode or on live system, python3 may not be chroot-invocable but
+    # is directly available on PATH.
+    if [[ -z "$target_root" || "$target_root" == "/" ]]; then
+        py="python3"
+    fi
+    # Run the real interpreter (or the host one for live system).
+    "$py" -c 'import sys; print("cp%d%d" % (sys.version_info[0], sys.version_info[1]))' 2>/dev/null || true
+}
+
 # Free bytes available on the filesystem hosting the releases dir. Echoes the
 # integer byte count, or empty if it can't be determined.
 _airplanes_runtime_free_bytes_for_releases() {
@@ -2057,6 +2072,26 @@ airplanes_runtime_run_compat_preflight() {
         if [[ "$have_codename" != "$want_codename" ]]; then
             echo "ERROR: compat preflight: release targets base OS '$want_codename' but this device runs '$have_codename'" >&2
             echo "       A base-OS major upgrade is reflash-only; this release cannot be installed in place." >&2
+            return 1
+        fi
+    fi
+
+    # --- Python ABI (compat.mlat_python_abi) --------------------------------
+    # The prebuilt mlat-client venv contains a compiled C extension locked to a
+    # specific CPython ABI. If the base OS ships a different Python, the venv
+    # would segfault or fail to import; refuse cleanly instead.
+    local want_abi
+    want_abi="$(jq -r '.compat.mlat_python_abi // ""' "$manifest")"
+    if [[ -n "$want_abi" ]]; then
+        local have_abi
+        have_abi="$(_airplanes_runtime_read_python_abi "$target_root")"
+        if [[ -z "$have_abi" ]]; then
+            echo "ERROR: compat preflight: release requires Python ABI '$want_abi' but python3 is not installed" >&2
+            return 1
+        fi
+        if [[ "$have_abi" != "$want_abi" ]]; then
+            echo "ERROR: compat preflight: release mlat-client venv was built against Python ABI '$want_abi' but this device has '$have_abi'" >&2
+            echo "       A base-OS Python upgrade is required; reflash with a matching image." >&2
             return 1
         fi
     fi
