@@ -15,9 +15,9 @@ adduser --system --no-create-home --group airplanes-webconfig
 # 0700 with the right owner.
 install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /var/lib/airplanes-webconfig
 install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /etc/airplanes/webconfig
-# The system-upgrade helper stages its work here; the overlay rootfs ships an
-# empty placeholder dir but the on-image state dir must exist with the right
-# owner before the service runs.
+# Upgrade-state marker dir written by the runtime-overlay update path; the
+# overlay rootfs ships an empty placeholder dir but the on-image state dir
+# must exist with the right owner before the service runs.
 install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /var/lib/airplanes-webconfig-upgrade
 
 # /api/log/{unit} streams journalctl as the webconfig user. Adding it to
