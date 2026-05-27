@@ -43,7 +43,7 @@ export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889d
 # TODO: pin webconfig, feed_readsb, feed_scripts, and mlat_client to concrete
 # stable release tags / SHAs before shipping the first stable image.
 export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-dev-latest}"
-export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-1b36221b3d4670d4c91145a0d91bb6588ff58cb4}"
+export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-e399fcfbe8d6286bcb9392f70ad9a017d4987ae9}"
 
 # Feed — overlay-built. Placeholder SHAs tracking the dev heads; see the TODO
 # above. Bump in lockstep with PRs already validated on dev.
