@@ -992,7 +992,7 @@ _runtime_upgrade_probe() {
     asset_base="$(_runtime_upgrade_marker_base)"
     [[ -n "$asset_base" ]] || return 0  # variant not enabled
 
-    local progress=/run/airplanes-boot-smoke-runtime-upgrade.progress
+    local progress=/var/lib/airplanes-boot-smoke/runtime-upgrade.progress
     local phase=""
     [[ -f "$progress" ]] && phase="$(cat "$progress" 2>/dev/null || true)"
 
