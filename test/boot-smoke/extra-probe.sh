@@ -969,15 +969,15 @@ _runtime_upgrade_marker_base() {
 _runtime_drive_update() {
     local asset_dir="$1"
     # Health-gate deadline shortened from the production default (120s) to fit
-    # the QEMU emulation budget. 60s is enough for the GOOD release to converge
-    # (units reach active within seconds; stability window ~25s; freshness
-    # within 1s). For the BROKEN release it caps the freshness-timeout at 60s
-    # instead of 120s, keeping the total probe runtime under the 25m QEMU
-    # per-boot timeout even without KVM acceleration.
+    # the QEMU emulation budget. 90s leaves the GOOD release ample headroom to
+    # converge under emulation (unit start + ~25s stability window + freshness),
+    # while still capping the BROKEN release's freshness-timeout at 90s instead
+    # of 120s. Combined with the 25m per-boot QEMU timeout, this keeps the two
+    # update cycles plus the persistence reboot inside budget without KVM.
     AIRPLANES_RUNTIME_RELEASE_ASSET_DIR="$asset_dir" \
     AIRPLANES_RUNTIME_OVERLAY_TAG="local-assets" \
     AIRPLANES_RUNTIME_MIN_FREE_BYTES=0 \
-    AIRPLANES_RUNTIME_HEALTH_DEADLINE=60 \
+    AIRPLANES_RUNTIME_HEALTH_DEADLINE=90 \
         /opt/airplanes-runtime/current/lib/runtime-self-update.sh
 }
 
