@@ -389,11 +389,14 @@ jobs:
           AIRPLANES_RUNTIME_MINISIGN_PUBKEY: ${{ runner.temp }}/runtime-assets/runtime-test.pub
         run: sudo -E ./build.sh -c "config-$CHANNEL"
 
-      - name: Mounted-image upgrade smoke
-        env:
-          AIRPLANES_IMAGE_PATH: deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz
-          AIRPLANES_IMAGE_CONTRACT: new
-        run: sudo -E bash feed/test/mounted-image-upgrade.sh
+      # Mounted-image upgrade smoke (feed/test/mounted-image-upgrade.sh) is
+      # removed: it tested that feed/update.sh doesn't drift the webconfig
+      # surface on the new image. Feed/update.sh no longer runs on the new
+      # image — the feed stack ships through the runtime overlay and the
+      # orchestrator has no feed step. The webconfig-drift regression surface
+      # is now covered by boot-smoke + the runtime-overlay-upgrade QEMU test.
+      # The feed-repo CI continues to test feed/update.sh against the new
+      # image contract via the ci.yml feed-update-regression job.
 
       - name: First-run chroot smoke
         run: sudo -E bash scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz"
