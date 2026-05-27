@@ -2,10 +2,10 @@
 
 # Tests for runtime-overlay/config-{stable,dev} — channel-pinning shell
 # fragments sourced by the runtime-overlay build helpers. Asserts shape
-# (5 decoder _REPO/_BRANCH + 2 webconfig pins + 6 feed pins), pin format per
-# channel (40-hex SHA on stable, non-SHA branch ref on dev), HTTPS-only repo
-# URLs, and that the `${VAR:-default}` idiom keeps a pre-set value intact when
-# the file is sourced.
+# (5 decoder _REPO/_BRANCH + 6 feed pins, plus webconfig: release tag on both
+# channels and a commit-SHA pin on stable only), pin format per channel (40-hex
+# SHA on stable, non-SHA branch ref on dev), HTTPS-only repo URLs, and that the
+# `${VAR:-default}` idiom keeps a pre-set value intact when the file is sourced.
 
 bats_require_minimum_version 1.5.0
 
@@ -134,8 +134,12 @@ load_pins() {
         for c in "${COMPONENTS[@]}" "${FEED_COMPONENTS[@]}"; do
             expected+="${c}_BRANCH"$'\n'"${c}_REPO"$'\n'
         done
-        expected+="AIRPLANES_WEBCONFIG_COMMIT_SHA"$'\n'
         expected+="AIRPLANES_WEBCONFIG_RELEASE_TAG"$'\n'
+        # Stable pins the webconfig commit SHA (provenance anchor); dev omits it
+        # and resolves the commit from the dev-latest manifest at build time.
+        if [ "$channel" = stable ]; then
+            expected+="AIRPLANES_WEBCONFIG_COMMIT_SHA"$'\n'
+        fi
         expected="$(printf '%s' "$expected" | LC_ALL=C sort -u)"
 
         # Extract just the key names from the loader output (lines look like
