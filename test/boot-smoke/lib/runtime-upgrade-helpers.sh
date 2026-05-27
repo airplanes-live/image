@@ -218,9 +218,41 @@ install_synthetic_runtime_releases() {
     install -d -m 0755 "$root/usr/share/airplanes"
     install -m 0644 "$prebuilt/test.pub" "$root/usr/share/airplanes/runtime-release.pub"
 
+    # Run readsb net-only on this test image. The runtime-self-update health
+    # gate requires readsb.service to reach AND hold active (NRestarts
+    # unchanged across the stability window) before it declares an update
+    # converged. readsb.sh defaults DUMP1090=yes, which makes readsb open an
+    # RTL-SDR; QEMU has none, so readsb exits 1 and Restart=always loops it
+    # forever. The gate then correctly rolls the GOOD release back — there is
+    # no SDR for it to converge against. Baseline boot-smoke tolerates this
+    # only because its own probes deliberately exclude readsb (no-SDR is
+    # expected there); the real health gate cannot make that exception without
+    # weakening production rollback.
+    #
+    # DUMP1090=no flips readsb.sh to --net-only: it binds its loopback ports,
+    # writes /run/readsb/aircraft.json every 0.5s, and stays active with zero
+    # restarts — a legitimate network-input feeder posture, not a stubbed
+    # decoder. The unit-active, aircraft.json-freshness, and tar1090 HTTP gates
+    # all then pass against the REAL readsb binary, so the GOOD case converges
+    # while every other gate (webconfig + feed identity/health) stays real.
+    # The BROKEN release is unaffected: its stubbed readsb sleeps forever and
+    # never writes aircraft.json, so the freshness gate still fails and
+    # rollback still fires.
+    #
+    # merge_feed_env in airplanes-first-run only rewrites the boot-config-
+    # derived keys (MLATSERVER, TARGET); it copies every other line verbatim,
+    # so this seeded DUMP1090=no survives first boot.
+    install -d -m 0755 "$root/etc/airplanes"
+    if [[ -f "$root/etc/airplanes/feed.env" ]] \
+            && grep -qE '^DUMP1090=' "$root/etc/airplanes/feed.env"; then
+        sed -i 's/^DUMP1090=.*/DUMP1090=no/' "$root/etc/airplanes/feed.env"
+    else
+        printf 'DUMP1090=no\n' >> "$root/etc/airplanes/feed.env"
+    fi
+
     # Marker consumed by extra-probe.sh to enter the runtime-upgrade path.
     install -d -m 0755 "$root/var/lib/airplanes-boot-smoke"
     printf '%s' "$staged_in_image" > "$root/var/lib/airplanes-boot-smoke/runtime-upgrade-asset-base"
 
-    echo "runtime-upgrade-helpers: staged $staged_in_image + test pubkey"
+    echo "runtime-upgrade-helpers: staged $staged_in_image + test pubkey (readsb pinned net-only via DUMP1090=no)"
 }
