@@ -32,11 +32,12 @@ export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.co
 export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-master}"
 
 # Webconfig — downloaded as a prebuilt release, not compiled in the overlay.
-# Dev tracks the floating dev-latest prerelease. The commit SHA is resolved
-# at build time from the downloaded manifest and cross-checked; pinning it
-# here ensures the build is reproducible within a single CI run.
+# Dev tracks the floating dev-latest prerelease and resolves the commit from
+# the downloaded (SHA256-verified) manifest at build time. No fixed commit pin
+# here on purpose: dev-latest moves on every webconfig dev release, and a hard
+# SHA pin would break the dev build until hand-bumped. Stable keeps a fixed SHA
+# pin as its provenance anchor (see config-stable).
 export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-dev-latest}"
-export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-e399fcfbe8d6286bcb9392f70ad9a017d4987ae9}"
 
 # Feed — overlay-built (not a downloaded release): the overlay CI clones these
 # refs and compiles the feeder readsb, the mlat-client venv, and stages the

@@ -123,13 +123,18 @@ WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-}"
 WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}"
 WEBCONFIG_DOWNLOAD_BASE="${AIRPLANES_WEBCONFIG_DOWNLOAD_BASE:-}"
 
-if [[ -n "$WEBCONFIG_RELEASE_TAG" && -n "$WEBCONFIG_COMMIT_SHA" ]]; then
+# A release tag is enough to stage webconfig. The commit SHA is an optional
+# pin: stable passes one (provenance anchor + reproducibility), dev omits it and
+# lets stage-webconfig adopt the dev-latest manifest's own commit_sha.
+if [[ -n "$WEBCONFIG_RELEASE_TAG" ]]; then
     stage_wc_args=(
         --release-tag "$WEBCONFIG_RELEASE_TAG"
-        --commit-sha "$WEBCONFIG_COMMIT_SHA"
         --arch "$ARCH"
         --output-dir "$staging"
     )
+    if [[ -n "$WEBCONFIG_COMMIT_SHA" ]]; then
+        stage_wc_args+=(--commit-sha "$WEBCONFIG_COMMIT_SHA")
+    fi
     if [[ -n "$WEBCONFIG_DOWNLOAD_BASE" ]]; then
         stage_wc_args+=(--download-base "$WEBCONFIG_DOWNLOAD_BASE")
     fi

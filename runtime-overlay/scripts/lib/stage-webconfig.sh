@@ -8,14 +8,23 @@
 #   manifest.json                 {version, commit_sha, ...}
 #   SHA256SUMS                    integrity checksums for all of the above
 #
-# This script downloads these assets, verifies SHA256, cross-checks the
-# manifest commit_sha against a resolved pin, and extracts them into the
-# overlay staging tree so they ship as managed_paths entries in the runtime
+# This script downloads these assets, verifies SHA256, and extracts them into
+# the overlay staging tree so they ship as managed_paths entries in the runtime
 # overlay release.
+#
+# Commit-SHA gate (opt-in). When --commit-sha is supplied (stable channel), the
+# manifest's commit_sha must equal it or the build hard-fails — the fixed pin is
+# stable's provenance anchor and keeps the build reproducible. When it is omitted
+# (dev channel, which tracks the moving dev-latest tag), the manifest's own
+# commit_sha is trusted and recorded. That trusts the release manifest plus the
+# *same release's* SHA256SUMS — i.e. the assets are internally consistent with
+# each other, not an independent provenance boundary. The SHA256SUMS integrity
+# check below runs in both cases regardless.
 #
 # Args:
 #   --release-tag <tag>        GitHub release tag (e.g. dev-latest, v0.1.2)
-#   --commit-sha <40-hex>      expected commit_sha from the resolved pin
+#   --commit-sha <40-hex>      expected commit_sha (optional; when omitted the
+#                              manifest's own commit_sha is used — see below)
 #   --arch <arm64>             target architecture
 #   --output-dir <staging>     per-arch staging dir to populate
 #   --download-base <url>      base URL for release assets (optional; for tests)
@@ -38,9 +47,9 @@ usage() {
     cat >&2 <<'USAGE'
 usage: stage-webconfig.sh \
     --release-tag <tag> \
-    --commit-sha <40-hex> \
     --arch <arm64> \
     --output-dir <staging> \
+    [--commit-sha <40-hex>] \
     [--download-base <url>]
 USAGE
 }
@@ -68,7 +77,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-for required in RELEASE_TAG COMMIT_SHA ARCH OUTPUT_DIR; do
+for required in RELEASE_TAG ARCH OUTPUT_DIR; do
     if [[ -z "${!required}" ]]; then
         flag="${required,,}"
         flag="${flag//_/-}"
@@ -77,7 +86,9 @@ for required in RELEASE_TAG COMMIT_SHA ARCH OUTPUT_DIR; do
     fi
 done
 
-if ! [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+# --commit-sha is optional. When supplied it must be a 40-hex pin; when omitted
+# the manifest's own commit_sha is adopted after SHA256 verification.
+if [[ -n "$COMMIT_SHA" ]] && ! [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
     die "--commit-sha must be 40 lowercase hex chars (got: $COMMIT_SHA)"
 fi
 
@@ -122,8 +133,15 @@ manifest_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).
 if [[ -z "$manifest_sha" ]]; then
     die "manifest.json missing commit_sha field"
 fi
-if [[ "$manifest_sha" != "$COMMIT_SHA" ]]; then
-    die "manifest commit_sha=$manifest_sha does not match expected=$COMMIT_SHA"
+if [[ -n "$COMMIT_SHA" ]]; then
+    # Pinned (stable): the manifest must match the supplied pin.
+    if [[ "$manifest_sha" != "$COMMIT_SHA" ]]; then
+        die "manifest commit_sha=$manifest_sha does not match expected=$COMMIT_SHA"
+    fi
+else
+    # Unpinned (dev): adopt the manifest's own commit_sha so the recorded
+    # component pin still reflects the real commit that was staged.
+    COMMIT_SHA="$manifest_sha"
 fi
 
 manifest_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$work/manifest.json")"
