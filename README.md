@@ -78,6 +78,14 @@ The web UI at `http://<hostname>.local/` is the recommended way to change settin
 
 It writes `/etc/airplanes/feed.env` atomically and restarts services as needed. Command-line users can SSH in and edit `/etc/airplanes/feed.env` directly, then `sudo systemctl restart airplanes-feed.service` (and `airplanes-mlat.service` for MLAT changes).
 
+### Forgot the web UI password?
+
+The web UI password is set on your first visit and can't be recovered — but you can clear it and set a new one. There's no in-UI reset: you're locked out, so the trigger lives on the SD card instead.
+
+Power off the Pi and remove the microSD card, then mount its FAT (boot) partition on another computer and create an empty file named `airplanes-reset-password` in `/boot/firmware/` (alongside `airplanes-config.txt`; make sure the name has no `.txt` or other extension). Reinsert the card and power on. On boot the feeder clears the stored password and deletes the marker, and the next visit to `http://<hostname>.local/` takes you back to the password-setup screen. Your feeder ID, location, and other settings are left untouched.
+
+If you have SSH access you can skip pulling the card — `sudo touch /boot/firmware/airplanes-reset-password && sudo reboot` does the same thing.
+
 ---
 
 Developer / homelab topics — pointing the feeder at a non-production backend, building from source — live in [README-advanced.md](README-advanced.md).
