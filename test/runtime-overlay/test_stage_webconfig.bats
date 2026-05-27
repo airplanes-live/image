@@ -113,3 +113,18 @@ run_stage() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"40 lowercase hex"* ]]
 }
+
+@test "malformed manifest commit_sha (not 40-hex): fails even without a pin" {
+    local dir="$BASE/$TAG"
+    mkdir -p "$dir"
+    printf 'stub\n' > "$dir/airplanes-webconfig-${ARCH}"
+    local empty="$BATS_TEST_TMPDIR/empty2"
+    mkdir -p "$empty"
+    tar -czf "$dir/rootfs.tar.gz" -C "$empty" .
+    printf '{"version": "1.0.0", "commit_sha": "not-a-real-sha"}\n' > "$dir/manifest.json"
+    ( cd "$dir" && sha256sum "airplanes-webconfig-${ARCH}" rootfs.tar.gz manifest.json > SHA256SUMS )
+
+    run_stage
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"40 lowercase hex"* ]]
+}

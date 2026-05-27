@@ -133,6 +133,9 @@ manifest_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).
 if [[ -z "$manifest_sha" ]]; then
     die "manifest.json missing commit_sha field"
 fi
+if ! [[ "$manifest_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    die "manifest.json commit_sha must be 40 lowercase hex chars (got: $manifest_sha)"
+fi
 if [[ -n "$COMMIT_SHA" ]]; then
     # Pinned (stable): the manifest must match the supplied pin.
     if [[ "$manifest_sha" != "$COMMIT_SHA" ]]; then
