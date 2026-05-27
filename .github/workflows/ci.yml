@@ -79,17 +79,21 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Resolve image-webconfig ref from config-stable
+      - name: Resolve image-webconfig ref from overlay config-stable
         id: webconfig-ref
-        # config-stable pins the production ref. Test against that so a
-        # mismatch between what the stable image will install and what the
-        # CI tests blow up here, not on a customer device.
+        # runtime-overlay/config-stable is the single source of truth for the
+        # webconfig commit the stable image ships. Test against that so a
+        # mismatch blows up here, not on a customer device.
         run: |
           set -a
           # shellcheck disable=SC1091
-          . config-stable
+          . runtime-overlay/config-stable
           set +a
-          echo "ref=$AIRPLANES_WEBCONFIG_BRANCH" >> "$GITHUB_OUTPUT"
+          # Fail loudly if the pin is empty/malformed — otherwise actions/checkout
+          # silently falls back to the default branch.
+          [[ "${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::AIRPLANES_WEBCONFIG_COMMIT_SHA is not a 40-hex SHA: '${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}'"; exit 1; }
+          echo "ref=$AIRPLANES_WEBCONFIG_COMMIT_SHA" >> "$GITHUB_OUTPUT"
 
       # Several first-run bats tests source wifi-validators.sh /
       # wifi-keyfile.sh from airplanes-live/image-webconfig (the libs moved
@@ -483,16 +487,20 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Resolve image-webconfig ref from config-stable
+      - name: Resolve image-webconfig ref from overlay config-stable
         id: webconfig-ref
         run: |
           set -a
           # shellcheck disable=SC1091
-          . config-stable
+          . runtime-overlay/config-stable
           set +a
-          echo "ref=$AIRPLANES_WEBCONFIG_BRANCH" >> "$GITHUB_OUTPUT"
+          # Fail loudly if the pin is empty/malformed — otherwise actions/checkout
+          # silently falls back to the default branch.
+          [[ "${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::AIRPLANES_WEBCONFIG_COMMIT_SHA is not a 40-hex SHA: '${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}'"; exit 1; }
+          echo "ref=$AIRPLANES_WEBCONFIG_COMMIT_SHA" >> "$GITHUB_OUTPUT"
 
-      # Check out airplanes-live/image-webconfig at the config-stable ref so
+      # Check out airplanes-live/image-webconfig at the overlay-pinned ref so
       # systemd-verify exercises the same unit files that the stable image
       # will install. A drift between the unit file CI verifies and what the
       # image installs would otherwise mean a syntax error blows up on
