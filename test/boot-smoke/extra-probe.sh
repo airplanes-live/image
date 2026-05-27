@@ -1052,6 +1052,31 @@ _runtime_upgrade_probe() {
     assert_service_healthy airplanes-webconfig.service
     echo "image-probe: BROKEN rollback passed (current=v$post_broken_ver, state=$upg_state)"
 
+    # Re-baseline feed's idempotency snapshot. The feed harness's 'updated'
+    # phase runs assert_binaries_unchanged on EVERY entry, comparing the feed
+    # binary's mtime against snapshot-mtimes (frozen in the first boot's update
+    # phase). With feed now overlay-delivered, /usr/local/share/airplanes/
+    # feed-airplanes is a managed-path symlink into the active release; the
+    # GOOD→BROKEN→rollback cycle above legitimately re-pointed it to the
+    # rolled-back release dir, so its mtime no longer matches the pre-upgrade
+    # baseline. Left stale, the pass-2 re-entry of the 'updated' phase would
+    # fail assert_binaries_unchanged on that drift — a false positive, since
+    # feed's update.sh correctly took the version-match fast path (it never
+    # rebuilt the binary). Refresh the snapshot to the post-rollback steady
+    # state so pass 2 still verifies the REAL invariant: a fresh update.sh
+    # re-run must not rebuild the binary across the persistence reboot. Mirror
+    # feed's snapshot_post_update_state format exactly (stat -c '%Y %n' over
+    # the feed binary + mlat-client) so assert_binaries_unchanged stays
+    # byte-compatible. mlat-client is not overlay-managed, so its line is
+    # unchanged; we re-stat it anyway to keep the file identical in shape.
+    if [[ -f /var/lib/airplanes-boot-smoke/snapshot-mtimes ]]; then
+        stat -c '%Y %n' \
+            /usr/local/share/airplanes/feed-airplanes \
+            /usr/local/share/airplanes/venv/bin/mlat-client \
+            > /var/lib/airplanes-boot-smoke/snapshot-mtimes
+        echo "image-probe: re-baselined feed idempotency snapshot after overlay rollback"
+    fi
+
     # Persist the expected post-reboot version + mark pass 1 done, then reboot
     # to verify the rolled-back release survives. The harness re-runs the
     # 'updated' phase (MAX_BOOT_ATTEMPTS=3), re-sourcing this probe.
