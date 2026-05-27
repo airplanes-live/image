@@ -599,6 +599,20 @@ _airplanes_runtime_apply_managed_symlink() {
     abs_link="${target_root}${link}"
     install -d -m 755 "$(dirname "$abs_link")"
 
+    # If the link path is a real directory (not a symlink), mv -Tf below would
+    # refuse to overwrite it ("cannot overwrite directory with non-directory").
+    # Clear it so the rename can land. Its contents were snapshotted by
+    # backup_all_symlink_paths earlier in the forward walk (update path); in
+    # build mode there is no rollback and the overlay is the intended owner of
+    # the path. Guarded so a malformed manifest can't wipe a system tree.
+    if [[ -d "$abs_link" && ! -L "$abs_link" ]]; then
+        # Guard the RAW manifest link, not the target-root-rebased path: in
+        # build mode `${ROOTFS_DIR}/usr` would slip a critical root past an
+        # exact-match check, but the raw `/usr` is caught.
+        _airplanes_runtime_assert_safe_managed_path "$link" || return 1
+        rm -rf -- "$abs_link"
+    fi
+
     # Atomic flip via tmp+rename. `ln -snf` is NOT atomic: it unlinks then
     # creates, leaving a window where the path is missing. mv -Tf with a
     # tmp symlink replaces atomically in a single rename() syscall.
@@ -843,49 +857,98 @@ _airplanes_runtime_encode_path() {
     printf '%s' "${p//\//__}"
 }
 
-airplanes_runtime_backup_mutable_path() {
-    local release_dir="$1" target_root="$2" abs_path="$3"
-    local preimage_dir="${release_dir}/.mutable-preimage"
-    install -d -m 700 "$preimage_dir"
+# Refuse to rm -rf a path that is empty, relative, or a critical FHS root /
+# top-level system directory. Restore and the dir→symlink clobber in
+# apply_managed_symlink both delete the live path before replacing it; a
+# malformed or hostile manifest declaring `/` or `/usr` as a managed
+# destination must fail the operation, never recursively wipe a system tree.
+_airplanes_runtime_assert_safe_managed_path() {
+    local p="$1"
+    if [[ -z "$p" || "$p" != /* ]]; then
+        echo "ERROR: refusing unsafe managed path (empty or relative): '$p'" >&2
+        return 1
+    fi
+    local norm="$p"
+    [[ "$norm" != "/" ]] && norm="${norm%/}"
+    case "$norm" in
+        ""|"/"|/usr|/etc|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/home|/root|/run|/proc|/sys|/dev|/opt/airplanes-runtime|/opt/airplanes-runtime/*)
+            echo "ERROR: refusing to operate on critical system path: '$p'" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# Generic per-path preimage backup/restore. The mutable, copy, and symlink
+# families below are thin wrappers over these two — they differ only in the
+# preimage directory and the manifest section they walk. The primitive handles
+# regular files, directories, and symlinks (including dangling ones — `cp -a`
+# preserves a symlink as a symlink), recording an <enc>.absent sentinel when
+# nothing is at the path. Backup is write-once (never clobber a captured
+# original with an already-mutated intermediate) and crash-safe: the snapshot
+# is staged to a temp name and atomically renamed, so an interrupted or
+# out-of-space copy never leaves a partial tree that write-once would later
+# trust as the original.
+_airplanes_runtime_preimage_backup() {
+    local preimage_dir="$1" target_root="$2" abs_path="$3"
+    install -d -m 700 "$preimage_dir" || return 1
     local enc
     enc="$(_airplanes_runtime_encode_path "$abs_path")"
-    # Write-once: if a preimage (or absent-marker) for this path already
-    # exists, leave it alone. Otherwise a second backup pass — from
-    # config_kv's per-migration preimage call running after the install
-    # pipeline's batch backup — would clobber the true original with an
-    # already-mutated intermediate state, leaving rollback unable to
-    # restore the file to its pre-install content.
     if [[ -e "${preimage_dir}/${enc}" || -e "${preimage_dir}/${enc}.absent" ]]; then
         return 0
     fi
     local src="${target_root}${abs_path}"
-    if [[ -e "$src" ]]; then
-        cp -a -- "$src" "${preimage_dir}/${enc}"
+    local tmp="${preimage_dir}/${enc}.tmp.$$"
+    rm -rf -- "$tmp"
+    # Check every step: these functions are called from `if !` / `|| return`
+    # contexts, which disables `errexit` inside them, so a failed cp must not
+    # let the partial tmp tree get promoted to the write-once preimage.
+    if [[ -e "$src" || -L "$src" ]]; then
+        cp -a -- "$src" "$tmp"                       || { rm -rf -- "$tmp"; return 1; }
+        mv -Tf -- "$tmp" "${preimage_dir}/${enc}"    || { rm -rf -- "$tmp"; return 1; }
     else
-        # Mark "did not exist before this install" with a sentinel so
-        # rollback knows to delete rather than restore.
-        : > "${preimage_dir}/${enc}.absent"
+        : > "$tmp"                                   || { rm -rf -- "$tmp"; return 1; }
+        mv -Tf -- "$tmp" "${preimage_dir}/${enc}.absent" || { rm -rf -- "$tmp"; return 1; }
     fi
 }
 
-airplanes_runtime_restore_mutable_path() {
-    local release_dir="$1" target_root="$2" abs_path="$3"
-    local preimage_dir="${release_dir}/.mutable-preimage"
+_airplanes_runtime_preimage_restore() {
+    local preimage_dir="$1" target_root="$2" abs_path="$3"
     local enc
     enc="$(_airplanes_runtime_encode_path "$abs_path")"
     local dst="${target_root}${abs_path}"
     if [[ -f "${preimage_dir}/${enc}.absent" ]]; then
+        # Path did not exist before this install → remove what the failed
+        # release left. rm -f (not -rf): the only expected artifact is a file
+        # or symlink, never a populated directory.
         rm -f -- "$dst"
         return 0
     fi
-    if [[ -e "${preimage_dir}/${enc}" ]]; then
-        install -d -m 755 "$(dirname "$dst")"
-        cp -a -- "${preimage_dir}/${enc}" "$dst"
+    if [[ -e "${preimage_dir}/${enc}" || -L "${preimage_dir}/${enc}" ]]; then
+        # Clear the live path first so a directory preimage doesn't nest under
+        # an existing directory of the same name; the preimage is the
+        # authoritative copy. Guard the RAW manifest path (target-root-
+        # independent) so a build-mode rebase can't slip a critical root past
+        # the check.
+        _airplanes_runtime_assert_safe_managed_path "$abs_path" || return 1
+        rm -rf -- "$dst"
+        install -d -m 755 "$(dirname "$dst")" || return 1
+        cp -a -- "${preimage_dir}/${enc}" "$dst" || return 1
         return 0
     fi
     # No preimage and no absent-marker → nothing was backed up. Treat as
     # no-op rather than failing the whole rollback.
     return 0
+}
+
+airplanes_runtime_backup_mutable_path() {
+    local release_dir="$1" target_root="$2" abs_path="$3"
+    _airplanes_runtime_preimage_backup "${release_dir}/.mutable-preimage" "$target_root" "$abs_path"
+}
+
+airplanes_runtime_restore_mutable_path() {
+    local release_dir="$1" target_root="$2" abs_path="$3"
+    _airplanes_runtime_preimage_restore "${release_dir}/.mutable-preimage" "$target_root" "$abs_path"
 }
 
 # Walk all mutable_paths in the manifest and back each up. Convenience
@@ -912,51 +975,22 @@ airplanes_runtime_restore_all_mutable_paths() {
 # Copy-mode managed-path preimage backup + restore
 # ---------------------------------------------------------------------------
 #
-# Symlink-mode managed_paths revert for free when the `current` symlink flips
-# back. Copy-mode entries do not — they write directly to an FHS location, so
-# a rollback would otherwise leave the failed release's file in place. Before
-# the copy write, snapshot the live target into <release-dir>/.copy-preimage/
-# so the rollback path can restore it (or delete it, if the release created
-# it). Same shape as the mutable-path preimage above, but keyed off the
+# Copy-mode entries write directly to an FHS location, so a rollback would
+# otherwise leave the failed release's file in place. Before the copy write,
+# snapshot the live target into <release-dir>/.copy-preimage/ so the rollback
+# path can restore it (or delete it, if the release created it). Same shape
+# as the mutable-path preimage above, but keyed off the
 # managed_paths[].mode == "copy" entries and a separate preimage dir so the
-# two mechanisms never collide.
+# families never collide.
 
 airplanes_runtime_backup_copy_path() {
     local release_dir="$1" target_root="$2" abs_path="$3"
-    local preimage_dir="${release_dir}/.copy-preimage"
-    install -d -m 700 "$preimage_dir"
-    local enc
-    enc="$(_airplanes_runtime_encode_path "$abs_path")"
-    # Write-once, mirroring the mutable preimage: never clobber a captured
-    # original with an already-mutated intermediate.
-    if [[ -e "${preimage_dir}/${enc}" || -e "${preimage_dir}/${enc}.absent" ]]; then
-        return 0
-    fi
-    local src="${target_root}${abs_path}"
-    if [[ -e "$src" ]]; then
-        cp -a -- "$src" "${preimage_dir}/${enc}"
-    else
-        : > "${preimage_dir}/${enc}.absent"
-    fi
+    _airplanes_runtime_preimage_backup "${release_dir}/.copy-preimage" "$target_root" "$abs_path"
 }
 
 airplanes_runtime_restore_copy_path() {
     local release_dir="$1" target_root="$2" abs_path="$3"
-    local preimage_dir="${release_dir}/.copy-preimage"
-    local enc
-    enc="$(_airplanes_runtime_encode_path "$abs_path")"
-    local dst="${target_root}${abs_path}"
-    if [[ -f "${preimage_dir}/${enc}.absent" ]]; then
-        rm -f -- "$dst"
-        return 0
-    fi
-    if [[ -e "${preimage_dir}/${enc}" ]]; then
-        install -d -m 755 "$(dirname "$dst")"
-        cp -a -- "${preimage_dir}/${enc}" "$dst"
-        return 0
-    fi
-    # No preimage and no absent-marker → nothing was backed up; no-op.
-    return 0
+    _airplanes_runtime_preimage_restore "${release_dir}/.copy-preimage" "$target_root" "$abs_path"
 }
 
 # Walk all copy-mode managed_paths and back each target up before the copy
@@ -983,6 +1017,60 @@ airplanes_runtime_restore_all_copy_paths() {
         [[ "$mode" == "copy" ]] || continue
         path="$(jq -r ".managed_paths[$i].path" "$manifest")"
         airplanes_runtime_restore_copy_path "$release_dir" "$target_root" "$path" || return 1
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Symlink-mode managed-path preimage backup + restore
+# ---------------------------------------------------------------------------
+#
+# A symlink-mode entry whose link path already holds non-symlink content — a
+# real directory or file from an OS package or an externally-modified path, or
+# even a pre-existing OS/operator symlink — would otherwise be lost on rollback:
+# `remove_new_only_symlinks` + the `current` flip only recover overlay-managed
+# symlinks, and the dir→symlink case can't even be applied (mv -Tf refuses to
+# overwrite a directory). Snapshot whatever is at each link into
+# <release-dir>/.symlink-preimage/ before apply so rollback can put it back —
+# including the case where the same link's target changed between releases.
+#
+# Note: this is a build-time-only concern on real devices. The flashed image
+# already ships these paths as symlinks (stage-02 lays the overlay in build
+# mode), so on-device updates are symlink→symlink and the heavy dir→symlink
+# branch never runs there. The boot-time recover-shim — the base-OS recovery
+# floor — deliberately only flips `current` and does NOT restore preimages, so
+# a power loss mid dir→symlink replacement is an accepted (build-time-only)
+# limitation rather than a fielded risk.
+airplanes_runtime_backup_symlink_path() {
+    local release_dir="$1" target_root="$2" abs_path="$3"
+    _airplanes_runtime_preimage_backup "${release_dir}/.symlink-preimage" "$target_root" "$abs_path"
+}
+
+airplanes_runtime_restore_symlink_path() {
+    local release_dir="$1" target_root="$2" abs_path="$3"
+    _airplanes_runtime_preimage_restore "${release_dir}/.symlink-preimage" "$target_root" "$abs_path"
+}
+
+airplanes_runtime_backup_all_symlink_paths() {
+    local manifest="$1" release_dir="$2" target_root="$3"
+    local count i mode link
+    count="$(jq -r '(.managed_paths // []) | length' "$manifest")"
+    for (( i = 0; i < count; i++ )); do
+        mode="$(jq -r ".managed_paths[$i].mode" "$manifest")"
+        [[ "$mode" == "symlink" ]] || continue
+        link="$(jq -r ".managed_paths[$i].link" "$manifest")"
+        airplanes_runtime_backup_symlink_path "$release_dir" "$target_root" "$link" || return 1
+    done
+}
+
+airplanes_runtime_restore_all_symlink_paths() {
+    local manifest="$1" release_dir="$2" target_root="$3"
+    local count i mode link
+    count="$(jq -r '(.managed_paths // []) | length' "$manifest")"
+    for (( i = 0; i < count; i++ )); do
+        mode="$(jq -r ".managed_paths[$i].mode" "$manifest")"
+        [[ "$mode" == "symlink" ]] || continue
+        link="$(jq -r ".managed_paths[$i].link" "$manifest")"
+        airplanes_runtime_restore_symlink_path "$release_dir" "$target_root" "$link" || return 1
     done
 }
 
