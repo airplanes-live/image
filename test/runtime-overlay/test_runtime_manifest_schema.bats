@@ -143,3 +143,38 @@ mutate_golden() {
     run "$VALIDATOR" "$mutated"
     [ "$status" -ne 0 ]
 }
+
+@test "rejects duplicate managed destinations (copy path equals a symlink link)" {
+    # Point the copy-mode path at an existing symlink link → duplicate dest.
+    local mutated
+    mutated="$(mutate_golden '
+        (.managed_paths
+         | map(if .mode == "copy"
+               then .path = "/usr/bin/readsb"
+               else .
+               end)) as $p
+        | .managed_paths = $p
+    ')"
+    run "$VALIDATOR" "$mutated"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"overlapping managed destinations"* ]]
+    [[ "$output" == *"duplicate"* ]]
+}
+
+@test "rejects parent/child-overlapping managed destinations" {
+    # Add a mutable path nested under a symlink-managed directory.
+    local mutated
+    mutated="$(mutate_golden '.mutable_paths += ["/usr/local/share/tar1090/config"]')"
+    run "$VALIDATOR" "$mutated"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"overlapping managed destinations"* ]]
+    [[ "$output" == *"contains"* ]]
+}
+
+@test "accepts disjoint destinations that share only a string prefix" {
+    # A sibling sharing a string prefix but NOT a path-component ancestor passes.
+    local mutated
+    mutated="$(mutate_golden '.mutable_paths += ["/usr/local/share/tar1090-extra"]')"
+    run "$VALIDATOR" "$mutated"
+    [ "$status" -eq 0 ]
+}

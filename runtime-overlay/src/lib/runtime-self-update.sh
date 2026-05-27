@@ -306,6 +306,21 @@ roll_back_and_exit() {
             ;;
     esac
 
+    # SYMLINK_FLIPPED / SYSTEMD_OPS_DONE / HEALTH_RUNNING : restore the
+    # symlink preimages AFTER remove_new_only_symlinks cleared the failed
+    # release's symlinks. For a dir→symlink transition the prior directory is
+    # put back at the now-empty path; for a target-change the old symlink is
+    # restored; for a first-install absent path the rm-f in restore is a no-op
+    # (remove_new_only already cleared the symlink).
+    case "$at" in
+        SYMLINK_FLIPPED|SYSTEMD_OPS_DONE|HEALTH_RUNNING)
+            if [[ -n "$new" && -f "$new/manifest.json" ]]; then
+                airplanes_runtime_restore_all_symlink_paths \
+                    "$new/manifest.json" "$new" "$TARGET_ROOT" || true
+            fi
+            ;;
+    esac
+
     # SYMLINK_FLIPPED / SYSTEMD_OPS_DONE / HEALTH_RUNNING : daemon-reload
     # + restart the prior release's decoder stack so the rolled-back
     # symlink takes effect. Order mirrors the hardcoded forward restart
@@ -394,6 +409,10 @@ fi
 if ! airplanes_runtime_backup_all_copy_paths \
         "$RELEASE_MANIFEST" "$RELEASE_DIR_ABS" "$TARGET_ROOT"; then
     roll_back_and_exit 1 "copy_backup_failed"
+fi
+if ! airplanes_runtime_backup_all_symlink_paths \
+        "$RELEASE_MANIFEST" "$RELEASE_DIR_ABS" "$TARGET_ROOT"; then
+    roll_back_and_exit 1 "symlink_backup_failed"
 fi
 if ! airplanes_runtime_run_migrations_forward \
         "$RELEASE_MANIFEST" "$RELEASE_DIR_ABS" "$TARGET_ROOT"; then

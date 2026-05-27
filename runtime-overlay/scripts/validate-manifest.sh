@@ -118,4 +118,29 @@ if [[ -n "$dup_ids" ]]; then
     exit 1
 fi
 
+# 4. Cross-field gate: managed destinations (symlink link, copy path, mutable
+#    path) must not duplicate or parent/child-overlap each other. An overlap
+#    means a rollback that restores one destination could clobber a file
+#    restored for another (e.g. a copy target under a symlink-managed dir).
+overlap_report="$(jq -r '
+    ([ (.managed_paths // [])[]
+       | if .mode == "symlink" then .link
+         elif .mode == "copy"  then .path
+         else empty end ]
+     + (.mutable_paths // [])) as $dests
+    | ($dests | group_by(.) | map(select(length > 1) | .[0])) as $dups
+    | [ $dests[] | {p:., c:(split("/") | map(select(length > 0)))} ] as $items
+    | [ $items[] as $a | $items[] as $b
+        | select(($a.c | length) < ($b.c | length)
+                 and $b.c[0:($a.c | length)] == $a.c)
+        | "\($a.p) contains \($b.p)" ] as $overlaps
+    | ($dups | map("duplicate: \(.)")) + $overlaps
+    | join("; ")
+' "$snapshot")"
+
+if [[ -n "$overlap_report" ]]; then
+    echo "validate-manifest: overlapping managed destinations: ${overlap_report}" >&2
+    exit 1
+fi
+
 exit 0
