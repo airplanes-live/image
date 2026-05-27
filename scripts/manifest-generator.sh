@@ -31,14 +31,6 @@ validate_sha_value() {
 	}
 }
 
-read_sha_sentinel() {
-	local key="$1" path="$2" v
-	[[ -s "$path" ]] || { echo "ERROR: $key sentinel missing or empty: $path" >&2; exit 1; }
-	v="$(cat "$path")"
-	validate_sha_value "$key sentinel" "$path" "$v"
-	printf '%s' "$v"
-}
-
 read_runtime_manifest_sha() {
 	local key="$1" component="$2" path="$3" v
 	[[ -s "$path" ]] || { echo "ERROR: runtime manifest missing or empty: $path" >&2; exit 1; }
@@ -81,8 +73,6 @@ parse_fingerprint() {
 }
 
 PI_GEN="$(read_pigen_sentinel "${SENTINEL_DIR}/.build-pi-gen-sha")"
-FEED_SHA="$(read_sha_sentinel airplanes-feed "${SENTINEL_DIR}/.build-feed-sha")"
-READSB_SHA="$(read_sha_sentinel airplanes-readsb "${SENTINEL_DIR}/.build-airplanes-readsb-sha")"
 
 RUNTIME_MANIFEST="${SENTINEL_DIR}/runtime-manifest.json"
 [[ -e "$RUNTIME_MANIFEST" ]] || {
@@ -90,6 +80,11 @@ RUNTIME_MANIFEST="${SENTINEL_DIR}/runtime-manifest.json"
 	echo "       stage 02-install-runtime-overlay must produce this file in build mode" >&2
 	exit 1
 }
+# Feed scripts + feeder readsb now ship through the runtime overlay (stage 02),
+# not stage 01, so their SHAs come from the runtime manifest's feed_scripts /
+# feed_readsb components rather than stage-01 build sentinels.
+FEED_SHA="$(read_runtime_manifest_sha airplanes-feed feed_scripts "$RUNTIME_MANIFEST")"
+READSB_SHA="$(read_runtime_manifest_sha airplanes-readsb feed_readsb "$RUNTIME_MANIFEST")"
 DECODER_SHA="$(read_runtime_manifest_sha wiedehopf-readsb readsb_wiedehopf "$RUNTIME_MANIFEST")"
 DUMP978_SHA="$(read_runtime_manifest_sha flightaware-dump978 dump978_fa "$RUNTIME_MANIFEST")"
 TAR1090_SHA="$(read_runtime_manifest_sha wiedehopf-tar1090 tar1090 "$RUNTIME_MANIFEST")"

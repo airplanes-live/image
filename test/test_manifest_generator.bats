@@ -22,16 +22,19 @@ setup() {
 
 teardown() { rm -rf "$TMP"; }
 
+# Feed scripts + feeder readsb now ship through the runtime overlay, so their
+# SHAs live in the runtime manifest's feed_scripts / feed_readsb components.
+# Only the pi-gen + stub-fingerprint sentinels remain stage-side.
 write_sentinels() {
 	printf '%s\n' "$SHA_PIGEN" > "$SENT_DIR/.build-pi-gen-sha"
-	printf '%s\n' "$SHA_FEED" > "$SENT_DIR/.build-feed-sha"
-	printf '%s\n' "$SHA_READSB" > "$SENT_DIR/.build-airplanes-readsb-sha"
 	printf 'invocations=12 enables=3 ts=2026-05-03T19:22:30Z\n' \
 		> "$SENT_DIR/.build-stub-fingerprint"
 }
 
 write_runtime_manifest() {
 	jq -n \
+		--arg feed "$SHA_FEED" \
+		--arg readsb "$SHA_READSB" \
 		--arg decoder "$SHA_RUNTIME_DECODER" \
 		--arg dump978 "$SHA_RUNTIME_DUMP978" \
 		--arg tar1090 "$SHA_RUNTIME_TAR1090" \
@@ -39,6 +42,8 @@ write_runtime_manifest() {
 		--arg graphs "$SHA_RUNTIME_GRAPHS" \
 		'{
 			components: {
+				feed_scripts: $feed,
+				feed_readsb: $readsb,
 				readsb_wiedehopf: $decoder,
 				dump978_fa: $dump978,
 				tar1090: $tar1090,
@@ -75,6 +80,8 @@ write_runtime_manifest() {
 @test "runtime manifest accepts component objects with commit_sha" {
 	write_sentinels
 	jq -n \
+		--arg feed "$SHA_FEED" \
+		--arg readsb "$SHA_READSB" \
 		--arg decoder "$SHA_RUNTIME_DECODER" \
 		--arg dump978 "$SHA_RUNTIME_DUMP978" \
 		--arg tar1090 "$SHA_RUNTIME_TAR1090" \
@@ -82,6 +89,8 @@ write_runtime_manifest() {
 		--arg graphs "$SHA_RUNTIME_GRAPHS" \
 		'{
 			components: {
+				feed_scripts: {commit_sha: $feed},
+				feed_readsb: {commit_sha: $readsb},
 				readsb_wiedehopf: {commit_sha: $decoder},
 				dump978_fa: {commit_sha: $dump978},
 				tar1090: {commit_sha: $tar1090},
@@ -91,6 +100,8 @@ write_runtime_manifest() {
 		}' > "$SENT_DIR/runtime-manifest.json"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -eq 0 ]
+	[ "$(jq -r .components.airplanes_feed "$OUT")" = "$SHA_FEED" ]
+	[ "$(jq -r .components.airplanes_readsb "$OUT")" = "$SHA_READSB" ]
 	[ "$(jq -r .components.wiedehopf_readsb "$OUT")" = "$SHA_RUNTIME_DECODER" ]
 	[ "$(jq -r .components.flightaware_dump978 "$OUT")" = "$SHA_RUNTIME_DUMP978" ]
 	[ "$(jq -r .components.wiedehopf_tar1090 "$OUT")" = "$SHA_RUNTIME_TAR1090" ]
@@ -108,14 +119,18 @@ write_runtime_manifest() {
 
 @test "runtime manifest missing component fails" {
 	write_sentinels
-	# Manifest present but missing one of the required components.
+	# Manifest present but missing one of the required components (graphs1090).
 	jq -n \
+		--arg feed "$SHA_FEED" \
+		--arg readsb "$SHA_READSB" \
 		--arg decoder "$SHA_RUNTIME_DECODER" \
 		--arg dump978 "$SHA_RUNTIME_DUMP978" \
 		--arg tar1090 "$SHA_RUNTIME_TAR1090" \
 		--arg tar1090_db "$SHA_RUNTIME_TAR1090_DB" \
 		'{
 			components: {
+				feed_scripts: $feed,
+				feed_readsb: $readsb,
 				readsb_wiedehopf: $decoder,
 				dump978_fa: $dump978,
 				tar1090: $tar1090,
@@ -171,34 +186,44 @@ write_runtime_manifest() {
 	[ ! -e "$OUT" ]
 }
 
-@test "empty SHA sentinel fails" {
+@test "missing feed_scripts component fails" {
 	write_sentinels
 	write_runtime_manifest
-	: > "$SENT_DIR/.build-feed-sha"
+	# Drop feed_scripts from the runtime manifest — the generator now sources
+	# the feed SHA from there, so its absence must fail.
+	jq 'del(.components.feed_scripts)' "$SENT_DIR/runtime-manifest.json" \
+		> "$SENT_DIR/runtime-manifest.json.tmp"
+	mv "$SENT_DIR/runtime-manifest.json.tmp" "$SENT_DIR/runtime-manifest.json"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
 }
 
-@test "non-hex sentinel content fails" {
+@test "non-hex feed_scripts component fails" {
 	write_sentinels
 	write_runtime_manifest
-	printf 'dev\n' > "$SENT_DIR/.build-feed-sha"
+	jq '.components.feed_scripts = "dev"' "$SENT_DIR/runtime-manifest.json" \
+		> "$SENT_DIR/runtime-manifest.json.tmp"
+	mv "$SENT_DIR/runtime-manifest.json.tmp" "$SENT_DIR/runtime-manifest.json"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
 }
 
-@test "uppercase-hex sentinel fails" {
+@test "uppercase-hex feed_readsb component fails" {
 	write_sentinels
 	write_runtime_manifest
-	printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n' > "$SENT_DIR/.build-feed-sha"
+	jq '.components.feed_readsb = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"' \
+		"$SENT_DIR/runtime-manifest.json" > "$SENT_DIR/runtime-manifest.json.tmp"
+	mv "$SENT_DIR/runtime-manifest.json.tmp" "$SENT_DIR/runtime-manifest.json"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
 }
 
-@test "short SHA sentinel fails" {
+@test "short feed_scripts component fails" {
 	write_sentinels
 	write_runtime_manifest
-	printf 'aaaaaaa\n' > "$SENT_DIR/.build-feed-sha"
+	jq '.components.feed_scripts = "aaaaaaa"' "$SENT_DIR/runtime-manifest.json" \
+		> "$SENT_DIR/runtime-manifest.json.tmp"
+	mv "$SENT_DIR/runtime-manifest.json.tmp" "$SENT_DIR/runtime-manifest.json"
 	CHANNEL=dev ARCH=arm64 run bash "$SCRIPT" "$ROOT"
 	[ "$status" -ne 0 ]
 }

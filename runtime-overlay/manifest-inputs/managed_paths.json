@@ -191,5 +191,50 @@
     "owner": "root:root",
     "perm": "0440",
     "post_install": ["/usr/sbin/visudo", "-cf", "/etc/sudoers.d/010_airplanes-webconfig"]
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/share/airplanes/feed-airplanes",
+    "target": "/opt/airplanes-runtime/current/bin/feed-airplanes"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/bin/apl-feed",
+    "target": "/opt/airplanes-runtime/current/bin/apl-feed"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/share/airplanes/airplanes-feed.sh",
+    "target": "/opt/airplanes-runtime/current/share/airplanes/airplanes-feed.sh"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/share/airplanes/airplanes-mlat.sh",
+    "target": "/opt/airplanes-runtime/current/share/airplanes/airplanes-mlat.sh"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/share/airplanes/airplanes-diagnostics.sh",
+    "target": "/opt/airplanes-runtime/current/share/airplanes/airplanes-diagnostics.sh"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/share/airplanes/apl-feed",
+    "target": "/opt/airplanes-runtime/current/share/airplanes/apl-feed"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/share/airplanes/lib",
+    "target": "/opt/airplanes-runtime/current/share/airplanes/lib"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-feed.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-feed.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-mlat.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-mlat.service"
   }
 ]

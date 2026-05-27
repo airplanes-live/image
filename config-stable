@@ -47,12 +47,17 @@ export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-9318d02efd70488f831cbcb84
 # Allowlist enforced by stage 06: stable, dev.
 export AIRPLANES_FEED_UPDATE_CHANNEL="${AIRPLANES_FEED_UPDATE_CHANNEL:-stable}"
 
-# webconfig moved out of this repo; stage 05 clones airplanes-live/image-webconfig
-# at AIRPLANES_WEBCONFIG_BRANCH and consumes the matching GitHub Release. For
-# config-stable this is a concrete release tag — bump it via the same procedure
-# as the other component pins above.
+# webconfig now ships inside the runtime overlay (built/pinned in
+# runtime-overlay/config-stable, not cloned by a stage here). This pin is only
+# consumed by ci.yml's shell-tests / systemd-verify jobs, which check out the
+# shared wifi-validators / wifi-keyfile libs and the webconfig units from
+# image-webconfig at this ref. It must track the SAME commit the runtime overlay
+# pins so the libs CI tests against match what the image actually ships — and it
+# must be a post-self-update-removal ref (v0.1.1 still carried the removed
+# self-update surface). Kept in lockstep with runtime-overlay/config-stable's
+# AIRPLANES_WEBCONFIG_COMMIT_SHA.
 export AIRPLANES_WEBCONFIG_REPO="${AIRPLANES_WEBCONFIG_REPO:-https://github.com/airplanes-live/image-webconfig.git}"
-export AIRPLANES_WEBCONFIG_BRANCH="${AIRPLANES_WEBCONFIG_BRANCH:-v0.1.1}"
+export AIRPLANES_WEBCONFIG_BRANCH="${AIRPLANES_WEBCONFIG_BRANCH:-1b36221b3d4670d4c91145a0d91bb6588ff58cb4}"
 
 export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
 export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-4d6c614d7940ce0117db61b1fa91c81fd9e67988}"

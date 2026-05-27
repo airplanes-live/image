@@ -2,10 +2,14 @@
 # Inner half of update-regression-smoke.sh; runs inside debian:trixie-slim.
 # See test/update-regression-smoke.sh for context and scope.
 #
-# Builds a webconfig-flavored rootfs by running stage-airplanes overlays
-# 00-prep, 01-install-feed, 05-install-webconfig, 06-firstboot, then
-# fingerprints every webconfig-owned artifact, runs feed/update.sh in
-# runtime mode (no --build-mode flag), refingerprints, and fails if there
+# Builds a webconfig-flavored rootfs by running stage-airplanes overlay
+# 00-prep, installing the feed stack directly from the bind-mounted feed
+# checkout (feed/install.sh --build-mode — stage 01 no longer installs feed;
+# it ships through the runtime overlay now, but this regression targets
+# feed/update.sh's interaction with webconfig dirs and so needs a real feed
+# install present), then running 05-install-webconfig + 06-firstboot,
+# fingerprinting every webconfig-owned artifact, running feed/update.sh in
+# runtime mode (no --build-mode flag), refingerprinting, and failing if there
 # is any drift in the webconfig surface.
 #
 # Stages 02-04 (decoder, tar1090, graphs1090) are skipped — feed/update.sh
@@ -36,14 +40,28 @@ apt-get install -y --no-install-recommends sudo lighttpd
 echo "==> stage-airplanes/00-prep/00-run.sh"
 ( cd /image/stage-airplanes/00-prep && bash 00-run.sh )
 
-echo "==> stage-airplanes/01-install-feed/00-run.sh (clone feed)"
-( cd /image/stage-airplanes/01-install-feed && bash 00-run.sh )
-
-echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (install.sh --build-mode)"
+echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (service account + state dirs)"
+# Stage 01 is setup-only now (airplanes-feed account + state dirs). The feed
+# stack itself arrives through the runtime overlay on a real image, but this
+# regression needs a real feed install to run feed/update.sh against, so we
+# install it directly from the bind-mounted checkout below.
 ( cd /image/stage-airplanes/01-install-feed && bash 01-run-chroot.sh )
 
-echo "==> stage-airplanes/01-install-feed/02-run.sh (cleanup staged feed)"
-( cd /image/stage-airplanes/01-install-feed && bash 02-run.sh )
+echo "==> feed install.sh --build-mode (lays /usr/local/share/airplanes + update.sh)"
+# AIRPLANES_FEED_REPO=file:///feed (overlay-common) clones the bind-mounted
+# checkout; AIRPLANES_READSB_* come from config-dev. The lat/lon/altitude/MLAT
+# placeholders mirror what the deleted stage-01 chroot passed: build mode runs
+# configure_noninteractive, which requires the geo values. MLAT off + lat/lon=0
+# matches the fresh-image posture. This lays the feed scripts, daemon wrappers,
+# apl-feed, mlat venv, and the installed update.sh the runtime-mode self-replace
+# path exercises below.
+AIRPLANES_BUILD_MODE=1 \
+AIRPLANES_MLAT_USER=airplanes-live-image \
+AIRPLANES_MLAT_ENABLED=false \
+AIRPLANES_LATITUDE=0 \
+AIRPLANES_LONGITUDE=0 \
+AIRPLANES_ALTITUDE=0m \
+    bash /feed/install.sh --build-mode
 
 echo "==> stage-airplanes/05-install-webconfig/00-run.sh (image-owned tmpfiles)"
 # Stage 05 is setup-only now: it lays the image-owned tmpfiles host-side and,

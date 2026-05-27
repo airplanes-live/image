@@ -243,6 +243,8 @@ roll_back_and_exit() {
         SYMLINK_FLIPPED|SYSTEMD_OPS_DONE|HEALTH_RUNNING)
             if command -v systemctl >/dev/null 2>&1; then
                 systemctl stop \
+                    airplanes-mlat.service \
+                    airplanes-feed.service \
                     airplanes-webconfig.service \
                     airplanes-tar1090-uat-sync.service \
                     airplanes-978.service \
@@ -318,6 +320,8 @@ roll_back_and_exit() {
                         dump978-fa.service \
                         airplanes-978.service \
                         airplanes-tar1090-uat-sync.service \
+                        airplanes-feed.service \
+                        airplanes-mlat.service \
                         airplanes-webconfig.service 2>/dev/null || true
                     # Reload lighttpd so the rolled-back overlay-managed conf
                     # snippet (40-airplanes-webconfig.conf) takes effect.

@@ -90,7 +90,16 @@ if [[ "${#shell_files[@]}" -gt 0 ]]; then
     # layout. The source-tree shellcheck via the repo's shell-lint
     # workflow keeps source-following honest for development; this gate's
     # job is to surface bugs in the staged content itself.
-    shellcheck -x -e SC1091 "${shell_files[@]}"
+    #
+    # Severity floor is `warning`: the feed scripts staged into
+    # share/airplanes/ are linted at warning severity in their own repo's CI
+    # (feed runs `shellcheck -S warning`), and carry info/style findings
+    # (SC2016/SC2086/SC2153/...) that are accepted there. The overlay's own
+    # scripts are independently linted at default (style) severity by ci.yml's
+    # shell-lint job, so this gate's warning floor does not lose coverage of
+    # them — it just stops the release gate from rejecting feed scripts on
+    # findings their owning repo already triaged.
+    shellcheck -S warning -x -e SC1091 "${shell_files[@]}"
 else
     echo "verify-gates: no shell files found to shellcheck (ok)"
 fi

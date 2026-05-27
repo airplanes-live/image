@@ -13,8 +13,8 @@
 # ---------------------------------------------------------------------------
 # Update-orchestrator e2e probe — drives POST /api/orchestrator/start with
 # every sub-helper stubbed out at its absolute path so the orchestrator's
-# three-phase sequencing (apt → feed → runtime) is exercised end-to-end
-# without actually mutating apt / feed / runtime. The bats coverage at
+# two-phase sequencing (apt → runtime) is exercised end-to-end without
+# actually mutating apt / runtime. The bats coverage at
 # test/runtime-overlay/test_orchestrator_sequence.bats exercises the
 # orchestrator script in isolation; this probe exercises the click-flow
 # (HTTP -> sudoers -> systemd-run -> orchestrator -> state-file) the SPA
@@ -57,7 +57,7 @@ _orch_binary=/opt/airplanes-runtime/current/lib/airplanes-update-orchestrator
 # Absolute paths the orchestrator invokes for each step. Kept in sync with
 # the script's defaults block.
 _orch_apt_get=/usr/bin/apt-get
-_orch_feed_update=/usr/local/share/airplanes/update.sh
+# _orch_feed_update removed — the orchestrator no longer has a feed step.
 _orch_runtime_update=/opt/airplanes-runtime/current/lib/runtime-self-update.sh
 
 _orch_state_file=/run/airplanes/orchestrator.state
@@ -302,7 +302,7 @@ _orch_dump_diagnostics() {
     _orch_diag_emit "image-probe: bind-mount evidence (probe-side):"
     _orch_diag_run mount
     local _t
-    for _t in "${_orch_apt_get:-}" "${_orch_feed_update:-}" \
+    for _t in "${_orch_apt_get:-}" \
               "${_orch_runtime_update:-}"; do
         [[ -n "$_t" ]] || continue
         _orch_diag_emit "  target: $_t"
@@ -549,7 +549,6 @@ _orch_run_probe() {
         rm -f -- "$_orch_state_file"
 
         _orch_bind_stub "$_orch_apt_get"          apt
-        _orch_bind_stub "$_orch_feed_update"      feed
         _orch_bind_stub "$_orch_runtime_update"   runtime
 
         # Cross-namespace visibility check: the orchestrator runs in a
@@ -564,7 +563,7 @@ _orch_run_probe() {
         # diagnostic before the POST instead of an opaque step
         # failure 5–10 seconds later.
         local _t expect_payload="" line
-        for _t in "$_orch_apt_get" "$_orch_feed_update" \
+        for _t in "$_orch_apt_get" \
                   "$_orch_runtime_update"; do
             line="$(stat -Lc '%d:%i' -- "$_t" 2>/dev/null || true)"
             if [[ -z "$line" ]]; then
@@ -576,7 +575,7 @@ _orch_run_probe() {
         local transient_payload
         # shellcheck disable=SC2016  # $TARGETS expands inside the transient unit, not at quoting time.
         transient_payload="$(timeout 15s systemd-run --pipe --wait --collect --quiet \
-            --setenv=TARGETS="$_orch_apt_get $_orch_feed_update $_orch_runtime_update" \
+            --setenv=TARGETS="$_orch_apt_get $_orch_runtime_update" \
             /bin/bash -c '
                 set +e
                 for t in $TARGETS; do
@@ -750,11 +749,17 @@ _orch_run_probe() {
         # step=done without all phases having run if a future refactor
         # short-circuits the sequencer.
         local missing="" s
-        for s in apt feed runtime; do
+        for s in apt runtime; do
             [[ -f "$_orch_marker_dir/${s}.ok" ]] || missing+=" $s"
         done
         if [[ -n "$missing" ]]; then
             _orch_fail "orchestrator probe: missing per-step marker(s):${missing}"
+        fi
+        # Feed + webconfig ship inside the runtime overlay now — the
+        # orchestrator has no separate feed step, so a feed marker must NOT
+        # appear.
+        if [[ -f "$_orch_marker_dir/feed.ok" ]]; then
+            _orch_fail "orchestrator probe: unexpected feed.ok marker (orchestrator should have no feed step)"
         fi
 
         # Call-count assertions on the sequence log. apt-get is
@@ -767,26 +772,22 @@ _orch_run_probe() {
         # rc clean so set -e doesn't trip, and grep's own '0' output
         # is what we want without an extra echo 0 (which would emit
         # `0\n0` and trip the (( )) check downstream).
-        local apt_calls feed_calls runtime_calls
+        local apt_calls runtime_calls
         apt_calls=$(grep -c '^[^ ]* apt ' "$_orch_call_log" 2>/dev/null || true)
-        feed_calls=$(grep -c '^[^ ]* feed ' "$_orch_call_log" 2>/dev/null || true)
         runtime_calls=$(grep -c '^[^ ]* runtime ' "$_orch_call_log" 2>/dev/null || true)
-        : "${apt_calls:=0}" "${feed_calls:=0}" "${runtime_calls:=0}"
+        : "${apt_calls:=0}" "${runtime_calls:=0}"
         if (( apt_calls != 2 )); then
             _orch_fail "orchestrator probe: apt was invoked $apt_calls times (want 2: 'update' + '-y upgrade')"
-        fi
-        if (( feed_calls != 1 )); then
-            _orch_fail "orchestrator probe: feed stub was invoked $feed_calls times (want 1)"
         fi
         if (( runtime_calls != 1 )); then
             _orch_fail "orchestrator probe: runtime stub was invoked $runtime_calls times (want 1)"
         fi
 
-        # Sequence assertion: apt before feed before runtime. The bats
-        # coverage pins this for the orchestrator script in isolation;
-        # we re-check here because a regression in the trampoline or
-        # systemd-run plumbing could in principle reorder the actual
-        # execution.
+        # Sequence assertion: apt before runtime. The bats coverage pins this
+        # for the orchestrator script in isolation; we re-check here because a
+        # regression in the trampoline or systemd-run plumbing could in
+        # principle reorder the actual execution. The orchestrator is now a
+        # two-step sequence (apt → runtime); there is no feed step.
         #
         # `|| true` on each pipeline: pipefail is on (inherited from
         # run.sh's `set -euo pipefail`), and the grep|head|cut shape
@@ -796,15 +797,14 @@ _orch_run_probe() {
         # pipe after one line so grep can also get SIGPIPE (rc=141)
         # on a matching but multi-line input. We want the assertions
         # to be the only place that fails.
-        local apt_first feed_first rt_first
+        local apt_first rt_first
         apt_first=$(grep -n '^[^ ]* apt update$' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
-        feed_first=$(grep -n '^[^ ]* feed ' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
         rt_first=$(grep -n '^[^ ]* runtime ' "$_orch_call_log" | head -1 | cut -d: -f1 || true)
-        if [[ -z "$apt_first" || -z "$feed_first" || -z "$rt_first" ]]; then
-            _orch_fail "orchestrator probe: sequence log missing one of apt/feed/runtime entries (log: $(cat "$_orch_call_log"))"
+        if [[ -z "$apt_first" || -z "$rt_first" ]]; then
+            _orch_fail "orchestrator probe: sequence log missing one of apt/runtime entries (log: $(cat "$_orch_call_log"))"
         fi
-        if ! (( apt_first < feed_first && feed_first < rt_first )); then
-            _orch_fail "orchestrator probe: step order wrong — apt=$apt_first feed=$feed_first runtime=$rt_first (want strict ascending)"
+        if ! (( apt_first < rt_first )); then
+            _orch_fail "orchestrator probe: step order wrong — apt=$apt_first runtime=$rt_first (want apt before runtime)"
         fi
 
         # Runtime sanity bound. See the budget comment above.
@@ -876,20 +876,11 @@ _orch_run_probe() {
         [[ "$_orch_health_code" == "200" ]] \
             || _orch_fail "orchestrator probe: health endpoint returned $_orch_health_code after orchestrator finished + unit drained (want 200)"
 
-        # SIGHUP proof: step_feed_hup in the orchestrator and the
-        # systemd-run ExecStopPost both send SIGHUP to webconfig. The
-        # schema cache reload logs an identifiable line on each HUP.
-        # Without this check, a regression that drops either HUP would
-        # still pass (webconfig keeps serving /health regardless). We
-        # don't pin the exact count — systemd ordering between the
-        # orchestrator's intra-run kill and ExecStopPost can collapse
-        # under tight timing — but at least one entry must land within
-        # the probe window.
-        if ! journalctl -u airplanes-webconfig.service \
-                --no-pager --since "@$post_start_epoch" 2>&1 \
-                | grep -qiE 'sighup|schema.*reload|reloading'; then
-            _orch_fail "orchestrator probe: webconfig journal shows no SIGHUP/schema-reload entries since orchestrator POST (feed-step HUP and/or ExecStopPost HUP did not fire?)"
-        fi
+        # The feed-step SIGHUP to webconfig is gone — the orchestrator no
+        # longer has a feed step (feed-env schema changes now ride the runtime
+        # overlay's atomic webconfig+feed swap), so there is no post-feed HUP
+        # to assert here. The webconfig /health check above already proves the
+        # service is responsive after the orchestrator run.
 
         # Tear down — paired with the trap above. Drop the trap
         # explicitly so the diagnostic dump only fires on failure.
@@ -897,7 +888,7 @@ _orch_run_probe() {
         # Verify cleanup landed — a leaked bind on /usr/bin/apt-get
         # would break the next apt operation on this VM.
         local leaked=""
-        for s in "$_orch_apt_get" "$_orch_feed_update" \
+        for s in "$_orch_apt_get" \
                  "$_orch_runtime_update"; do
             if mountpoint -q "$s" 2>/dev/null; then
                 leaked+=" $s"
@@ -908,7 +899,7 @@ _orch_run_probe() {
         fi
         trap - EXIT
 
-        echo "image-probe: orchestrator e2e probe passed (elapsed=${elapsed}s, all 3 markers + sequence + HTTP cross-check)"
+        echo "image-probe: orchestrator e2e probe passed (elapsed=${elapsed}s, apt + runtime markers + sequence + HTTP cross-check)"
     )
     local sub_rc=$?
     if (( sub_rc != 0 )); then
@@ -948,6 +939,166 @@ _orch_run_probe() {
         _orch_fail "orchestrator probe: subshell exited rc=$sub_rc unexpectedly (set -e tripped outside _orch_fail; see dump)"
     fi
 }
+
+# ---------------------------------------------------------------------------
+# Runtime-overlay update + rollback probe (opt-in).
+# ---------------------------------------------------------------------------
+#
+# Drives the REAL runtime-self-update.sh against synthetic LOCAL overlay
+# releases staged by test/boot-smoke/lib/runtime-upgrade-helpers.sh — no GitHub
+# release is touched. Two-pass via an own marker so the reboot-persistence leg
+# survives the harness re-running the 'updated' phase:
+#   pass 1: install GOOD vN+1 (assert convergence), install BROKEN vN+1
+#           (assert rollback to the prior release), then reboot.
+#   pass 2: assert the rolled-back GOOD release is still current after reboot
+#           and the consumer services are active; done.
+# Runs BEFORE the orchestrator stub probe, which bind-mounts a stub over
+# runtime-self-update.sh — this probe needs the real helper.
+_runtime_upgrade_marker_base() {
+    cat /var/lib/airplanes-boot-smoke/runtime-upgrade-asset-base 2>/dev/null || true
+}
+
+# Drive runtime-self-update.sh against a local asset dir. Returns the helper's
+# exit code. AIRPLANES_RUNTIME_RELEASE_ASSET_DIR makes the helper consume the
+# staged signed asset set instead of downloading from GitHub; the baked pubkey
+# was overridden to the test key in setup.sh so the synthetic
+# SHA256SUMS.minisig verifies. AIRPLANES_RUNTIME_OVERLAY_TAG=local-assets pins
+# the resolver to the local-assets path so channel/version resolution is
+# bypassed and the manifest-version check accepts the synthetic version
+# regardless of the image's release channel.
+_runtime_drive_update() {
+    local asset_dir="$1"
+    # Health-gate deadline shortened from the production default (120s) to fit
+    # the QEMU emulation budget. 90s leaves the GOOD release ample headroom to
+    # converge under emulation (unit start + ~25s stability window + freshness),
+    # while still capping the BROKEN release's freshness-timeout at 90s instead
+    # of 120s. Combined with the 25m per-boot QEMU timeout, this keeps the two
+    # update cycles plus the persistence reboot inside budget without KVM.
+    AIRPLANES_RUNTIME_RELEASE_ASSET_DIR="$asset_dir" \
+    AIRPLANES_RUNTIME_OVERLAY_TAG="local-assets" \
+    AIRPLANES_RUNTIME_MIN_FREE_BYTES=0 \
+    AIRPLANES_RUNTIME_HEALTH_DEADLINE=90 \
+        /opt/airplanes-runtime/current/lib/runtime-self-update.sh
+}
+
+_runtime_current_version() {
+    local cur
+    cur="$(readlink -f /opt/airplanes-runtime/current 2>/dev/null || true)"
+    printf '%s' "${cur##*/v}"
+}
+
+_runtime_upgrade_probe() {
+    local asset_base
+    asset_base="$(_runtime_upgrade_marker_base)"
+    [[ -n "$asset_base" ]] || return 0  # variant not enabled
+
+    local progress=/var/lib/airplanes-boot-smoke/runtime-upgrade.progress
+    local phase=""
+    [[ -f "$progress" ]] && phase="$(cat "$progress" 2>/dev/null || true)"
+
+    if [[ "$phase" == "rolled-back-rebooted" ]]; then
+        # Pass 2 — verify the rolled-back release persisted across the reboot.
+        echo "image-probe: runtime-upgrade pass 2 (post-reboot persistence)"
+        local cur_ver
+        cur_ver="$(_runtime_current_version)"
+        [[ "$cur_ver" == "$_runtime_good_version" ]] \
+            || fail "runtime-upgrade: after reboot current=v$cur_ver, expected the rolled-back good release v$_runtime_good_version"
+        assert_service_healthy readsb.service
+        assert_service_healthy airplanes-feed.service
+        assert_service_healthy airplanes-webconfig.service
+        echo "image-probe: runtime-upgrade reboot-persistence passed (current=v$cur_ver)"
+        rm -f "$progress"
+        return 0
+    fi
+
+    # Pass 1.
+    echo "image-probe: runtime-upgrade pass 1 (GOOD then BROKEN)"
+
+    local baseline_ver
+    baseline_ver="$(_runtime_current_version)"
+    echo "image-probe: runtime-upgrade baseline current=v$baseline_ver"
+
+    # --- GOOD vN+1 : expect convergence -------------------------------------
+    echo "image-probe: driving runtime-self-update to GOOD release"
+    if ! _runtime_drive_update "$asset_base/good"; then
+        cat /var/lib/airplanes-runtime-upgrade/upgrade-state 2>/dev/null >&2 || true
+        journalctl -u readsb.service --no-pager -n 50 2>/dev/null >&2 || true
+        fail "runtime-upgrade: GOOD update did not converge (helper exited non-zero)"
+    fi
+    _runtime_good_version="$(_runtime_current_version)"
+    [[ "$_runtime_good_version" != "$baseline_ver" ]] \
+        || fail "runtime-upgrade: current did not flip after GOOD update (still v$baseline_ver)"
+    local upg_state
+    upg_state="$(awk -F= '/^state=/{sub(/^state=/,"");print;exit}' \
+        /var/lib/airplanes-runtime-upgrade/upgrade-state 2>/dev/null || true)"
+    [[ "$upg_state" == "INSTALLED" ]] \
+        || fail "runtime-upgrade: GOOD update state=$upg_state, expected INSTALLED"
+    # Consumer services restarted on the new release and healthy.
+    assert_service_healthy readsb.service
+    assert_service_healthy airplanes-feed.service
+    assert_service_healthy airplanes-webconfig.service
+    echo "image-probe: GOOD convergence passed (current=v$_runtime_good_version)"
+
+    # --- BROKEN vN+1 : expect rollback to the GOOD release ------------------
+    echo "image-probe: driving runtime-self-update to BROKEN release"
+    local pre_broken_ver="$_runtime_good_version"
+    if _runtime_drive_update "$asset_base/broken"; then
+        fail "runtime-upgrade: BROKEN update unexpectedly succeeded (rollback not triggered)"
+    fi
+    local post_broken_ver
+    post_broken_ver="$(_runtime_current_version)"
+    [[ "$post_broken_ver" == "$pre_broken_ver" ]] \
+        || fail "runtime-upgrade: after BROKEN update current=v$post_broken_ver, expected rollback to v$pre_broken_ver"
+    upg_state="$(awk -F= '/^state=/{sub(/^state=/,"");print;exit}' \
+        /var/lib/airplanes-runtime-upgrade/upgrade-state 2>/dev/null || true)"
+    [[ "$upg_state" == ROLLED_BACK_* ]] \
+        || fail "runtime-upgrade: BROKEN update state=$upg_state, expected ROLLED_BACK_*"
+    # Prior (good) release's services restored and healthy.
+    assert_service_healthy readsb.service
+    assert_service_healthy airplanes-feed.service
+    assert_service_healthy airplanes-webconfig.service
+    echo "image-probe: BROKEN rollback passed (current=v$post_broken_ver, state=$upg_state)"
+
+    # Re-baseline feed's idempotency snapshot. The GOOD→BROKEN→rollback cycle
+    # changed the managed-path symlink's target mtime: the GOOD install
+    # extracted v9.9.99, the BROKEN install extracted v9.9.100, and the rollback
+    # re-laid v9.9.99's managed paths. Even though the rollback returns to
+    # v9.9.99, the re-lay creates new symlinks with fresh lstat() timestamps.
+    # The feed harness's assert_binaries_unchanged compares this snapshot against
+    # a fresh stat after the next run_feed_update; feed's update.sh takes the
+    # version-match fast path and doesn't touch the binary, so feed-airplanes's
+    # mtime must match. Snapshot here — at the final steady state just before
+    # the persistence reboot — so the comparison is against the correct baseline.
+    if [[ -f /var/lib/airplanes-boot-smoke/snapshot-mtimes ]]; then
+        stat -c '%Y %n' \
+            /usr/local/share/airplanes/feed-airplanes \
+            /usr/local/share/airplanes/venv/bin/mlat-client \
+            > /var/lib/airplanes-boot-smoke/snapshot-mtimes
+        echo "image-probe: re-baselined feed idempotency snapshot after rollback"
+    fi
+
+    # Persist the expected post-reboot version + mark pass 1 done, then reboot
+    # to verify the rolled-back release survives. The harness re-runs the
+    # 'updated' phase (MAX_BOOT_ATTEMPTS=3), re-sourcing this probe.
+    printf '%s' "$_runtime_good_version" > /var/lib/airplanes-boot-smoke/runtime-upgrade-good-version
+    printf '%s' "rolled-back-rebooted" > "$progress"
+    sync
+    echo "image-probe: runtime-upgrade rebooting to verify rollback persistence"
+    systemctl reboot
+    # The reboot tears the VM down; the probe does not return past here on
+    # pass 1. The harness boots again and re-enters at pass 2.
+    sleep 120
+    fail "runtime-upgrade: systemctl reboot did not take effect within 120s"
+}
+
+# On pass 2 the good version is read back from disk (a fresh process after the
+# reboot has no in-memory _runtime_good_version).
+if [[ -f /var/lib/airplanes-boot-smoke/runtime-upgrade-good-version ]]; then
+    _runtime_good_version="$(cat /var/lib/airplanes-boot-smoke/runtime-upgrade-good-version)"
+else
+    _runtime_good_version=""
+fi
+_runtime_upgrade_probe
 
 # ---------------------------------------------------------------------------
 
@@ -1250,7 +1401,7 @@ sse_first_pass=0
 curl --silent --show-error --max-time 5 \
     http://127.0.0.1/api/state > "$sse_state_out" || true
 
-# Re-entrant: the webconfig-upgrade-qemu variant reboots from inside this
+# Re-entrant: the runtime-overlay-upgrade-qemu variant reboots from inside this
 # probe and re-sources us afterwards; by then /api/setup has already moved
 # the device to "initialized" and the SSE password-setup+stream path is no
 # longer applicable. Skip it cleanly — the persistence path below probes

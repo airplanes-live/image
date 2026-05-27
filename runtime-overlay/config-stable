@@ -36,9 +36,22 @@ export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.co
 export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889de2a8f63f2b40133ea72a08537ce}"
 
 # Webconfig — downloaded as a prebuilt release, not compiled in the overlay.
-# Stable pins must be bumped to a post-self-update-removal webconfig semver
-# tag before the first stable image is cut. The current pin is a placeholder
-# that tracks dev-latest until a proper v0.2.x stable tag is available.
-# TODO: pin to a concrete stable webconfig release tag before shipping.
+# Stable pins (webconfig + feed_readsb + feed_scripts + mlat_client below) must
+# all be bumped to concrete post-self-update-removal semver tags / SHAs before
+# the first stable image is cut. The current pins are placeholders that track
+# the dev heads until proper stable tags are available.
+# TODO: pin webconfig, feed_readsb, feed_scripts, and mlat_client to concrete
+# stable release tags / SHAs before shipping the first stable image.
 export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-dev-latest}"
 export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-1b36221b3d4670d4c91145a0d91bb6588ff58cb4}"
+
+# Feed — overlay-built. Placeholder SHAs tracking the dev heads; see the TODO
+# above. Bump in lockstep with PRs already validated on dev.
+export AIRPLANES_FEED_OVERLAY_REPO="${AIRPLANES_FEED_OVERLAY_REPO:-https://github.com/airplanes-live/feed.git}"
+export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-d120b953329ab8c1d9d613d9cdcd57c471ca1914}"
+
+export AIRPLANES_FEED_READSB_REPO="${AIRPLANES_FEED_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
+export AIRPLANES_FEED_READSB_BRANCH="${AIRPLANES_FEED_READSB_BRANCH:-b499ecbd18dc4a2ec6098c31de31508017fa6190}"
+
+export AIRPLANES_MLAT_CLIENT_REPO="${AIRPLANES_MLAT_CLIENT_REPO:-https://github.com/airplanes-live/mlat-client.git}"
+export AIRPLANES_MLAT_CLIENT_BRANCH="${AIRPLANES_MLAT_CLIENT_BRANCH:-f569b6d230d5095e80c7b67bb37b1e72f2bd8da8}"

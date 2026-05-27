@@ -2,9 +2,9 @@
 
 # Tests for runtime-overlay/config-{stable,dev} — channel-pinning shell
 # fragments sourced by the runtime-overlay build helpers. Asserts shape
-# (5 *_REPO + 5 *_BRANCH + 2 webconfig pins), pin format per channel
-# (40-hex SHA on stable, non-SHA branch ref on dev), HTTPS-only repo URLs,
-# and that the `${VAR:-default}` idiom keeps a pre-set value intact when
+# (5 decoder _REPO/_BRANCH + 2 webconfig pins + 6 feed pins), pin format per
+# channel (40-hex SHA on stable, non-SHA branch ref on dev), HTTPS-only repo
+# URLs, and that the `${VAR:-default}` idiom keeps a pre-set value intact when
 # the file is sourced.
 
 bats_require_minimum_version 1.5.0
@@ -28,6 +28,12 @@ setup() {
         AIRPLANES_TAR1090_DB
         AIRPLANES_GRAPHS1090
     )
+    # Feed components use REPO/BRANCH pins like the decoder components.
+    FEED_COMPONENTS=(
+        AIRPLANES_FEED_OVERLAY
+        AIRPLANES_FEED_READSB
+        AIRPLANES_MLAT_CLIENT
+    )
 }
 
 # Source the named config file in a subshell and emit `KEY=VALUE` lines for
@@ -37,7 +43,7 @@ load_pins() {
     local file="$1"
     # shellcheck disable=SC1090
     ( . "$file" && \
-        for c in "${COMPONENTS[@]}"; do
+        for c in "${COMPONENTS[@]}" "${FEED_COMPONENTS[@]}"; do
             repo="${c}_REPO"
             branch="${c}_BRANCH"
             printf '%s=%s\n' "$repo"   "${!repo-}"
@@ -45,10 +51,10 @@ load_pins() {
         done )
 }
 
-@test "stable sources cleanly and sets all 10 component vars" {
+@test "stable sources cleanly and sets all 16 component vars" {
     run load_pins "$STABLE"
     [ "$status" -eq 0 ]
-    for c in "${COMPONENTS[@]}"; do
+    for c in "${COMPONENTS[@]}" "${FEED_COMPONENTS[@]}"; do
         [[ "$output" == *"${c}_REPO=https://"* ]]   || { echo "missing ${c}_REPO" >&2; return 1; }
         [[ "$output" == *"${c}_BRANCH="*[0-9a-f]* ]] || { echo "missing ${c}_BRANCH" >&2; return 1; }
     done
@@ -61,17 +67,17 @@ load_pins() {
     while IFS='=' read -r k v; do
         vals[$k]="$v"
     done <<<"$output"
-    for c in "${COMPONENTS[@]}"; do
+    for c in "${COMPONENTS[@]}" "${FEED_COMPONENTS[@]}"; do
         local sha="${vals[${c}_BRANCH]-}"
         [[ "$sha" =~ ^[0-9a-f]{40}$ ]] \
             || { echo "${c}_BRANCH is not a 40-hex SHA: '$sha'" >&2; return 1; }
     done
 }
 
-@test "dev sources cleanly and sets all 10 component vars" {
+@test "dev sources cleanly and sets all 16 component vars" {
     run load_pins "$DEV"
     [ "$status" -eq 0 ]
-    for c in "${COMPONENTS[@]}"; do
+    for c in "${COMPONENTS[@]}" "${FEED_COMPONENTS[@]}"; do
         [[ "$output" == *"${c}_REPO=https://"* ]] || { echo "missing ${c}_REPO" >&2; return 1; }
         [[ "$output" == *"${c}_BRANCH="*       ]] || { echo "missing ${c}_BRANCH" >&2; return 1; }
     done
@@ -84,7 +90,7 @@ load_pins() {
     while IFS='=' read -r k v; do
         vals[$k]="$v"
     done <<<"$output"
-    for c in "${COMPONENTS[@]}"; do
+    for c in "${COMPONENTS[@]}" "${FEED_COMPONENTS[@]}"; do
         local ref="${vals[${c}_BRANCH]-}"
         [ -n "$ref" ] || { echo "${c}_BRANCH is empty" >&2; return 1; }
         if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
@@ -102,7 +108,7 @@ load_pins() {
         while IFS='=' read -r k v; do
             vals[$k]="$v"
         done <<<"$output"
-        for c in "${COMPONENTS[@]}"; do
+        for c in "${COMPONENTS[@]}" "${FEED_COMPONENTS[@]}"; do
             local repo="${vals[${c}_REPO]-}"
             [[ "$repo" == https://github.com/* ]] \
                 || { echo "$file: ${c}_REPO not HTTPS github.com: '$repo'" >&2; return 1; }
@@ -121,11 +127,11 @@ load_pins() {
             ". \"$LOADER\" && airplanes_runtime_load_component_pins $channel"
         [ "$status" -eq 0 ]
 
-        # Build the expected key list. Decoder components use _REPO/_BRANCH;
-        # webconfig uses _RELEASE_TAG/_COMMIT_SHA (downloaded prebuilt, not
-        # compiled from a branch).
+        # Build the expected key list. Decoder + feed components use
+        # _REPO/_BRANCH; webconfig uses _RELEASE_TAG/_COMMIT_SHA (downloaded
+        # prebuilt, not compiled from a branch).
         local expected=""
-        for c in "${COMPONENTS[@]}"; do
+        for c in "${COMPONENTS[@]}" "${FEED_COMPONENTS[@]}"; do
             expected+="${c}_BRANCH"$'\n'"${c}_REPO"$'\n'
         done
         expected+="AIRPLANES_WEBCONFIG_COMMIT_SHA"$'\n'

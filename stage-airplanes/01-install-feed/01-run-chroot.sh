@@ -1,30 +1,48 @@
-#!/bin/bash -e
+#!/bin/bash
+# pi-gen invokes via `bash 01-run-chroot.sh` so shebang flags are ignored;
+# explicit set -e is needed.
+set -e
 
 export PATH="/usr/local/sbin:${PATH}"
 
-# Build mode skips service starts, claim registration, runtime checks, and the
-# interactive configure flow (feed/configure.sh:157). configure_noninteractive
-# still requires placeholders for location / MLAT user; these are the default
-# values baked into feed.env at image freeze. Operational values are set by
-# the user via the webconfig UI after first boot; first-run on the device only
-# handles the 6-key bootstrap allowlist (HOSTNAME, WIFI_*, FEED_HOST, WEBSITE_URL).
+# The feeder readsb binary, mlat-client venv, feed scripts, apl-feed CLI, and
+# the airplanes-feed / airplanes-mlat systemd units all ship inside the runtime
+# overlay (laid down by stage 02 as managed_paths symlinks, enabled dynamically
+# from the overlay manifest). Stage 01 retains only the chroot setup that cannot
+# be overlay-managed: the airplanes-feed service account + group, and the state
+# directory the daemons and claim flow write to.
 #
-# MLAT is off by default on a fresh image: the operator must explicitly
-# enable it via the webconfig after entering real coordinates. A flashed
-# feeder still feeds Beast (ADS-B) — only MLAT waits for opt-in.
-# GEO_CONFIGURED follows from the lat=0/lon=0 placeholders via
-# configure.sh's derive_geo_configured. ALTITUDE=0m is a valid sea-level
-# value the operator can keep or replace.
-export AIRPLANES_BUILD_MODE=1
-export AIRPLANES_FEED_REPO="file:///usr/local/src/airplanes-feed-build"
-export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH}"
-export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO}"
-export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH}"
-export AIRPLANES_MLAT_USER=airplanes-live-image
-export AIRPLANES_MLAT_ENABLED=false
-export AIRPLANES_LATITUDE=0
-export AIRPLANES_LONGITUDE=0
-export AIRPLANES_ALTITUDE=0m
+# A private airplanes-feed group lets other service accounts (e.g.
+# airplanes-webconfig, added to it in stage 05) read claim-state files
+# (mode 0640) without escalating to root. The account is created here so it
+# exists before stage 05's group-membership wiring and before first boot starts
+# the overlay-shipped airplanes-feed.service.
 
-cd /usr/local/src/airplanes-feed-build
-bash install.sh --build-mode
+# Create the airplanes-feed system group + user. Fallback chain mirrors feed's
+# ensure_airplanes_feed_account so the chroot works on minimal containers (e.g.
+# debian:trixie-slim used by feed-overlay-smoke) that may lack the `adduser`
+# package.
+if ! getent group airplanes-feed >/dev/null 2>&1; then
+	addgroup --system airplanes-feed 2>/dev/null \
+		|| groupadd --system airplanes-feed 2>/dev/null \
+		|| { echo "ERROR: failed to create airplanes-feed group" >&2; exit 1; }
+fi
+if ! id -u airplanes-feed >/dev/null 2>&1; then
+	adduser --system --ingroup airplanes-feed \
+		--home /usr/local/share/airplanes --no-create-home --quiet airplanes-feed 2>/dev/null \
+		|| useradd --system --gid airplanes-feed \
+		--home-dir /usr/local/share/airplanes --no-create-home airplanes-feed 2>/dev/null \
+		|| { echo "ERROR: failed to create airplanes-feed user" >&2; exit 1; }
+fi
+
+# Pi hardware: the daemon user needs the `video` group so vcgencmd can read
+# /dev/vchiq for the diagnostics throttle fields. Add it when the group exists.
+if getent group video >/dev/null 2>&1; then
+	adduser airplanes-feed video 2>/dev/null \
+		|| usermod -aG video airplanes-feed 2>/dev/null \
+		|| true
+fi
+
+# State directory the feed daemons + claim flow write to. The overlay ships the
+# read-only release tree; the mutable state dir is image-created here.
+install -d -m 0755 /etc/airplanes

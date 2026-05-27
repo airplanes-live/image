@@ -3,10 +3,10 @@
 # Drives airplanes-update-orchestrator with every sub-helper stubbed out
 # via PATH overrides and explicit AIRPLANES_ORCHESTRATOR_* env vars.
 # Covers:
-#   - all three steps run in declared order (apt → feed → runtime)
+#   - both steps run in declared order (apt → runtime)
 #   - runtime skips cleanly when the precheck reports no-op
 #   - state file is valid JSON after every step
-#   - HUP issued to webconfig after the feed step
+#   - no separate feed or webconfig step exists (both ship in the overlay)
 #   - failure in any step writes status: failed and exits non-zero
 #   - subsequent steps not invoked after a failure
 
@@ -32,21 +32,15 @@ setup() {
     CALL_LOG="$TMP/calls.log"
     : > "$CALL_LOG"
 
-    # Sub-helper stubs — each records its invocation and exits 0 by
-    # default. Tests override individual stubs to inject failures.
-    cat > "$TMP/sub/feed-update.sh" <<EOF
-#!/usr/bin/env bash
-echo "feed \$*" >> "$CALL_LOG"
-exit 0
-EOF
+    # Sub-helper stub — records its invocation and exits 0 by default. Tests
+    # override it to inject failures. Feed and webconfig no longer have
+    # separate steps; both ship inside the runtime overlay.
     cat > "$TMP/sub/runtime-update.sh" <<EOF
 #!/usr/bin/env bash
 echo "runtime \$*" >> "$CALL_LOG"
 exit 0
 EOF
-    chmod 0755 \
-        "$TMP/sub/feed-update.sh" \
-        "$TMP/sub/runtime-update.sh"
+    chmod 0755 "$TMP/sub/runtime-update.sh"
 
     # PATH-injected systemctl + apt-get stubs.
     cat > "$TMP/bin/systemctl" <<EOF
@@ -73,11 +67,8 @@ run_orchestrator() {
         PATH="$TMP/bin:/usr/bin:/bin" \
         AIRPLANES_ORCHESTRATOR_STATE_FILE="$STATE_FILE" \
         AIRPLANES_ORCHESTRATOR_LOCK_FILE="$LOCK_FILE" \
-        AIRPLANES_ORCHESTRATOR_FEED_UPDATE="$TMP/sub/feed-update.sh" \
         AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE="$TMP/sub/runtime-update.sh" \
         AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE="$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" \
-        AIRPLANES_ORCHESTRATOR_WEBCONFIG_SERVICE="airplanes-webconfig.service" \
-        AIRPLANES_ORCHESTRATOR_SYSTEMCTL="systemctl" \
         AIRPLANES_ORCHESTRATOR_APT_GET="apt-get" \
         bash "$ORCH" "$@"
 }
@@ -97,35 +88,32 @@ assert_state_is_valid_json() {
     python3 -c "import json,sys;json.load(open(sys.argv[1]))" "$STATE_FILE"
 }
 
-@test "all three steps run in declared order; HUP after feed" {
+@test "both steps run in declared order (apt → runtime)" {
     run_orchestrator
     [ "$status" -eq 0 ]
     assert_state_is_valid_json
     [ "$(state_step)" = "done" ]
     [ "$(state_status)" = "ok" ]
 
-    # Sequence assertions: apt before feed before HUP before runtime.
+    # Sequence assertions: apt before runtime.
     apt_line=$(grep -n '^apt-get update$' "$CALL_LOG" | head -1 | cut -d: -f1)
-    feed_line=$(grep -n '^feed ' "$CALL_LOG" | head -1 | cut -d: -f1)
-    hup_line=$(grep -n '^systemctl kill -s HUP airplanes-webconfig.service$' "$CALL_LOG" | head -1 | cut -d: -f1)
     rt_line=$(grep -n '^runtime ' "$CALL_LOG" | head -1 | cut -d: -f1)
 
     [ -n "$apt_line" ]
-    [ -n "$feed_line" ]
-    [ -n "$hup_line" ]
     [ -n "$rt_line" ]
-    [ "$apt_line" -lt "$feed_line" ]
-    [ "$feed_line" -lt "$hup_line" ]
-    [ "$hup_line" -lt "$rt_line" ]
+    [ "$apt_line" -lt "$rt_line" ]
 }
 
-@test "no separate webconfig step exists" {
+@test "no separate feed or webconfig step exists" {
     run_orchestrator
     [ "$status" -eq 0 ]
 
-    # The orchestrator no longer has a webconfig step — webconfig ships
-    # inside the runtime overlay, so a separate step_webconfig does not exist.
-    run grep '^webconfig ' "$CALL_LOG"
+    # The orchestrator no longer has feed or webconfig steps — both the feed
+    # stack and webconfig ship inside the runtime overlay, so neither a
+    # step_feed (with its post-feed webconfig HUP) nor a step_webconfig exists.
+    run grep -E '^(feed|webconfig) ' "$CALL_LOG"
+    [ "$status" -ne 0 ]
+    run grep -E '^systemctl kill -s HUP' "$CALL_LOG"
     [ "$status" -ne 0 ]
 }
 
@@ -149,46 +137,21 @@ assert_state_is_valid_json() {
 }
 
 @test "state file is valid JSON after every intermediate write" {
-    cat > "$TMP/sub/feed-update.sh" <<EOF
-#!/usr/bin/env bash
-cp -a "$STATE_FILE" "$TMP/state/snap-feed.json"
-echo "feed \$*" >> "$CALL_LOG"
-exit 0
-EOF
     cat > "$TMP/sub/runtime-update.sh" <<EOF
 #!/usr/bin/env bash
 cp -a "$STATE_FILE" "$TMP/state/snap-runtime.json"
 echo "runtime \$*" >> "$CALL_LOG"
 exit 0
 EOF
-    chmod 0755 "$TMP/sub/feed-update.sh" "$TMP/sub/runtime-update.sh"
+    chmod 0755 "$TMP/sub/runtime-update.sh"
 
     run_orchestrator
     [ "$status" -eq 0 ]
 
-    for snap in "$TMP/state/snap-feed.json" "$TMP/state/snap-runtime.json"; do
+    for snap in "$TMP/state/snap-runtime.json"; do
         [ -f "$snap" ]
         python3 -c "import json,sys;json.load(open(sys.argv[1]))" "$snap"
     done
-}
-
-@test "feed step failure writes status: failed and stops subsequent steps" {
-    cat > "$TMP/sub/feed-update.sh" <<EOF
-#!/usr/bin/env bash
-echo "feed FAILED" >&2
-exit 7
-EOF
-    chmod 0755 "$TMP/sub/feed-update.sh"
-
-    run_orchestrator
-    [ "$status" -ne 0 ]
-    assert_state_is_valid_json
-    [ "$(state_step)" = "feed" ]
-    [ "$(state_status)" = "failed" ]
-
-    # No HUP, no runtime calls after feed failure.
-    run grep -E '^(systemctl kill -s HUP|runtime) ' "$CALL_LOG"
-    [ "$status" -ne 0 ]
 }
 
 @test "apt step failure writes status: failed and stops subsequent steps" {

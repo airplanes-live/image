@@ -37,3 +37,15 @@ export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-master}"
 # here ensures the build is reproducible within a single CI run.
 export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-dev-latest}"
 export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-1b36221b3d4670d4c91145a0d91bb6588ff58cb4}"
+
+# Feed — overlay-built (not a downloaded release): the overlay CI clones these
+# refs and compiles the feeder readsb, the mlat-client venv, and stages the
+# feed scripts. Dev tracks branch heads (feed dev, readsb dev, mlat master).
+export AIRPLANES_FEED_OVERLAY_REPO="${AIRPLANES_FEED_OVERLAY_REPO:-https://github.com/airplanes-live/feed.git}"
+export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-dev}"
+
+export AIRPLANES_FEED_READSB_REPO="${AIRPLANES_FEED_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
+export AIRPLANES_FEED_READSB_BRANCH="${AIRPLANES_FEED_READSB_BRANCH:-dev}"
+
+export AIRPLANES_MLAT_CLIENT_REPO="${AIRPLANES_MLAT_CLIENT_REPO:-https://github.com/airplanes-live/mlat-client.git}"
+export AIRPLANES_MLAT_CLIENT_BRANCH="${AIRPLANES_MLAT_CLIENT_BRANCH:-master}"

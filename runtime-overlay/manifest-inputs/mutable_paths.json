@@ -1,4 +1,5 @@
 [
   "/etc/default/tar1090",
-  "/etc/collectd/collectd.conf"
+  "/etc/collectd/collectd.conf",
+  "/etc/airplanes/feed.env"
 ]
