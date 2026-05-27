@@ -127,6 +127,14 @@ JSON
     run _airplanes_runtime_assert_safe_managed_path ""
     [ "$status" -ne 0 ]
 
+    # The overlay's own release tree is off-limits as a managed destination.
+    run _airplanes_runtime_assert_safe_managed_path "/opt/airplanes-runtime/releases/v1.0.0"
+    [ "$status" -ne 0 ]
+
+    # A relative path is refused.
+    run _airplanes_runtime_assert_safe_managed_path "usr/local/foo"
+    [ "$status" -ne 0 ]
+
     # A deep managed path should pass.
     run _airplanes_runtime_assert_safe_managed_path "/usr/local/share/tar1090"
     [ "$status" -eq 0 ]

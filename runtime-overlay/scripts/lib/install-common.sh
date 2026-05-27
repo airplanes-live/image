@@ -606,7 +606,10 @@ _airplanes_runtime_apply_managed_symlink() {
     # build mode there is no rollback and the overlay is the intended owner of
     # the path. Guarded so a malformed manifest can't wipe a system tree.
     if [[ -d "$abs_link" && ! -L "$abs_link" ]]; then
-        _airplanes_runtime_assert_safe_managed_path "$abs_link" || return 1
+        # Guard the RAW manifest link, not the target-root-rebased path: in
+        # build mode `${ROOTFS_DIR}/usr` would slip a critical root past an
+        # exact-match check, but the raw `/usr` is caught.
+        _airplanes_runtime_assert_safe_managed_path "$link" || return 1
         rm -rf -- "$abs_link"
     fi
 
@@ -868,7 +871,7 @@ _airplanes_runtime_assert_safe_managed_path() {
     local norm="$p"
     [[ "$norm" != "/" ]] && norm="${norm%/}"
     case "$norm" in
-        ""|"/"|/usr|/etc|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/home|/root|/run|/proc|/sys|/dev|/opt/airplanes-runtime)
+        ""|"/"|/usr|/etc|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/home|/root|/run|/proc|/sys|/dev|/opt/airplanes-runtime|/opt/airplanes-runtime/*)
             echo "ERROR: refusing to operate on critical system path: '$p'" >&2
             return 1
             ;;
@@ -888,7 +891,7 @@ _airplanes_runtime_assert_safe_managed_path() {
 # trust as the original.
 _airplanes_runtime_preimage_backup() {
     local preimage_dir="$1" target_root="$2" abs_path="$3"
-    install -d -m 700 "$preimage_dir"
+    install -d -m 700 "$preimage_dir" || return 1
     local enc
     enc="$(_airplanes_runtime_encode_path "$abs_path")"
     if [[ -e "${preimage_dir}/${enc}" || -e "${preimage_dir}/${enc}.absent" ]]; then
@@ -897,12 +900,15 @@ _airplanes_runtime_preimage_backup() {
     local src="${target_root}${abs_path}"
     local tmp="${preimage_dir}/${enc}.tmp.$$"
     rm -rf -- "$tmp"
+    # Check every step: these functions are called from `if !` / `|| return`
+    # contexts, which disables `errexit` inside them, so a failed cp must not
+    # let the partial tmp tree get promoted to the write-once preimage.
     if [[ -e "$src" || -L "$src" ]]; then
-        cp -a -- "$src" "$tmp"
-        mv -Tf -- "$tmp" "${preimage_dir}/${enc}"
+        cp -a -- "$src" "$tmp"                       || { rm -rf -- "$tmp"; return 1; }
+        mv -Tf -- "$tmp" "${preimage_dir}/${enc}"    || { rm -rf -- "$tmp"; return 1; }
     else
-        : > "$tmp"
-        mv -Tf -- "$tmp" "${preimage_dir}/${enc}.absent"
+        : > "$tmp"                                   || { rm -rf -- "$tmp"; return 1; }
+        mv -Tf -- "$tmp" "${preimage_dir}/${enc}.absent" || { rm -rf -- "$tmp"; return 1; }
     fi
 }
 
@@ -921,11 +927,13 @@ _airplanes_runtime_preimage_restore() {
     if [[ -e "${preimage_dir}/${enc}" || -L "${preimage_dir}/${enc}" ]]; then
         # Clear the live path first so a directory preimage doesn't nest under
         # an existing directory of the same name; the preimage is the
-        # authoritative copy. Guarded against critical roots.
-        _airplanes_runtime_assert_safe_managed_path "$dst" || return 1
+        # authoritative copy. Guard the RAW manifest path (target-root-
+        # independent) so a build-mode rebase can't slip a critical root past
+        # the check.
+        _airplanes_runtime_assert_safe_managed_path "$abs_path" || return 1
         rm -rf -- "$dst"
-        install -d -m 755 "$(dirname "$dst")"
-        cp -a -- "${preimage_dir}/${enc}" "$dst"
+        install -d -m 755 "$(dirname "$dst")" || return 1
+        cp -a -- "${preimage_dir}/${enc}" "$dst" || return 1
         return 0
     fi
     # No preimage and no absent-marker → nothing was backed up. Treat as
