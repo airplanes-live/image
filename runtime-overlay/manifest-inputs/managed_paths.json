@@ -161,11 +161,6 @@
   },
   {
     "mode": "symlink",
-    "link": "/usr/local/lib/airplanes-webconfig/system-upgrade.sh",
-    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/system-upgrade.sh"
-  },
-  {
-    "mode": "symlink",
     "link": "/usr/local/lib/airplanes-webconfig/reset",
     "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/reset"
   },
