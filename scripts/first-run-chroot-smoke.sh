@@ -90,8 +90,8 @@ else
 	echo "==> native chroot ($HOST_ARCH==$TARGET_ARCH); skipping qemu staging"
 fi
 
-# create-uuid.sh inside the chroot reads /proc/sys/kernel/random/uuid; without
-# /proc mounted it falls back to no-uuid and feeder-id never gets written.
+# generate_feeder_id reads /proc/sys/kernel/random/uuid; without /proc mounted
+# the read fails and feeder-id never gets written.
 echo "==> bind-mounting /proc /sys /dev into chroot"
 mount -t proc proc "$ROOT_MNT/proc"
 mount --rbind /sys "$ROOT_MNT/sys"

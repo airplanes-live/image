@@ -39,20 +39,17 @@ ExecStart=/usr/local/sbin/airplanes-first-run
 # require enumerating every /etc subdir (and raspi-config's WiFi-country
 # path may touch more), which is brittle.
 #
-# ReadWritePaths re-opens the two paths that ProtectSystem=true closed:
+# ReadWritePaths re-opens the path that ProtectSystem=true closed:
 #   /boot/firmware  — needed for consume_boot_config's rename of
 #                     airplanes-config.txt → airplanes-config.applied.txt
 #                     and for write_error_file's airplanes-config.error.txt.
-#   /usr/local/share/airplanes — the legacy
-#                     /usr/local/share/airplanes/airplanes-uuid symlink
-#                     reinstalled by feed/create-uuid.sh.
 #
 # RuntimeDirectory creates /run/airplanes/ for the feed.env flock; matches
 # webconfig's lock path so a concurrent webconfig write can never interleave.
 # RuntimeDirectoryPreserve=yes keeps the dir across the oneshot exit so
 # webconfig (which assumes the dir exists) doesn't race on startup.
 ProtectSystem=true
-ReadWritePaths=/boot/firmware /usr/local/share/airplanes
+ReadWritePaths=/boot/firmware
 RuntimeDirectory=airplanes
 RuntimeDirectoryPreserve=yes
 ProtectHome=yes

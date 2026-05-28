@@ -7,7 +7,7 @@
 # is written naming what to fix.
 #
 # These tests exercise main() end-to-end with the script's external paths
-# (BOOT_CONFIG, FEED_ENV, LOCK_FILE, FEEDER_ID_FILE, CREATE_UUID,
+# (BOOT_CONFIG, FEED_ENV, LOCK_FILE, FEEDER_ID_FILE,
 # WIFI_KEYFILE_DIR, HOSTNAME_FILE, HOSTS_FILE) redirected to a per-test
 # tmpdir. They DO NOT exercise systemd sandboxing (chroot tests can't —
 # see test_first_run_unit.bats for the static unit-file lint that does).
@@ -29,7 +29,6 @@ setup() {
     export FEED_ENV="$TMP/etc/airplanes/feed.env"
     export LOCK_FILE="$TMP/run/feed-env.lock"
     export FEEDER_ID_FILE="$TMP/etc/airplanes/feeder-id"
-    export CREATE_UUID="$TMP/nonexistent-create-uuid"
     export WIFI_KEYFILE_DIR="$TMP/nm-keyfiles"
     export WIFI_KEYFILE="$WIFI_KEYFILE_DIR/airplanes-config-wifi.nmconnection"
     export HOSTNAME_FILE="$TMP/hostname"
@@ -40,8 +39,8 @@ setup() {
         "$TMP/etc/airplanes" \
         "$TMP/run" \
         "$WIFI_KEYFILE_DIR"
-    # Pre-seed feeder-id so generate_feeder_id no-ops (we don't need it for
-    # consume-rename tests, and avoiding create-uuid.sh keeps tests hermetic).
+    # Pre-seed feeder-id so generate_feeder_id no-ops (consume-rename tests
+    # don't need it).
     printf '00000000-0000-0000-0000-000000000000\n' > "$FEEDER_ID_FILE"
     # Pre-seed hostname so apply_hostname's /etc/hosts probe has a current value.
     printf 'raspberrypi\n' > "$HOSTNAME_FILE"
