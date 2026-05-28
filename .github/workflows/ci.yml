@@ -79,21 +79,24 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Resolve image-webconfig ref from overlay config-stable
-        id: webconfig-ref
+      - name: Resolve sibling-repo refs from overlay config-stable
+        id: sibling-refs
         # runtime-overlay/config-stable is the single source of truth for the
-        # webconfig commit the stable image ships. Test against that so a
-        # mismatch blows up here, not on a customer device.
+        # commits the stable image ships. Test against those so a mismatch
+        # blows up here, not on a customer device.
         run: |
           set -a
           # shellcheck disable=SC1091
           . runtime-overlay/config-stable
           set +a
-          # Fail loudly if the pin is empty/malformed — otherwise actions/checkout
+          # Fail loudly if a pin is empty/malformed — otherwise actions/checkout
           # silently falls back to the default branch.
           [[ "${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
             || { echo "::error::AIRPLANES_WEBCONFIG_COMMIT_SHA is not a 40-hex SHA: '${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}'"; exit 1; }
-          echo "ref=$AIRPLANES_WEBCONFIG_COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          [[ "${AIRPLANES_FEED_OVERLAY_BRANCH:-}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::AIRPLANES_FEED_OVERLAY_BRANCH is not a 40-hex SHA: '${AIRPLANES_FEED_OVERLAY_BRANCH:-}'"; exit 1; }
+          echo "webconfig=$AIRPLANES_WEBCONFIG_COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "feed=$AIRPLANES_FEED_OVERLAY_BRANCH" >> "$GITHUB_OUTPUT"
 
       # Several first-run bats tests source wifi-validators.sh /
       # wifi-keyfile.sh from airplanes-live/image-webconfig (the libs moved
@@ -103,8 +106,19 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: airplanes-live/image-webconfig
-          ref: ${{ steps.webconfig-ref.outputs.ref }}
+          ref: ${{ steps.sibling-refs.outputs.webconfig }}
           path: image-webconfig-sibling
+
+      # test_stage_feed_unit_symmetry.bats enumerates feed/scripts/airplanes-*.{service,timer}
+      # and asserts every unit is symlinked by managed_paths.json, and that
+      # systemd.json enable matches exactly the set of those units that carry
+      # an [Install] section. Pin to the same feed commit the stable image
+      # bakes so the symmetry pin tracks what users actually run.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/feed
+          ref: ${{ steps.sibling-refs.outputs.feed }}
+          path: feed-sibling
 
       - name: Install bats and manifest-validator deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats jq python3-jsonschema
@@ -132,6 +146,7 @@ jobs:
       - name: bats test/
         env:
           AIRPLANES_IMAGE_WEBCONFIG_ROOT: ${{ github.workspace }}/image-webconfig-sibling
+          AIRPLANES_FEED_SRC: ${{ github.workspace }}/feed-sibling
         run: bats -r test/
 
       - name: Verify host state untouched (post-bats)
