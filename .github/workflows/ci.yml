@@ -165,10 +165,10 @@ jobs:
   # what the script actually writes (e.g. a ProtectSystem= re-mount that
   # silently locks /etc, which chroot tests cannot see).
   #
-  # feeder-id is pre-seeded so generate_feeder_id no-ops — that lets us
-  # skip the feed/ checkout (create-uuid.sh is exercised separately by the
-  # feed repo's CI). The runner is ephemeral, so /etc / /boot/firmware /
-  # /run/airplanes state created here is discarded with the VM.
+  # feeder-id is pre-seeded so generate_feeder_id no-ops, keeping this job
+  # focused on the unit's sandbox directives rather than UUID generation. The
+  # runner is ephemeral, so /etc / /boot/firmware / /run/airplanes state
+  # created here is discarded with the VM.
   first-run-systemd:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -189,13 +189,10 @@ jobs:
           # under real systemd sandboxing).
           printf '00000000-0000-0000-0000-000000000000\n' \
             | sudo tee /etc/airplanes/feeder-id >/dev/null
+          # /boot/firmware is in the unit's ReadWritePaths= and must exist on
+          # disk before the unit starts — otherwise systemd fails the mount-
+          # namespace setup with status=226/NAMESPACE.
           sudo install -d -m 0755 /boot/firmware
-          # Every path in the unit's ReadWritePaths= must exist on disk before
-          # the unit starts — otherwise systemd fails the mount-namespace setup
-          # with status=226/NAMESPACE. On the real image, /usr/local/share/airplanes
-          # is created by stage-airplanes/01-install-feed; here we have to
-          # materialise it ourselves.
-          sudo install -d -m 0755 /usr/local/share/airplanes
           # apply_hostname rewrites the /etc/hosts 127.0.1.1 line whose
           # hostname matches /etc/hostname's current value. GitHub-hosted
           # runners don't always have a 127.0.1.1 entry that matches, so
