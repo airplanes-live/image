@@ -236,5 +236,25 @@
     "mode": "symlink",
     "link": "/etc/systemd/system/airplanes-mlat.service",
     "target": "/opt/airplanes-runtime/current/systemd/airplanes-mlat.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-diagnostics.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-diagnostics.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-diagnostics.timer",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-diagnostics.timer"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-config-sync.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-config-sync.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-config-sync.timer",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-config-sync.timer"
   }
 ]

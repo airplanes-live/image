@@ -26,6 +26,10 @@
 #   <output-dir>/bin/apl-feed                           CLI entry point
 #   <output-dir>/systemd/airplanes-feed.service         unit
 #   <output-dir>/systemd/airplanes-mlat.service         unit
+#   <output-dir>/systemd/airplanes-diagnostics.service  unit
+#   <output-dir>/systemd/airplanes-diagnostics.timer    unit
+#   <output-dir>/systemd/airplanes-config-sync.service  unit
+#   <output-dir>/systemd/airplanes-config-sync.timer    unit
 #   <output-dir>/components.feed_readsb.sha             commit SHA
 #   <output-dir>/components.feed_readsb.version         version tag
 #   <output-dir>/components.feed_scripts.sha            commit SHA
@@ -191,11 +195,26 @@ for lib in state-writer.sh state-reader.sh configure-validators.sh feed-env-keys
 done
 
 # Systemd units → systemd/
+#
+# Mirror every airplanes-*.{service,timer} feed ships so a unit added in feed
+# lands on the image automatically; the previous hand-maintained allowlist
+# silently dropped airplanes-diagnostics.{service,timer} and
+# airplanes-config-sync.{service,timer} when they were added in feed. The
+# enable + symlink coverage for these units lives in
+# runtime-overlay/manifest-inputs/{systemd.json,managed_paths.json} and is
+# pinned by test_stage_feed_unit_symmetry.bats.
 install -d -m 0755 "$OUTPUT_DIR/systemd"
-for unit in airplanes-feed.service airplanes-mlat.service; do
-    if [[ -f "$FEED_SRC/scripts/$unit" ]]; then
-        install -m 0644 "$FEED_SRC/scripts/$unit" "$OUTPUT_DIR/systemd/$unit"
-    fi
+shopt -s nullglob
+feed_units=("$FEED_SRC"/scripts/airplanes-*.service "$FEED_SRC"/scripts/airplanes-*.timer)
+shopt -u nullglob
+if [[ ${#feed_units[@]} -eq 0 ]]; then
+    die "no airplanes-*.{service,timer} units found in $FEED_SRC/scripts/"
+fi
+# Sort under LC_ALL=C so the staged-output directory listing is byte-stable
+# across hosts whose locale would otherwise reorder the glob expansion.
+mapfile -t feed_units < <(printf '%s\n' "${feed_units[@]}" | LC_ALL=C sort)
+for src in "${feed_units[@]}"; do
+    install -m 0644 "$src" "$OUTPUT_DIR/systemd/$(basename "$src")"
 done
 
 # Gate airplanes-mlat.service on the prebuilt venv this overlay ships. The

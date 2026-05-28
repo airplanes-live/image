@@ -11,7 +11,9 @@
     "airplanes-webconfig.service",
     "airplanes-webconfig-reset.service",
     "airplanes-feed.service",
-    "airplanes-mlat.service"
+    "airplanes-mlat.service",
+    "airplanes-diagnostics.timer",
+    "airplanes-config-sync.timer"
   ],
   "disable": [],
   "reload_or_restart": [
