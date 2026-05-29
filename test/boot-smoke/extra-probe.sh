@@ -954,6 +954,83 @@ _orch_run_probe() {
 #           and the consumer services are active; done.
 # Runs BEFORE the orchestrator stub probe, which bind-mounts a stub over
 # runtime-self-update.sh — this probe needs the real helper.
+# ---------------------------------------------------------------------------
+# Feed activator-arming assertions.
+#
+# The feed scripts ship two timer-driven services that the image must
+# install + enable + arm at boot: airplanes-diagnostics.timer (10 min
+# health/system push) and airplanes-config-sync.timer (60 s remote-config
+# pull). Prior to this probe, the original missing-timer bug shipped
+# because no boot-smoke assertion checked the resulting on-device state
+# — the image's `systemctl enable` list and the feed-side units could
+# silently fall out of sync and nothing in CI caught it.
+#
+# This helper runs at three call sites so both arming paths are tested:
+#   - fresh-flash:           timers.target arms the units at boot
+#   - post-good-update:      finalize_after_health_passed' new
+#                            airplanes_runtime_start_enabled_activators pass
+#                            (timers are stopped right before driving GOOD
+#                            so this assertion actually depends on the
+#                            start pass running)
+#   - post-broken-rollback:  weaker structural pin; the rollback path ends
+#                            in ROLLED_BACK_*, not HEALTH_PASSED, so the
+#                            start pass isn't directly invoked. Asserts
+#                            that nothing in the rollback path disarms
+#                            previously-armed timers as a side effect.
+#
+# The diagnostics service is started explicitly (no wait for OnBootSec=2min)
+# and proven to have run by grepping its own structured log markers — systemd's
+# "Started …" line for oneshots is not reliable. The script exits 0 on
+# network failures (offline QEMU is the expected env), so a clean unit
+# state proves the run happened.
+_assert_feed_activators_armed() {
+    local phase="$1"
+    local timer
+
+    for timer in airplanes-diagnostics.timer airplanes-config-sync.timer; do
+        systemctl is-enabled --quiet "$timer" \
+            || fail "$phase: $timer is not enabled"
+        systemctl is-active --quiet "$timer" \
+            || fail "$phase: $timer is not active (not armed in current boot)"
+    done
+
+    # Deterministically trigger the diagnostics oneshot. `systemctl start`
+    # on a Type=oneshot unit blocks until the unit reaches `inactive (dead)`
+    # or `failed`, so no polling loop is needed afterward. The script's only
+    # non-zero exit is EXIT_BAD_CONFIG=64 (unrecognised REPORT_STATUS); a
+    # network failure logs and exits 0. Wrap under the harness's
+    # set -euo pipefail to surface diagnostics on failure.
+    if ! systemctl start airplanes-diagnostics.service; then
+        systemctl status airplanes-diagnostics.service --no-pager --full || true
+        journalctl -b -u airplanes-diagnostics.service --no-pager -n 80 || true
+        fail "$phase: systemctl start airplanes-diagnostics.service failed"
+    fi
+
+    if systemctl is-failed --quiet airplanes-diagnostics.service; then
+        systemctl status airplanes-diagnostics.service --no-pager --full || true
+        journalctl -b -u airplanes-diagnostics.service --no-pager -n 80 || true
+        fail "$phase: airplanes-diagnostics.service finished in failed state"
+    fi
+
+    # Prove the script actually ran by grepping for its own log marker.
+    # The script's `log()` helper at airplanes-diagnostics.sh:69-70 emits
+    # `airplanes-diagnostics level=<lvl> ... host=<host>` to stderr;
+    # SyslogIdentifier=airplanes-diagnostics on the unit routes it into the
+    # journal under -u. systemd's "Started …" line for oneshots is unreliable.
+    #
+    # Capture to a variable first so pipefail+SIGPIPE on early grep exit
+    # can't false-fail. `-b` filters to the current boot (not `--since 'boot'`,
+    # which isn't a valid timestamp).
+    local journal
+    journal="$(journalctl -b -u airplanes-diagnostics.service --no-pager 2>/dev/null || true)"
+    if ! grep -q ' level=' <<<"$journal"; then
+        printf '%s\n' "$journal" >&2 || true
+        fail "$phase: airplanes-diagnostics.service did not record its own log marker"
+    fi
+
+    echo "image-probe: $phase: feed activators armed (diagnostics+config-sync timers active, diagnostics.service ran)"
+}
+
 _runtime_upgrade_marker_base() {
     cat /var/lib/airplanes-boot-smoke/runtime-upgrade-asset-base 2>/dev/null || true
 }
@@ -1018,6 +1095,22 @@ _runtime_upgrade_probe() {
     baseline_ver="$(_runtime_current_version)"
     echo "image-probe: runtime-upgrade baseline current=v$baseline_ver"
 
+    # Stop both feed timers before driving the GOOD update so the post-update
+    # arming assertion actually exercises PR #191's start_enabled_activators
+    # call. Without this, the timers stay active across runtime-self-update
+    # (apply_systemd_ops never stops activators) and the post-update is-active
+    # check would pass regardless of #191's wiring. The stop is fatal on its
+    # own failure AND on a post-stop is-active check: if either timer is still
+    # active when GOOD update starts, the post-update assertion is meaningless.
+    if ! systemctl stop airplanes-diagnostics.timer airplanes-config-sync.timer; then
+        systemctl status airplanes-diagnostics.timer airplanes-config-sync.timer --no-pager --full || true
+        fail "runtime-upgrade: failed to stop feed timers before GOOD update"
+    fi
+    if systemctl is-active --quiet airplanes-diagnostics.timer \
+            || systemctl is-active --quiet airplanes-config-sync.timer; then
+        fail "runtime-upgrade: feed timers still active after stop (pre-GOOD coverage gate)"
+    fi
+
     # --- GOOD vN+1 : expect convergence -------------------------------------
     echo "image-probe: driving runtime-self-update to GOOD release"
     if ! _runtime_drive_update "$asset_base/good"; then
@@ -1038,6 +1131,11 @@ _runtime_upgrade_probe() {
     assert_service_healthy airplanes-feed.service
     assert_service_healthy airplanes-webconfig.service
     echo "image-probe: GOOD convergence passed (current=v$_runtime_good_version)"
+    # Activators in the GOOD release's manifest should be armed by
+    # finalize_after_health_passed's start pass — this is the assertion
+    # that catches a regression in the new airplanes_runtime_start_enabled_activators
+    # wiring without waiting for next reboot.
+    _assert_feed_activators_armed post-good-update
 
     # --- BROKEN vN+1 : expect rollback to the GOOD release ------------------
     echo "image-probe: driving runtime-self-update to BROKEN release"
@@ -1058,6 +1156,13 @@ _runtime_upgrade_probe() {
     assert_service_healthy airplanes-feed.service
     assert_service_healthy airplanes-webconfig.service
     echo "image-probe: BROKEN rollback passed (current=v$post_broken_ver, state=$upg_state)"
+    # Activator-armed check on the rolled-back release. The rollback path
+    # doesn't call start_enabled_activators directly (rollback ends in a
+    # ROLLED_BACK_* state, not HEALTH_PASSED), but the prior release's
+    # timers were armed during the GOOD-update phase above and apply_systemd_ops
+    # on the rollback never stops activators. This assertion catches a future
+    # rollback path that does disarm timers as a side effect.
+    _assert_feed_activators_armed post-broken-rollback
 
     # Re-baseline feed's idempotency snapshot. The GOOD→BROKEN→rollback cycle
     # changed the managed-path symlink's target mtime: the GOOD install
@@ -1379,6 +1484,11 @@ esac
 # Claim timer is scheduled (not necessarily currently running).
 systemctl list-timers --all --no-pager 2>/dev/null | grep -q airplanes-claim \
     || fail "airplanes-claim.timer not registered"
+
+# Fresh-flash arming check for feed timers. timers.target should have
+# armed both at boot; this is the assertion that catches the original
+# missing-timer bug (`systemctl is-enabled` fails on a missing unit).
+_assert_feed_activators_armed fresh-flash
 
 # End-to-end SSE probe: real lighttpd -> real webconfig -> real journald.
 # Catches three regressions in one shot:
