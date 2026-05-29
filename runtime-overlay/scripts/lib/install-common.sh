@@ -837,6 +837,56 @@ airplanes_runtime_apply_systemd_ops() {
     done < <(jq -r '.systemd.reload_or_restart[]?' "$manifest")
 }
 
+# Start every *.timer / *.path in the manifest's enable list. `systemctl
+# enable` writes the relevant target's wants-link but does not arm a
+# timer or path-watcher in the current boot — on a fresh flash that's
+# fine (timers.target / paths.target brings them up at boot) but on an
+# in-place runtime self-update or a direct install.sh --runtime invocation
+# the newly-enabled activator would otherwise stay idle until reboot.
+#
+# Best-effort by design: callers run this AFTER the health gate has
+# already validated the release, so a failure here is a regression in
+# something the release is not on the hook for — log and continue. Any
+# *.service entries in enable[] are skipped: long-running daemons are
+# already covered by apply_systemd_ops' restart pass, and oneshots that
+# only ever run via a timer's Unit= directive must not be force-started.
+#
+# Idempotent: `systemctl start` on an already-active activator is a
+# no-op. Caveat: a timer past its OnBootSec= (or Persistent=true catching
+# up a missed run) fires its unit on start — by design, so the first
+# tick lands at finalize time instead of waiting another cycle.
+airplanes_runtime_start_enabled_activators() {
+    local manifest="$1"
+
+    if airplanes_runtime_is_build_mode; then
+        # Build mode runs in pi-gen's chroot via the policy-rc.d/systemctl
+        # shim; activators get started by timers.target / paths.target on
+        # first boot — same posture as apply_systemd_ops' restart pass.
+        return 0
+    fi
+
+    if [[ ! -f "$manifest" ]]; then
+        echo "ERROR: start_activators: manifest not found: $manifest" >&2
+        return 1
+    fi
+
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "ERROR: start_activators: systemctl not found on PATH" >&2
+        return 1
+    fi
+
+    local unit
+    while IFS= read -r unit; do
+        [[ -z "$unit" ]] && continue
+        case "$unit" in
+            *.timer|*.path)
+                systemctl start "$unit" \
+                    || echo "WARN: start_activators: $unit: start failed" >&2
+                ;;
+        esac
+    done < <(jq -r '.systemd.enable[]?' "$manifest")
+}
+
 # ---------------------------------------------------------------------------
 # Mutable-path preimage backup + restore
 # ---------------------------------------------------------------------------
@@ -2323,6 +2373,26 @@ airplanes_runtime_finalize_after_health_passed() {
         echo "ERROR: finalize_after_health_passed: runtime manifest pointer write failed" >&2
         return 1
     fi
+
+    # Start newly-enabled activators (*.timer / *.path) so an in-place
+    # self-update doesn't leave them idle until next reboot. Uses the
+    # state-file's `new_release` (already resolved above) for the manifest
+    # path — `current/manifest.json` would round-trip through an absolute
+    # on-device symlink and break under rebased target roots in tests
+    # (see the relpath comment around the runtime-manifest-record path).
+    # Best-effort; runs AFTER the health gate has already validated the
+    # release, so a failure here is non-fatal and does not roll back.
+    # Empty $new means absent/malformed/legacy state, not first install
+    # (first install has empty prev_release but new_release is written at
+    # STARTED). Skipping keeps finalize non-fatal for malformed/legacy
+    # state; the activator gap on this release waits for next reboot, when
+    # timers.target arms whatever the manifest enabled.
+    if [[ -n "$new" && -f "$new/manifest.json" ]]; then
+        if ! airplanes_runtime_start_enabled_activators "$new/manifest.json"; then
+            echo "WARN: finalize_after_health_passed: activator start reported a failure (non-fatal)" >&2
+        fi
+    fi
+
     if ! airplanes_runtime_gc_old_releases "$target_root"; then
         echo "WARN: finalize_after_health_passed: GC of old releases reported a failure (non-fatal)" >&2
     fi
@@ -2409,6 +2479,13 @@ airplanes_runtime_run_install_steps() {
     if ! airplanes_runtime_is_build_mode; then
         airplanes_runtime_apply_systemd_ops "$manifest" || return 1
         airplanes_runtime_run_health_gates "$target_root" || return 1
+        # Start newly-enabled activators (*.timer / *.path) post-health-gate.
+        # Same posture as the finalize-side call: best-effort, warn-and-
+        # continue. The state-machine self-update path drives this from
+        # finalize_after_health_passed; install.sh --runtime drives it here.
+        if ! airplanes_runtime_start_enabled_activators "$manifest"; then
+            echo "WARN: run_install_steps: activator start reported a failure (non-fatal)" >&2
+        fi
         airplanes_runtime_gc_old_releases "$target_root" || return 1
     fi
 }
