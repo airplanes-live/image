@@ -54,7 +54,7 @@
     },
     "version": {
       "type": "string",
-      "description": "Release version. Stable: dotted-triple (1.4.0). Dev: dotted-triple + '-dev-<YYYYMMDD>-<short-sha>'. The channel/version pairing is enforced by the top-level allOf.",
+      "description": "Release version. Stable: dotted-triple (1.4.0). Dev: dotted-triple + '-dev-<YYYYMMDD>-<build-fingerprint>', where build-fingerprint is the image short-sha optionally extended with a bundled-payload hash. The channel/version pairing is enforced by the top-level allOf.",
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-dev-[0-9]{8}-[0-9a-f]{7,40})?$"
     },
     "channel": {

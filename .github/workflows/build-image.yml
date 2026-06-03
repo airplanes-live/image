@@ -79,6 +79,7 @@ jobs:
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       commit_sha: ${{ steps.resolve.outputs.commit_sha }}
       should_publish: ${{ steps.resolve.outputs.should_publish }}
+      augment_version: ${{ steps.resolve.outputs.augment_version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -123,6 +124,7 @@ jobs:
       CHANNEL: ${{ needs.resolve-product.outputs.channel }}
       VERSION: ${{ needs.resolve-product.outputs.version }}
       COMMIT_SHA: ${{ needs.resolve-product.outputs.commit_sha }}
+      AUGMENT_VERSION: ${{ needs.resolve-product.outputs.augment_version }}
       DEBIAN_FRONTEND: noninteractive
     steps:
       - name: Bootstrap container
@@ -177,6 +179,7 @@ jobs:
               --channel "$CHANNEL" \
               --version "$VERSION" \
               --commit-sha "$COMMIT_SHA" \
+              --augment-dev-version "$AUGMENT_VERSION" \
               --arch "${{ matrix.arch }}" \
               --output-dir "$RUNNER_TEMP/runtime-assets" \
               --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -195,7 +198,6 @@ jobs:
     timeout-minutes: 15
     env:
       CHANNEL: ${{ needs.resolve-product.outputs.channel }}
-      VERSION: ${{ needs.resolve-product.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -226,19 +228,34 @@ jobs:
         # actions/upload-artifact/download-artifact strips Unix mode bits
         # from loose files. The tarball preserves them, so restore the
         # tree before running exec-bit-check and any future mode-aware gate.
+        # The published dev version embeds a payload fingerprint the resolve
+        # job cannot know, so derive the real version from the bundled manifest
+        # rather than the base version.
         run: |
           set -euo pipefail
           tarball="$RUNNER_TEMP/runtime-assets/runtime-overlay-arm64.tar.gz"
+          manifest="$RUNNER_TEMP/runtime-assets/runtime-manifest.json"
           if [[ ! -f "$tarball" ]]; then
               echo "::error::expected runtime tarball missing: $tarball" >&2
               ls -la "$RUNNER_TEMP/runtime-assets/" >&2
               exit 1
           fi
-          rm -rf -- "$RUNNER_TEMP/runtime-assets/tree/v$VERSION"
+          if [[ ! -f "$manifest" ]]; then
+              echo "::error::expected runtime manifest missing: $manifest" >&2
+              ls -la "$RUNNER_TEMP/runtime-assets/" >&2
+              exit 1
+          fi
+          ASSET_VERSION="$(jq -r '.version' "$manifest")"
+          if [[ -z "$ASSET_VERSION" || "$ASSET_VERSION" == "null" ]]; then
+              echo "::error::runtime manifest has no version field: $manifest" >&2
+              exit 1
+          fi
+          echo "ASSET_VERSION=$ASSET_VERSION" >> "$GITHUB_ENV"
+          rm -rf -- "$RUNNER_TEMP/runtime-assets/tree"
           mkdir -p "$RUNNER_TEMP/runtime-assets/tree"
           tar -xzf "$tarball" -C "$RUNNER_TEMP/runtime-assets/tree"
-          if [[ ! -d "$RUNNER_TEMP/runtime-assets/tree/v$VERSION" ]]; then
-              echo "::error::tarball did not produce expected v$VERSION dir" >&2
+          if [[ ! -d "$RUNNER_TEMP/runtime-assets/tree/v$ASSET_VERSION" ]]; then
+              echo "::error::tarball did not produce expected v$ASSET_VERSION dir" >&2
               tar -tzf "$tarball" | head -20 >&2
               exit 1
           fi
@@ -246,7 +263,7 @@ jobs:
       - name: Run runtime release gates
         run: |
           bash runtime-overlay/scripts/release-workflow/verify-gates.sh \
-              --release-dir "$RUNNER_TEMP/runtime-assets/tree/v$VERSION" \
+              --release-dir "$RUNNER_TEMP/runtime-assets/tree/v$ASSET_VERSION" \
               --channel "$CHANNEL"
 
   sign-runtime:

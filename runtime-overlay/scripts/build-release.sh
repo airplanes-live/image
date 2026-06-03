@@ -124,7 +124,7 @@ esac
 # enforces a channel↔version pairing rule (dev → `-dev-YYYYMMDD-<sha>`,
 # stable → no suffix); we leave that to the schema gate at the end.
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-dev-[0-9]{8}-[0-9a-f]{7,40})?$ ]]; then
-    die "--version is not a valid release version (got: $VERSION). Expected semver or '<semver>-dev-YYYYMMDD-<short-sha>'."
+    die "--version is not a valid release version (got: $VERSION). Expected semver or '<semver>-dev-YYYYMMDD-<build-fingerprint>'."
 fi
 
 if ! [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
