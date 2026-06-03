@@ -218,6 +218,14 @@ cp -a "$overlay_dir/scripts/lib/install-common.sh" \
 bash "$overlay_dir/scripts/lib/aggregate-components-json.sh" \
     --input-dir "$staging"
 
+# Fold a fingerprint of the bundled payload (component commits + mlat venv hash)
+# into an auto-generated dev version so a component-only change on the same image
+# commit/date still produces a distinct version the device will install. Stable
+# and explicit-override versions pass through untouched. The full image commit_sha
+# stays in the manifest separately for traceability.
+VERSION="$(bash "$overlay_dir/scripts/lib/augment-dev-version.sh" \
+    --base-version "$VERSION" --staging "$staging")"
+
 build_date="$(date -u --rfc-3339=seconds | sed 's/ /T/')"
 bash "$overlay_dir/scripts/build-release.sh" \
     --arch "$ARCH" \
