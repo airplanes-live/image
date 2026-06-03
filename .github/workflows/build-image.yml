@@ -79,6 +79,7 @@ jobs:
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       commit_sha: ${{ steps.resolve.outputs.commit_sha }}
       should_publish: ${{ steps.resolve.outputs.should_publish }}
+      augment_version: ${{ steps.resolve.outputs.augment_version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -123,6 +124,7 @@ jobs:
       CHANNEL: ${{ needs.resolve-product.outputs.channel }}
       VERSION: ${{ needs.resolve-product.outputs.version }}
       COMMIT_SHA: ${{ needs.resolve-product.outputs.commit_sha }}
+      AUGMENT_VERSION: ${{ needs.resolve-product.outputs.augment_version }}
       DEBIAN_FRONTEND: noninteractive
     steps:
       - name: Bootstrap container
@@ -177,6 +179,7 @@ jobs:
               --channel "$CHANNEL" \
               --version "$VERSION" \
               --commit-sha "$COMMIT_SHA" \
+              --augment-dev-version "$AUGMENT_VERSION" \
               --arch "${{ matrix.arch }}" \
               --output-dir "$RUNNER_TEMP/runtime-assets" \
               --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

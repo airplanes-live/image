@@ -18,6 +18,7 @@ usage: build-runtime-assets.sh \
     --commit-sha <40-hex> \
     --arch <arm64> \
     --output-dir <dir> \
+    [--augment-dev-version <true|false>] \
     [--run-url <url>]
 USAGE
 }
@@ -36,6 +37,10 @@ COMMIT_SHA=""
 ARCH=""
 OUTPUT_DIR=""
 RUN_URL=""
+# Whether to fold a bundled-payload fingerprint into a synthesised dev version.
+# The workflow passes false for an explicit INPUT_VERSION so the override
+# publishes verbatim; defaults true so direct/local runs behave as before.
+AUGMENT_DEV_VERSION="true"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,6 +49,7 @@ while [[ $# -gt 0 ]]; do
         --commit-sha) COMMIT_SHA="${2-}"; shift 2 ;;
         --arch)       ARCH="${2-}";       shift 2 ;;
         --output-dir) OUTPUT_DIR="${2-}"; shift 2 ;;
+        --augment-dev-version) AUGMENT_DEV_VERSION="${2-}"; shift 2 ;;
         --run-url)    RUN_URL="${2-}";    shift 2 ;;
         -h|--help)    usage; exit 0 ;;
         *)            usage; die "unknown argument: $1" ;;
@@ -219,12 +225,16 @@ bash "$overlay_dir/scripts/lib/aggregate-components-json.sh" \
     --input-dir "$staging"
 
 # Fold a fingerprint of the bundled payload (component commits + mlat venv hash)
-# into an auto-generated dev version so a component-only change on the same image
-# commit/date still produces a distinct version the device will install. Stable
-# and explicit-override versions pass through untouched. The full image commit_sha
-# stays in the manifest separately for traceability.
-VERSION="$(bash "$overlay_dir/scripts/lib/augment-dev-version.sh" \
-    --base-version "$VERSION" --staging "$staging")"
+# into a synthesised dev version so a component-only change on the same image
+# commit/date still produces a distinct version the device will install. Only
+# done when the resolver synthesised this version — an explicit INPUT_VERSION
+# override publishes verbatim. The helper additionally no-ops on stable and
+# already-augmented versions. The full image commit_sha stays in the manifest
+# separately for traceability.
+if [[ "$AUGMENT_DEV_VERSION" != "false" ]]; then
+    VERSION="$(bash "$overlay_dir/scripts/lib/augment-dev-version.sh" \
+        --base-version "$VERSION" --staging "$staging")"
+fi
 
 build_date="$(date -u --rfc-3339=seconds | sed 's/ /T/')"
 bash "$overlay_dir/scripts/build-release.sh" \

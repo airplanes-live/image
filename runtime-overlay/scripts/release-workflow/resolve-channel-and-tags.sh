@@ -24,6 +24,8 @@
 #   prerelease     true | false
 #   commit_sha     full 40-hex commit SHA
 #   should_publish true | false
+#   augment_version true | false — whether build-runtime-assets.sh should fold
+#                  a bundled-payload fingerprint into the synthesised dev version
 #
 # Behaviour matrix:
 #   - On `tags/v*` push:
@@ -65,6 +67,11 @@ version=""
 release_tag=""
 prerelease="false"
 should_publish="true"
+# Only a version this script *synthesises* may be fingerprinted downstream. A
+# version supplied verbatim (stable tag, explicit INPUT_VERSION) must publish
+# exactly as given, so it defaults to false and is flipped true only in the
+# synthesise branches below.
+augment_version="false"
 
 # Look up the latest stable product tag to use as a version-string base for
 # dev releases. Best-effort: a clean tree at v0.0.0 is fine for the first
@@ -94,6 +101,7 @@ case "$EVENT" in
             version="${base}-dev-${today}-${short_sha}"
             release_tag="dev-latest"
             prerelease="true"
+            augment_version="true"
         elif [[ "$REF" == "refs/heads/main" ]]; then
             channel="stable"
             version="$(latest_stable_version || true)"
@@ -130,6 +138,7 @@ case "$EVENT" in
                 base="$(latest_stable_version || true)"
                 [[ -n "$base" ]] || base="0.0.0"
                 version="${base}-dev-${today}-${short_sha}"
+                augment_version="true"
             fi
             release_tag="dev-latest"
             prerelease="true"
@@ -150,6 +159,7 @@ case "$EVENT" in
         release_tag="pr-${GITHUB_PR_NUMBER:-0}-${short_sha}"
         prerelease="true"
         should_publish="false"
+        augment_version="true"
         ;;
     *)
         die "unsupported event: $EVENT"
@@ -172,3 +182,4 @@ emit release_tag "$release_tag"
 emit prerelease "$prerelease"
 emit commit_sha "$SHA"
 emit should_publish "$should_publish"
+emit augment_version "$augment_version"
