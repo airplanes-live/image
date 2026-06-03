@@ -79,6 +79,15 @@ if ! [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
     die "--commit-sha must be 40 lowercase hex chars (got: $COMMIT_SHA)"
 fi
 
+# Reject any value other than the literal true/false. The flag defaults to true
+# (so an omitted flag augments, preserving direct/local behaviour), but a value
+# that is *present yet not* true/false — e.g. an empty string from a broken
+# workflow output mapping — must fail loudly rather than fall through to augment.
+case "$AUGMENT_DEV_VERSION" in
+    true|false) ;;
+    *) die "--augment-dev-version must be true or false (got: '$AUGMENT_DEV_VERSION')" ;;
+esac
+
 install -d -m 0755 "$OUTPUT_DIR"
 
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/airplanes-runtime-assets.XXXXXXXX")"
@@ -231,7 +240,7 @@ bash "$overlay_dir/scripts/lib/aggregate-components-json.sh" \
 # override publishes verbatim. The helper additionally no-ops on stable and
 # already-augmented versions. The full image commit_sha stays in the manifest
 # separately for traceability.
-if [[ "$AUGMENT_DEV_VERSION" != "false" ]]; then
+if [[ "$AUGMENT_DEV_VERSION" == "true" ]]; then
     VERSION="$(bash "$overlay_dir/scripts/lib/augment-dev-version.sh" \
         --base-version "$VERSION" --staging "$staging")"
 fi
