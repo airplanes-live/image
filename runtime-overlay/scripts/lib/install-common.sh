@@ -2345,6 +2345,31 @@ airplanes_runtime_write_last_good_release() {
     sync -d "$(dirname "$f")" 2>/dev/null || true
 }
 
+# Best-effort: bring on-device third-party aggregators (FR24 / FlightAware) to the
+# versions pinned by THIS overlay release and restart the ones the operator
+# enabled, so a release that bumps an aggregator pin auto-applies on update. The
+# helper (apl-aggregator, shipped in the overlay from image-webconfig) is the
+# authority — it is itself fail-soft, always exits 0, and only touches adapters
+# the operator enabled. Runs AFTER the health gate, so anything here is non-fatal
+# and never rolls back. A no-op in build mode, or when the overlay predates the
+# reconcile-capable helper (older webconfig). On a normal forward update the
+# running updater is the PREVIOUS overlay's, so a pin bump first auto-applies on
+# the release AFTER the one that introduces this call (a HEALTH_PASSED resume,
+# which re-enters finalize from the new `current`, can apply it earlier). The
+# helper is time-boxed so a stalled download can't wedge finalize in HEALTH_PASSED.
+airplanes_runtime_reconcile_aggregators() {
+    airplanes_runtime_is_build_mode && return 0
+    local helper="${AIRPLANES_RUNTIME_AGG_HELPER:-/usr/local/bin/apl-aggregator}"
+    [[ -x "$helper" ]] || return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${AIRPLANES_RUNTIME_AGG_RECONCILE_TIMEOUT:-600}" "$helper" reconcile --json >/dev/null 2>&1 || true
+    else
+        "$helper" reconcile --json >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
 # Finalize the post-HEALTH_PASSED cleanup. Idempotent and resumable — runs the
 # runtime-manifest pointer write (fatal on failure: callers must retry) and a
 # best-effort GC. Reused by both the forward walk and the resume-on-entry path
@@ -2396,6 +2421,9 @@ airplanes_runtime_finalize_after_health_passed() {
     if ! airplanes_runtime_gc_old_releases "$target_root"; then
         echo "WARN: finalize_after_health_passed: GC of old releases reported a failure (non-fatal)" >&2
     fi
+
+    # Auto-apply third-party aggregator pins from this release (best-effort).
+    airplanes_runtime_reconcile_aggregators || true
     return 0
 }
 
