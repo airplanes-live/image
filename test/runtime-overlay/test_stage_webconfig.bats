@@ -114,6 +114,39 @@ run_stage() {
     [[ "$output" == *"40 lowercase hex"* ]]
 }
 
+@test "populated rootfs: stages apl-aggregator helper, unit, run-helper, descriptors" {
+    # The other tests use an empty rootfs so the per-file copies no-op. This one
+    # carries the webconfig-owned aggregator artifacts and asserts they land in
+    # the overlay tree (helper binary, run-helper, adapter descriptors dir, and
+    # the systemd template) — the files managed_paths then symlinks onto the image.
+    local sha="abcabcabcabcabcabcabcabcabcabcabcabcabca"
+    local dir="$BASE/$TAG"
+    mkdir -p "$dir"
+    printf 'stub-webconfig-binary\n' > "$dir/airplanes-webconfig-${ARCH}"
+
+    local rfs="$BATS_TEST_TMPDIR/rootfs-pop"
+    mkdir -p "$rfs/usr/local/bin" \
+             "$rfs/usr/local/lib/airplanes-webconfig/aggregators" \
+             "$rfs/etc/systemd/system"
+    printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/bin/apl-aggregator"
+    printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/bin/apl-wifi"
+    printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/lib/airplanes-webconfig/aggregator-run"
+    printf 'id=fr24\n'             > "$rfs/usr/local/lib/airplanes-webconfig/aggregators/fr24.desc"
+    printf '[Unit]\n'             > "$rfs/etc/systemd/system/airplanes-aggregator@.service"
+    printf '[Unit]\n'             > "$rfs/etc/systemd/system/airplanes-webconfig.service"
+    tar -czf "$dir/rootfs.tar.gz" -C "$rfs" .
+
+    printf '{"version": "9.9.9", "commit_sha": "%s"}\n' "$sha" > "$dir/manifest.json"
+    ( cd "$dir" && sha256sum "airplanes-webconfig-${ARCH}" rootfs.tar.gz manifest.json > SHA256SUMS )
+
+    run_stage
+    [ "$status" -eq 0 ]
+    [ -f "$OUT/bin/apl-aggregator" ]
+    [ -f "$OUT/lib/airplanes-webconfig/aggregator-run" ]
+    [ -f "$OUT/lib/airplanes-webconfig/aggregators/fr24.desc" ]
+    [ -f "$OUT/systemd/airplanes-aggregator@.service" ]
+}
+
 @test "malformed manifest commit_sha (not 40-hex): fails even without a pin" {
     local dir="$BASE/$TAG"
     mkdir -p "$dir"

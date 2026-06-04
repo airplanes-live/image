@@ -176,6 +176,26 @@
   },
   {
     "mode": "symlink",
+    "link": "/usr/local/bin/apl-aggregator",
+    "target": "/opt/airplanes-runtime/current/bin/apl-aggregator"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes-webconfig/aggregator-run",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/aggregator-run"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes-webconfig/aggregators",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/aggregators"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-aggregator@.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-aggregator@.service"
+  },
+  {
+    "mode": "symlink",
     "link": "/etc/lighttpd/conf-available/40-airplanes-webconfig.conf",
     "target": "/opt/airplanes-runtime/current/etc/lighttpd/conf-available/40-airplanes-webconfig.conf"
   },

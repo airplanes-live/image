@@ -75,7 +75,7 @@ setup() {
 JSON
 }
 
-@test "forward creates tar1090 + readsb + airplanes-feed when missing, with exact flags" {
+@test "forward creates tar1090 + readsb + airplanes-feed + airplanes-aggregator when missing, with exact flags" {
     # GETENT_PRESENT empty → all users + the airplanes-feed group missing.
     run airplanes_runtime_run_migrations_forward "$MANIFEST" "$RELEASE_DIR" "$TARGET_ROOT"
     [ "$status" -eq 0 ]
@@ -85,12 +85,14 @@ JSON
     [ "$status" -eq 0 ]
     run grep -E '^--system --ingroup airplanes-feed --home /usr/local/share/airplanes --no-create-home --quiet airplanes-feed$' "$ADDUSER_LOG"
     [ "$status" -eq 0 ]
+    run grep -E '^--system --no-create-home --group airplanes-aggregator$' "$ADDUSER_LOG"
+    [ "$status" -eq 0 ]
     run grep -E '^--system airplanes-feed$' "$ADDGROUP_LOG"
     [ "$status" -eq 0 ]
 }
 
 @test "forward is idempotent: present accounts trigger no adduser/addgroup" {
-    printf 'readsb\ntar1090\nairplanes-feed\n' > "$GETENT_PRESENT"
+    printf 'readsb\ntar1090\nairplanes-feed\nairplanes-aggregator\n' > "$GETENT_PRESENT"
     run airplanes_runtime_run_migrations_forward "$MANIFEST" "$RELEASE_DIR" "$TARGET_ROOT"
     [ "$status" -eq 0 ]
     # Neither adduser nor addgroup may be invoked when all are present.
@@ -120,6 +122,17 @@ JSON
     [ "$acct_idx" -lt "$grp_idx" ]
 }
 
+@test "manifest-inputs: create-service-accounts runs on every install" {
+    # every_install is what makes a new account added to 0001 (e.g.
+    # airplanes-aggregator) reach a feeder that already recorded the migration
+    # id from an earlier overlay — first_install_of_version would skip it once
+    # recorded and strand the account, failing the unit with 217/USER.
+    local mig="$OVERLAY_DIR/manifest-inputs/migrations.json"
+    run jq -r '.[] | select(.id == "create-service-accounts") | .run_when // "every_install"' "$mig"
+    [ "$status" -eq 0 ]
+    [ "$output" = "every_install" ]
+}
+
 @test "declared script + rollback source files exist and are staged" {
     [ -f "$OVERLAY_DIR/src/$FWD_REL" ]
     [ -f "$OVERLAY_DIR/src/$RBK_REL" ]
@@ -142,4 +155,17 @@ JSON
         [ -n "$from_mig" ]
         [ "$from_chroot" = "$from_mig" ]
     done
+}
+
+@test "airplanes-aggregator migration adduser flags match stage 05 exactly (parity)" {
+    # airplanes-aggregator is created at flash by stage 05 (a webconfig-feature
+    # account), so its parity anchor is that stage, not the stage-02 chroot.
+    local stage05="$REPO_ROOT/stage-airplanes/05-install-webconfig/01-run-chroot.sh"
+    local mig="$OVERLAY_DIR/src/$FWD_REL"
+    local from_stage from_mig
+    from_stage="$(grep -E 'adduser --system .*\bairplanes-aggregator\b' "$stage05" | sed 's/^[[:space:]]*//' | tr -s ' ')"
+    from_mig="$(grep -E 'adduser --system .*\bairplanes-aggregator\b' "$mig" | sed 's/^[[:space:]]*//' | tr -s ' ')"
+    [ -n "$from_stage" ]
+    [ -n "$from_mig" ]
+    [ "$from_stage" = "$from_mig" ]
 }

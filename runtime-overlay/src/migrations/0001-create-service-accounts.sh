@@ -14,8 +14,13 @@
 #   airplanes-feed — airplanes-feed.service, airplanes-mlat.service
 #                    (User=airplanes-feed); the private airplanes-feed group
 #                    also lets other accounts read the claim secret (mode 0640).
+#   airplanes-aggregator — airplanes-aggregator@<id>.service template
+#                    (User=airplanes-aggregator); the per-instance unit that
+#                    runs vendor third-party feeder code is enabled at runtime
+#                    when a user opts in, so the account must exist before then.
 # graphs1090 and dump978-fa run as root. The readsb / tar1090 accounts declare
-# no dedicated group beyond readsb's own; airplanes-feed gets a private group.
+# no dedicated group beyond readsb's own; airplanes-feed and
+# airplanes-aggregator each get a private group.
 #
 # adduser flags are EXACT PARITY with the chroot stage (enforced by
 # test_install_account_migration.bats). Existence-only: create-if-missing,
@@ -48,4 +53,13 @@ fi
 if ! getent passwd airplanes-feed >/dev/null; then
 	adduser --system --ingroup airplanes-feed \
 		--home /usr/local/share/airplanes --no-create-home --quiet airplanes-feed
+fi
+
+# airplanes-aggregator: the airplanes-aggregator@<id>.service template runs
+# vendor third-party feeder code under this account (never root). Parity with
+# stage-airplanes/05-install-webconfig/01-run-chroot.sh. The unit's
+# StateDirectory= provisions /var/lib/airplanes-aggregators at start, so only
+# the account (with its private group) is created here.
+if ! getent passwd airplanes-aggregator >/dev/null; then
+	adduser --system --no-create-home --group airplanes-aggregator
 fi

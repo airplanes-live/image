@@ -10,6 +10,15 @@ export PATH="/usr/local/sbin:${PATH}"
 # non-interactive service account.
 adduser --system --no-create-home --group airplanes-webconfig
 
+# Create the system user the third-party aggregator units run as. The
+# overlay-shipped airplanes-aggregator@<id>.service template (enabled
+# per-instance by apl-aggregator when a user opts in) declares
+# User=airplanes-aggregator and runs vendor feeder code (e.g. fr24feed) under
+# this unprivileged account, never root. Its StateDirectory= provisions
+# /var/lib/airplanes-aggregators at start, so only the account is created here.
+# Mirrored on the overlay self-update path by runtime-overlay migration 0001.
+adduser --system --no-create-home --group airplanes-aggregator
+
 # Per-user state dirs. The overlay rootfs ships only the files webconfig owns
 # at install time, not these state directories, so create them here at mode
 # 0700 with the right owner.
