@@ -5,20 +5,27 @@
 # (apl-feed status, render-status, webconfig dashboard).
 #
 # Decision matrix (state, reason):
-#   UAT_INPUT == ""              → disabled, uat_disabled       (sleep + exit 0)
+#   UAT_INPUT == ""              → disabled, uat_disabled       (idle watch, exit 0 on config change)
 #   UAT_INPUT == "127.0.0.1:30978" + peer (dump978-fa) is idle for no_hardware
 #                                → enabled, peer_no_hardware    (exec daemon, relay idle)
 #   UAT_INPUT == "127.0.0.1:30978" → enabled, ok                (exec daemon)
 #   anything else                → misconfigured, uat_input_invalid (exit 64)
 #
-# The uat_disabled branch sleeps then exits 0 so systemd reports the unit
-# as active (matching airplanes-mlat.sh's pattern) instead of failed; the
-# state file is written before the sleep so consumers see the decision
-# immediately. Misconfigured keeps exit 64 paired with RestartPreventExitStatus=64
+# The uat_disabled branch idles so systemd reports the unit as active
+# (matching airplanes-mlat.sh's pattern) instead of failed; the state file
+# is written before the idle so consumers see the decision immediately.
+# It exits 0 (→ Restart=always re-exec, fresh EnvironmentFile) only when
+# feed.env actually changes. The supported config paths (webconfig UI,
+# apl-feed apply) restart this unit explicitly when relevant keys change,
+# so the watch only serves hand-edited feed.env files. The previous blind
+# hourly exit kept the systemd restart counter climbing forever on every
+# UAT-less feeder, polluting the per-service restart counts diagnostics
+# report. Misconfigured keeps exit 64 paired with RestartPreventExitStatus=64
 # so real operator errors surface in `systemctl status`.
 #
-# AIRPLANES_978_DISABLED_SLEEP is a test-only knob (bats sets it to 0).
-# Do not set in feed.env: 0 + Restart=always = restart storm.
+# AIRPLANES_978_DISABLED_SLEEP is the watch poll interval in seconds; 0 is
+# a test-only knob (bats) that makes the disabled branch single-pass.
+# Do not set 0 in feed.env: 0 + Restart=always = restart storm.
 #
 # The peer_no_hardware reason exists so the dashboard can honestly say
 # "relay is up but there's no local decoder feeding it" instead of the
@@ -39,9 +46,16 @@ UAT_INPUT="${UAT_INPUT-}"
 : "${STATE_WRITER_LIB:=/usr/local/share/airplanes/lib/state-writer.sh}"
 : "${STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
 : "${DUMP978_FA_STATE_FILE:=/run/dump978-fa/state}"
-# Test-only sleep override. Bats sets to 0 so wrapper invocations return
-# promptly. Not for feed.env (see header comment).
-: "${AIRPLANES_978_DISABLED_SLEEP:=3600}"
+: "${AIRPLANES_978_FEED_ENV:=/etc/airplanes/feed.env}"
+# Watch poll interval for the disabled branch. Bats sets 0 so wrapper
+# invocations return promptly. Not for feed.env (see header comment).
+: "${AIRPLANES_978_DISABLED_SLEEP:=60}"
+# Non-integer values would crash `sleep` under set -e or busy-loop; fall
+# back to the default rather than taking the relay down over a typo.
+if ! [[ "$AIRPLANES_978_DISABLED_SLEEP" =~ ^[0-9]+$ ]]; then
+    echo "AIRPLANES_978_DISABLED_SLEEP='$AIRPLANES_978_DISABLED_SLEEP' is not a non-negative integer; using 60." >&2
+    AIRPLANES_978_DISABLED_SLEEP=60
+fi
 
 STATE_FILE="$AIRPLANES_978_RUNTIME_DIR/state"
 
@@ -99,6 +113,16 @@ _978_refine_reason() {
     printf '%s\n' "$reason"
 }
 
+# Fingerprint of the feed.env this unit's EnvironmentFile= loads.
+# device:inode:size:mtime:ctime catches atomic-rename replacement (inode
+# changes even when the mtime is preserved), same-second rewrites (size or
+# ctime moves), and absence ("missing", so creation counts as a change).
+# stat only needs search permission on /etc/airplanes, not read permission
+# on feed.env, so this works for the unprivileged service user.
+_978_feedenv_fingerprint() {
+    stat -c '%d:%i:%s:%Y:%Z' "$AIRPLANES_978_FEED_ENV" 2>/dev/null || printf 'missing'
+}
+
 read -r STATE REASON < <(_978_classify)
 REASON="$(_978_refine_reason "$STATE" "$REASON")"
 
@@ -112,8 +136,21 @@ airplanes_write_state "$STATE_FILE" \
 case "$STATE" in
     disabled)
         echo "UAT disabled (UAT_INPUT empty); not starting airplanes-978." >&2
-        sleep "$AIRPLANES_978_DISABLED_SLEEP"
-        exit 0
+        # Idle until feed.env changes, then exit 0 so Restart=always
+        # re-execs the wrapper with the fresh EnvironmentFile. The `if`
+        # form is required: a bare `[[ … ]] && exit 0` evaluating false
+        # would abort the loop under set -e.
+        FEEDENV_BASELINE="$(_978_feedenv_fingerprint)"
+        while :; do
+            sleep "$AIRPLANES_978_DISABLED_SLEEP"
+            if [[ "$(_978_feedenv_fingerprint)" != "$FEEDENV_BASELINE" ]]; then
+                exit 0
+            fi
+            # Test knob: interval 0 means single-pass (see header comment).
+            if [[ "$AIRPLANES_978_DISABLED_SLEEP" == "0" ]]; then
+                exit 0
+            fi
+        done
         ;;
     misconfigured)
         printf 'UAT_INPUT=%q invalid; must be "" or "127.0.0.1:30978".\n' "$UAT_INPUT" >&2
