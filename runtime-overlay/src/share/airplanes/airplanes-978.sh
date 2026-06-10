@@ -51,8 +51,12 @@ UAT_INPUT="${UAT_INPUT-}"
 # invocations return promptly. Not for feed.env (see header comment).
 : "${AIRPLANES_978_DISABLED_SLEEP:=60}"
 # Non-integer values would crash `sleep` under set -e or busy-loop; fall
-# back to the default rather than taking the relay down over a typo.
-if ! [[ "$AIRPLANES_978_DISABLED_SLEEP" =~ ^[0-9]+$ ]]; then
+# back to the default rather than taking the relay down over a typo. The
+# base-10 normalization collapses leading zeros ("00" → "0") so the
+# single-pass comparison below can't be bypassed into a zero-second loop.
+if [[ "$AIRPLANES_978_DISABLED_SLEEP" =~ ^[0-9]+$ ]]; then
+    AIRPLANES_978_DISABLED_SLEEP=$((10#$AIRPLANES_978_DISABLED_SLEEP))
+else
     echo "AIRPLANES_978_DISABLED_SLEEP='$AIRPLANES_978_DISABLED_SLEEP' is not a non-negative integer; using 60." >&2
     AIRPLANES_978_DISABLED_SLEEP=60
 fi
@@ -115,12 +119,13 @@ _978_refine_reason() {
 
 # Fingerprint of the feed.env this unit's EnvironmentFile= loads.
 # device:inode:size:mtime:ctime catches atomic-rename replacement (inode
-# changes even when the mtime is preserved), same-second rewrites (size or
-# ctime moves), and absence ("missing", so creation counts as a change).
-# stat only needs search permission on /etc/airplanes, not read permission
-# on feed.env, so this works for the unprivileged service user.
+# changes even when the mtime is preserved), in-place rewrites (the
+# nanosecond %y/%z forms catch same-size edits within the same second),
+# and absence ("missing", so creation counts as a change). stat only needs
+# search permission on /etc/airplanes, not read permission on feed.env,
+# so this works for the unprivileged service user.
 _978_feedenv_fingerprint() {
-    stat -c '%d:%i:%s:%Y:%Z' "$AIRPLANES_978_FEED_ENV" 2>/dev/null || printf 'missing'
+    stat -c '%d:%i:%s:%y:%z' "$AIRPLANES_978_FEED_ENV" 2>/dev/null || printf 'missing'
 }
 
 read -r STATE REASON < <(_978_classify)

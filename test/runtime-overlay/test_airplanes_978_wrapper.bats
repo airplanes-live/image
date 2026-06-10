@@ -189,11 +189,29 @@ make_sleep_stub() {
 
 @test "03c: disabled watch — invalid interval falls back with a warning" {
     printf 'UAT_INPUT=\n' > "$AIRPLANES_978_FEED_ENV"
-    make_sleep_stub "printf 'changed\n' >> '$TMP/feed.env'"
+    # The stub asserts the fallback value actually reached sleep — a
+    # non-60 argv (e.g. the raw "abc") makes the stub fail, which aborts
+    # the wrapper under set -e and fails the status assertion.
+    make_sleep_stub "[[ \"\$1\" == \"60\" ]] || exit 99
+printf 'changed\n' >> '$TMP/feed.env'"
     UAT_INPUT="" AIRPLANES_978_DISABLED_SLEEP="abc" PATH="$STUB_BIN:$PATH" \
         run timeout 10 bash "$SCRIPT"
     [ "$status" -eq 0 ]
     [[ "$output" == *"not a non-negative integer"* ]]
+}
+
+@test "03d: disabled watch — unchanged feed.env keeps idling (no blind exit)" {
+    # The core regression guard: with the file untouched the wrapper must
+    # NOT exit on its own (the old behavior slept once and exited 0).
+    # A no-op sleep stub makes the loop spin fast; timeout kills it at 2s
+    # and reports 124, proving it was still idling.
+    printf 'UAT_INPUT=\n' > "$AIRPLANES_978_FEED_ENV"
+    make_sleep_stub ":"
+    UAT_INPUT="" AIRPLANES_978_DISABLED_SLEEP=5 PATH="$STUB_BIN:$PATH" \
+        run timeout 2 bash "$SCRIPT"
+    [ "$status" -eq 124 ]
+    grep -Fxq 'state=disabled' "$AIRPLANES_978_RUNTIME_DIR/state"
+    [ ! -e "$TMP/binary-invoked" ]
 }
 
 # ---- UAT_INPUT="127.0.0.1:30978" → enabled --------------------------------
