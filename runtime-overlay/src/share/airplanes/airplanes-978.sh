@@ -56,6 +56,12 @@ UAT_INPUT="${UAT_INPUT-}"
 # single-pass comparison below can't be bypassed into a zero-second loop.
 if [[ "$AIRPLANES_978_DISABLED_SLEEP" =~ ^[0-9]+$ ]]; then
     AIRPLANES_978_DISABLED_SLEEP=$((10#$AIRPLANES_978_DISABLED_SLEEP))
+    # An absurd digit string overflows bash arithmetic to a negative
+    # value; `sleep -N` would abort the wrapper under set -e.
+    if (( AIRPLANES_978_DISABLED_SLEEP < 0 )); then
+        echo "AIRPLANES_978_DISABLED_SLEEP overflowed; using 60." >&2
+        AIRPLANES_978_DISABLED_SLEEP=60
+    fi
 else
     echo "AIRPLANES_978_DISABLED_SLEEP='$AIRPLANES_978_DISABLED_SLEEP' is not a non-negative integer; using 60." >&2
     AIRPLANES_978_DISABLED_SLEEP=60
