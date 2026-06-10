@@ -10,8 +10,9 @@
 #   AIRPLANES_978_RUNTIME_DIR    — state file path + cleanup target
 #   AIRPLANES_978_BIN            — binary stub (avoids real /usr/bin/airplanes-978)
 #   STATE_WRITER_LIB             — points at the source-tree state-writer.sh
-#   AIRPLANES_978_DISABLED_SLEEP — set to 0 by setup() so the wrapper
-#                                  returns promptly from the disabled branch
+#   AIRPLANES_978_FEED_ENV       — the feed.env the disabled branch watches
+#   AIRPLANES_978_DISABLED_SLEEP — set to 0 by setup() so the disabled
+#                                  branch is single-pass and returns promptly
 
 setup() {
     SCRIPT="$BATS_TEST_DIRNAME/../../runtime-overlay/src/share/airplanes/airplanes-978.sh"
@@ -87,9 +88,13 @@ exit 0
 EOF
     chmod +x "$AIRPLANES_978_BIN"
 
-    # Bypass the uat_disabled sleep so the wrapper returns promptly. 0 is
-    # test-only; in production it would create a restart storm under
-    # Restart=always.
+    # Watched feed.env lives in the test tmpdir (absent by default, so the
+    # fingerprint baseline is the stable "missing" sentinel).
+    AIRPLANES_978_FEED_ENV="$TMP/feed.env"
+
+    # Interval 0 makes the uat_disabled watch single-pass so the wrapper
+    # returns promptly. 0 is test-only; in production it would create a
+    # restart storm under Restart=always.
     AIRPLANES_978_DISABLED_SLEEP=0
 
     export AIRPLANES_978_RUNTIME_DIR
@@ -97,6 +102,7 @@ EOF
     export STATE_WRITER_LIB
     export STATE_READER_LIB
     export DUMP978_FA_STATE_FILE
+    export AIRPLANES_978_FEED_ENV
     export AIRPLANES_978_DISABLED_SLEEP
 }
 
@@ -147,6 +153,65 @@ run_wrapper() {
     run env -u UAT_INPUT bash "$SCRIPT"
     [ "$status" -eq 0 ]
     grep -Fxq 'state=disabled' "$AIRPLANES_978_RUNTIME_DIR/state"
+}
+
+# ---- disabled branch: feed.env watch loop ---------------------------------
+# A PATH-stubbed `sleep` mutates the watched file, so the loop's next
+# fingerprint check sees the change without wall-clock waits. Interval > 0
+# keeps the single-pass escape from firing; `timeout` turns a watch-loop
+# regression into a test failure (124) instead of a bats hang.
+
+make_sleep_stub() {
+    local body="$1"
+    STUB_BIN="$TMP/stub-bin"
+    mkdir -p "$STUB_BIN"
+    printf '#!/bin/bash\n%s\n' "$body" > "$STUB_BIN/sleep"
+    chmod +x "$STUB_BIN/sleep"
+}
+
+@test "03a: disabled watch — feed.env change → exit 0" {
+    printf 'UAT_INPUT=\n' > "$AIRPLANES_978_FEED_ENV"
+    make_sleep_stub "printf 'UAT_INPUT=127.0.0.1:30978\n' >> '$TMP/feed.env'"
+    UAT_INPUT="" AIRPLANES_978_DISABLED_SLEEP=5 PATH="$STUB_BIN:$PATH" \
+        run timeout 10 bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ ! -e "$TMP/binary-invoked" ]
+}
+
+@test "03b: disabled watch — feed.env created while watching → exit 0" {
+    # Baseline is the "missing" sentinel; creation counts as a change.
+    rm -f "$AIRPLANES_978_FEED_ENV"
+    make_sleep_stub "printf 'UAT_INPUT=\n' > '$TMP/feed.env'"
+    UAT_INPUT="" AIRPLANES_978_DISABLED_SLEEP=5 PATH="$STUB_BIN:$PATH" \
+        run timeout 10 bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+}
+
+@test "03c: disabled watch — invalid interval falls back with a warning" {
+    printf 'UAT_INPUT=\n' > "$AIRPLANES_978_FEED_ENV"
+    # The stub asserts the fallback value actually reached sleep — a
+    # non-60 argv (e.g. the raw "abc") makes the stub fail, which aborts
+    # the wrapper under set -e and fails the status assertion.
+    make_sleep_stub "[[ \"\$1\" == \"60\" ]] || exit 99
+printf 'changed\n' >> '$TMP/feed.env'"
+    UAT_INPUT="" AIRPLANES_978_DISABLED_SLEEP="abc" PATH="$STUB_BIN:$PATH" \
+        run timeout 10 bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"not a non-negative integer"* ]]
+}
+
+@test "03d: disabled watch — unchanged feed.env keeps idling (no blind exit)" {
+    # The core regression guard: with the file untouched the wrapper must
+    # NOT exit on its own (the old behavior slept once and exited 0).
+    # A no-op sleep stub makes the loop spin fast; timeout kills it at 2s
+    # and reports 124, proving it was still idling.
+    printf 'UAT_INPUT=\n' > "$AIRPLANES_978_FEED_ENV"
+    make_sleep_stub ":"
+    UAT_INPUT="" AIRPLANES_978_DISABLED_SLEEP=5 PATH="$STUB_BIN:$PATH" \
+        run timeout 2 bash "$SCRIPT"
+    [ "$status" -eq 124 ]
+    grep -Fxq 'state=disabled' "$AIRPLANES_978_RUNTIME_DIR/state"
+    [ ! -e "$TMP/binary-invoked" ]
 }
 
 # ---- UAT_INPUT="127.0.0.1:30978" → enabled --------------------------------
