@@ -131,6 +131,52 @@ teardown() { rm -rf "$TMP"; }
     grep -Fxq -- '127.0.0.1,*,beast_in' "$ARG_LOG"
 }
 
+# ---- SDR device selection (READSB_SDR_SERIAL) ------------------------------
+
+@test "no READSB_SDR_SERIAL means no --device flag (single-SDR default)" {
+    run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    if grep -Fxq -- '--device' "$ARG_LOG"; then
+        return 1
+    fi
+    # The SDR is still claimed via the default rtlsdr path.
+    assert_args_adjacent '--device-type' 'rtlsdr'
+}
+
+@test "READSB_SDR_SERIAL pins exactly one --device" {
+    READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ "$(grep -cFx -- '--device' "$ARG_LOG")" = "1" ]
+    assert_args_adjacent '--device' '1090'
+    assert_args_adjacent '--device-type' 'rtlsdr'
+}
+
+@test "stale legacy RECEIVER_OPTIONS cannot inject a second --device" {
+    # Legacy /boot/airplanes-env carried RECEIVER_OPTIONS with its own
+    # --device pin. The wrapper deliberately never reads that bag; if it
+    # ever started to, a migrated feeder could end up with two conflicting
+    # --device args (last-wins would silently override the operator's
+    # webconfig choice).
+    RECEIVER_OPTIONS="--device 00000001 --device-type rtlsdr --ppm 0" \
+        READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ "$(grep -cFx -- '--device' "$ARG_LOG")" = "1" ]
+    assert_args_adjacent '--device' '1090'
+    # Nothing else from RECEIVER_OPTIONS may bleed in either.
+    if grep -Fxq -- '--ppm' "$ARG_LOG"; then
+        return 1
+    fi
+}
+
+@test "DUMP1090=no (net-only) ignores READSB_SDR_SERIAL" {
+    DUMP1090=no READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    grep -Fxq -- '--net-only' "$ARG_LOG"
+    if grep -Fxq -- '--device' "$ARG_LOG"; then
+        return 1
+    fi
+}
+
 # ---- Stale-NET_OPTIONS regression -----------------------------------------
 
 @test "stale legacy NET_OPTIONS does NOT bleed into the decoder argv" {
