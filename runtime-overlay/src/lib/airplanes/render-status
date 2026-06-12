@@ -49,6 +49,7 @@ LC_ALL=C
 : "${PATHS_STATE_FILE_978:=/run/airplanes-978/state}"
 : "${PATHS_STATE_FILE_DUMP978FA:=/run/dump978-fa/state}"
 : "${PATHS_STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
+: "${PATHS_FEED_ENV:=/etc/airplanes/feed.env}"
 : "${PATHS_SYSFS_NET:=/sys/class/net}"
 # Absolute path: the MOTD wrapper deliberately strips /usr/local/bin from
 # PATH, so PATH-relative invocation would silently fail on SSH login.
@@ -719,6 +720,73 @@ read_network_lines() {
     return 0
 }
 
+# ---- Backend endpoint detection (non-default backends only). ---------------
+# SD_FEED_TARGET_HOST / SD_WEBSITE_HOST stay empty on a default install
+# (and on invalid overrides); renderers append the bracket via ${VAR:+ }
+# expansion, so production feeders render exactly as before.
+
+# Single-key feed.env value read. Parse-not-source — the file is
+# operator-editable and we render as root on tty1. Value semantics
+# mirror apl-feed's feed_env_get (double-quoted, single-quoted, or
+# bare-until-comment/whitespace; last write wins), single file only —
+# /etc/airplanes/feed.env is the canonical config on this image.
+_read_feed_env_value() {
+    local key="$1"
+    [[ -f "$PATHS_FEED_ENV" && -r "$PATHS_FEED_ENV" ]] || return 1
+    local out
+    out="$(sed -n \
+        -e "s/^${key}=\"\\(.*\\)\"[[:space:]]*$/\\1/p" \
+        -e "s/^${key}='\\(.*\\)'[[:space:]]*$/\\1/p" \
+        -e "s/^${key}=\\([^#[:space:]]*\\).*$/\\1/p" \
+        "$PATHS_FEED_ENV" 2>/dev/null | tail -n 1)"
+    [[ -n "$out" ]] || return 1
+    printf '%s' "$out"
+}
+
+# Feed endpoint: the feed daemon owns the TARGET parse and the default
+# comparison (see feed's airplanes-feed.sh) and publishes the effective
+# first-connector endpoint to its state file. Display host only on the
+# default beast port, host:port otherwise. Key absent (older daemon, or
+# the service never ran this boot) or invalid → empty → no bracket; the
+# diagnostic surface for invalid TARGET is apl-feed status.
+_derive_feed_target_host() {
+    SD_FEED_TARGET_HOST=""
+    local host is_default port
+    host="$(airplanes_read_state "$PATHS_STATE_FILE_FEED" target_host)" || return 0
+    [[ -n "$host" ]] || return 0
+    is_default="$(airplanes_read_state "$PATHS_STATE_FILE_FEED" target_is_default)" || return 0
+    [[ "$is_default" == "false" ]] || return 0
+    [[ "$host" =~ ^[][A-Za-z0-9._:-]+$ ]] || return 0
+    port="$(airplanes_read_state "$PATHS_STATE_FILE_FEED" target_port)" || port=""
+    # 30-char display clamp: every real backend host fits; the cap keeps
+    # the worst-case full-layout rows (Claim with the register hint, Feed
+    # with msgs/s) inside the 80-col budget.
+    if [[ "$port" =~ ^[0-9]+$ && "$port" != "30004" ]]; then
+        SD_FEED_TARGET_HOST="$(sanitize "${host}:${port}" 30)"
+    else
+        SD_FEED_TARGET_HOST="$(sanitize "$host" 30)"
+    fi
+}
+
+# Website endpoint: no daemon owns APL_FEED_WEBSITE_URL — apl-feed and
+# the timer scripts re-resolve it from feed.env on every invocation, so
+# the file IS the effective value. Host derivation mirrors apl-feed
+# common.sh's _set_website_host (path stripped before userinfo, greedy
+# userinfo strip, hostname charset allowlist).
+_derive_website_host() {
+    SD_WEBSITE_HOST=""
+    local s
+    s="$(_read_feed_env_value APL_FEED_WEBSITE_URL)" || return 0
+    s="${s#*://}"
+    s="${s%%/*}"
+    s="${s%%\?*}"
+    s="${s%%#*}"
+    s="${s##*@}"
+    [[ "$s" =~ ^[A-Za-z0-9.:-]+$ ]] || return 0
+    [[ "$s" != "airplanes.live" ]] || return 0
+    SD_WEBSITE_HOST="$(sanitize "$s" 30)"
+}
+
 # ---- Terminal-width helper. ------------------------------------------------
 # Returns the visible terminal width in columns. Defaults to 80 when stdout
 # is not a TTY (update-motd.d capture, bats `run`, or a piped invocation)
@@ -787,6 +855,8 @@ SD_UPTIME=""
 SD_LOAD=""
 SD_PIHEALTH_SEVERITY=""
 SD_PIHEALTH_SUMMARY=""
+SD_FEED_TARGET_HOST=""
+SD_WEBSITE_HOST=""
 declare -a SD_NETWORK_LINES=()
 
 # ---- Per-frame cache of systemd unit properties. --------------------------
@@ -987,6 +1057,9 @@ collect_status_data() {
         fi
     fi
 
+    _derive_feed_target_host
+    _derive_website_host
+
     mapfile -t SD_NETWORK_LINES < <(read_network_lines)
 }
 
@@ -1154,7 +1227,8 @@ build_status_lines_full() {
         fi
     fi
     STATUS_LINES+=("$(printf '%bFeeder ID%b   %s' "$C_BOLD" "$C_RESET" "${SD_ID:-(not yet generated)}")")
-    STATUS_LINES+=("$(printf '%bClaim%b       %s' "$C_BOLD" "$C_RESET" "$(claim_color "$SD_CLAIM")")")
+    STATUS_LINES+=("$(printf '%bClaim%b       %s%s' "$C_BOLD" "$C_RESET" \
+        "$(claim_color "$SD_CLAIM")" "${SD_WEBSITE_HOST:+ [${SD_WEBSITE_HOST}]}")")
     STATUS_LINES+=("")
 
     STATUS_LINES+=("$(printf '%bServices%b' "$C_BOLD" "$C_RESET")")
@@ -1164,12 +1238,26 @@ build_status_lines_full() {
     done < <(display_service_rows "  ")
     STATUS_LINES+=("")
 
+    # With a backend bracket on the Feed row, the inline MLAT note can
+    # push the row past the 80-col budget — spill it onto its own
+    # indented row instead (the SD_978_NOTE pattern below).
+    local _feed_suffix="${SD_FEED_TARGET_HOST:+ [${SD_FEED_TARGET_HOST}]}"
+    local _feed_warn_inline="$SD_MLAT_WARN" _feed_warn_spill=""
+    if [[ -n "$_feed_suffix" && -n "$SD_MLAT_WARN" ]]; then
+        _feed_warn_inline=""
+        _feed_warn_spill="$SD_MLAT_WARN"
+    fi
     if [[ "$mode" == "snapshot" ]]; then
-        STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s   %s' \
-            "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" "$SD_MLAT_WARN")")
+        STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s%s   %s' \
+            "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" \
+            "$_feed_suffix" "$_feed_warn_inline")")
     else
-        STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s   msgs/s: %s   %s' \
-            "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" "$SD_MPS" "$SD_MLAT_WARN")")
+        STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s   msgs/s: %s%s   %s' \
+            "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" "$SD_MPS" \
+            "$_feed_suffix" "$_feed_warn_inline")")
+    fi
+    if [[ -n "$_feed_warn_spill" ]]; then
+        STATUS_LINES+=("            $_feed_warn_spill")
     fi
     if [[ -n "$SD_978_NOTE" ]]; then
         STATUS_LINES+=("            $SD_978_NOTE")
@@ -1265,6 +1353,17 @@ build_status_lines_compact() {
     # the webconfig + claim QR flow and don't need it on every SSH login.
     STATUS_LINES+=("$(printf '%bClaim%b      %s' "$C_BOLD" "$C_RESET" "$(claim_color_compact "$SD_CLAIM")")")
 
+    # Non-default website backend — own dim continuation row (inline
+    # would overflow the 38-col panel). Clamped on the plain text before
+    # the colour escapes so width math stays honest.
+    if [[ -n "$SD_WEBSITE_HOST" ]]; then
+        local _ws_line="  [${SD_WEBSITE_HOST}]"
+        if (( ${#_ws_line} > STATUS_PANEL_WIDTH )); then
+            _ws_line="${_ws_line:0:$((STATUS_PANEL_WIDTH - 3))}..."
+        fi
+        STATUS_LINES+=("$(printf '%b%s%b' "$C_DIM" "$_ws_line" "$C_RESET")")
+    fi
+
     STATUS_LINES+=("")
 
     # Services — header + one labelled row per display service. The
@@ -1285,6 +1384,16 @@ build_status_lines_compact() {
     # gets prime real-estate instead of competing with system stats.
     STATUS_LINES+=("$(printf '%bFeed%b       aircraft: %s' \
         "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}")")
+
+    # Non-default feed backend — own dim continuation row, same clamp
+    # treatment as the website row above.
+    if [[ -n "$SD_FEED_TARGET_HOST" ]]; then
+        local _fh_line="  [${SD_FEED_TARGET_HOST}]"
+        if (( ${#_fh_line} > STATUS_PANEL_WIDTH )); then
+            _fh_line="${_fh_line:0:$((STATUS_PANEL_WIDTH - 3))}..."
+        fi
+        STATUS_LINES+=("$(printf '%b%s%b' "$C_DIM" "$_fh_line" "$C_RESET")")
+    fi
 
     # System — split across two indented rows so a worst-case "999d 23h
     # 59m" + load + CPU never crosses 38 cols. ASCII "C" (no ° degree
@@ -1345,9 +1454,12 @@ build_status_lines_snapshot() {
     STATUS_LINES+=("$(printf '%bFeeder ID%b   %s' \
         "$C_BOLD" "$C_RESET" "${SD_ID:-(not yet generated)}")")
 
-    # Claim — coloured value, no action hint.
-    STATUS_LINES+=("$(printf '%bClaim%b       %s' \
-        "$C_BOLD" "$C_RESET" "$(claim_color_compact "$SD_CLAIM")")")
+    # Claim — coloured value, no action hint. Non-default website
+    # backend rides inline; the 80-col budget holds (12-col label +
+    # claim state + a 40-char-clamped host stays under 80).
+    STATUS_LINES+=("$(printf '%bClaim%b       %s%s' \
+        "$C_BOLD" "$C_RESET" "$(claim_color_compact "$SD_CLAIM")" \
+        "${SD_WEBSITE_HOST:+ [${SD_WEBSITE_HOST}]}")")
 
     # Access — label + first URL, indented continuation for the second.
     if [[ -n "$SD_URL_IP" || -n "$SD_URL_LOCAL" ]]; then
@@ -1395,8 +1507,9 @@ build_status_lines_snapshot() {
     STATUS_LINES+=("")
 
     # Feed — aircraft count only (msgs/s requires two samples, live-only).
-    STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s' \
-        "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}")")
+    STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s%s' \
+        "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" \
+        "${SD_FEED_TARGET_HOST:+ [${SD_FEED_TARGET_HOST}]}")")
 
     # System — uptime + load + (optional) CPU, comma-separated.
     if [[ -n "$SD_CPU_TEMP" ]]; then
