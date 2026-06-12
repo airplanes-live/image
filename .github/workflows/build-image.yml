@@ -139,14 +139,17 @@ jobs:
         run: bash runtime-overlay/scripts/release-workflow/resolve-channel-and-tags.sh
 
   build-runtime:
-    name: Build runtime-overlay-${{ matrix.arch }}
+    # Job names that branch rulesets require must be STATIC: a job skipped
+    # by the `changes` gate does not render ${{ }} expressions in its name
+    # (it reports literally as "build-${{ ... }}"), which can never match a
+    # required context. The channel/arch are visible in the run's logs and
+    # artifact names instead.
+    name: Build runtime-overlay-arm64
     # The single skip gate. Everything downstream needs this job (directly
     # or transitively), so a build=false PR skips the whole heavy chain via
-    # needs-cascade — while resolve-product stays ungated because the
-    # ruleset-required check names of build/boot-smoke/runtime-overlay-
-    # upgrade are templated from its outputs (a skipped resolve-product
-    # would render them as e.g. "build--arm64", which never satisfies the
-    # required "build-dev-arm64" context).
+    # needs-cascade. resolve-product stays ungated: it is cheap, its
+    # "Resolve product release identity" check is ruleset-required, and the
+    # publish jobs' if-conditions read its outputs.
     needs: [resolve-product, changes]
     if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-24.04-arm
@@ -377,7 +380,8 @@ jobs:
           if-no-files-found: error
 
   build:
-    name: build-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    # Static for ruleset matching — see the note on build-runtime's name.
+    name: build-arm64
     needs: [resolve-product, sign-runtime]
     strategy:
       matrix:
@@ -482,7 +486,8 @@ jobs:
     # via test/boot-smoke/extra-probe.sh, sourced post-reboot through the
     # AIRPLANES_BOOT_SMOKE_EXTRA_SETUP hook on image-boot.sh.
     needs: [resolve-product, build]
-    name: boot-smoke-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    # Static for ruleset matching — see the note on build-runtime's name.
+    name: boot-smoke-arm64
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     strategy:
@@ -566,7 +571,8 @@ jobs:
     # signed with a test key, asserts convergence then rollback, reboots and
     # verifies the rolled-back release persists.
     needs: [resolve-product, sign-runtime, build]
-    name: runtime-overlay-upgrade-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    # Static for ruleset matching — see the note on build-runtime's name.
+    name: runtime-overlay-upgrade-arm64
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     strategy:
