@@ -42,6 +42,7 @@ setup() {
     export PATHS_STATE_FILE_978="$TMP/nx-978-state"
     export PATHS_STATE_FILE_DUMP978FA="$TMP/nx-dump978fa-state"
     export PATHS_STATE_READER_LIB="$TMP/nx-state-reader-lib"
+    export PATHS_FEED_ENV="$TMP/nx-feed-env"
     export PATHS_SYSFS_NET="$TMP/sysfs-net"
     export TERM=dumb  # disable color so assertions match plain text
 
@@ -2149,4 +2150,182 @@ EOF
         fi
     done
     (( header_seen ))
+}
+
+# --- backend endpoint brackets (non-default backends) ------------------------
+
+setup_feed_state_test_env() {
+    install_state_reader_stub
+    PATHS_STATE_FILE_FEED="$TMP/run/airplanes-feed/state"
+}
+
+# write_feed_state_endpoint <host> <port> <is_default>
+write_feed_state_endpoint() {
+    mkdir -p "$(dirname "$PATHS_STATE_FILE_FEED")"
+    {
+        printf 'schema_version=1\n'
+        printf 'service=airplanes-feed\n'
+        printf 'state=enabled\n'
+        printf 'reason=ok\n'
+        printf 'target_host=%s\n' "$1"
+        printf 'target_port=%s\n' "$2"
+        printf 'target_is_default=%s\n' "$3"
+    } > "$PATHS_STATE_FILE_FEED"
+}
+
+write_feed_env_website() {
+    printf 'APL_FEED_WEBSITE_URL=%s\n' "$1" > "$TMP/feed.env"
+    PATHS_FEED_ENV="$TMP/feed.env"
+}
+
+@test "_derive_feed_target_host: non-default endpoint sets the display host" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    _derive_feed_target_host
+    [ "$SD_FEED_TARGET_HOST" = "feed.airplanes.test" ]
+}
+
+@test "_derive_feed_target_host: default endpoint stays empty" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.live 30004 true
+    _derive_feed_target_host
+    [ -z "$SD_FEED_TARGET_HOST" ]
+}
+
+@test "_derive_feed_target_host: non-default port renders host:port" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.live 9999 false
+    _derive_feed_target_host
+    [ "$SD_FEED_TARGET_HOST" = "feed.airplanes.live:9999" ]
+}
+
+@test "_derive_feed_target_host: invalid (present-but-empty) endpoint stays empty" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint '' '' ''
+    _derive_feed_target_host
+    [ -z "$SD_FEED_TARGET_HOST" ]
+}
+
+@test "_derive_feed_target_host: missing state file clears a stale value" {
+    setup_feed_state_test_env
+    SD_FEED_TARGET_HOST="stale.example"
+    _derive_feed_target_host
+    [ -z "$SD_FEED_TARGET_HOST" ]
+}
+
+@test "_derive_website_host: non-default URL sets the display host" {
+    write_feed_env_website 'https://web.dev.airplanes.live'
+    _derive_website_host
+    [ "$SD_WEBSITE_HOST" = "web.dev.airplanes.live" ]
+}
+
+@test "_derive_website_host: quoted URL with path parses to the host" {
+    write_feed_env_website '"https://airplanes.test/some/path"'
+    _derive_website_host
+    [ "$SD_WEBSITE_HOST" = "airplanes.test" ]
+}
+
+@test "_derive_website_host: default URL stays empty" {
+    write_feed_env_website 'https://airplanes.live'
+    _derive_website_host
+    [ -z "$SD_WEBSITE_HOST" ]
+}
+
+@test "_derive_website_host: missing feed.env clears a stale value" {
+    SD_WEBSITE_HOST="stale.example"
+    _derive_website_host
+    [ -z "$SD_WEBSITE_HOST" ]
+}
+
+@test "_derive_website_host: host outside the charset stays empty" {
+    write_feed_env_website 'https://bad_host;injection'
+    _derive_website_host
+    [ -z "$SD_WEBSITE_HOST" ]
+}
+
+@test "full layout: Claim and Feed rows carry brackets for non-default backends" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    write_feed_env_website 'https://web.dev.airplanes.live'
+    collect_status_data snapshot
+    build_status_lines_full live
+    local row claim_ok=0 feed_ok=0
+    for row in "${STATUS_LINES[@]}"; do
+        case "$(printf '%s' "$row" | strip_ansi)" in
+            Claim*'[web.dev.airplanes.live]'*) claim_ok=1 ;;
+            Feed\ *'[feed.airplanes.test]'*) feed_ok=1 ;;
+        esac
+    done
+    (( claim_ok )) && (( feed_ok ))
+}
+
+@test "snapshot layout: Claim and Feed rows carry brackets for non-default backends" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    write_feed_env_website 'https://web.dev.airplanes.live'
+    collect_status_data snapshot
+    build_status_lines_snapshot
+    local row claim_ok=0 feed_ok=0
+    for row in "${STATUS_LINES[@]}"; do
+        case "$(printf '%s' "$row" | strip_ansi)" in
+            Claim*'[web.dev.airplanes.live]'*) claim_ok=1 ;;
+            Feed\ *'[feed.airplanes.test]'*) feed_ok=1 ;;
+        esac
+    done
+    (( claim_ok )) && (( feed_ok ))
+}
+
+@test "compact layout: brackets land on dim continuation rows within panel width" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    write_feed_env_website 'https://web.dev.airplanes.live'
+    collect_status_data snapshot
+    build_status_lines_compact
+    local row stripped ws_ok=0 fh_ok=0
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            '  [web.dev.airplanes.live]') ws_ok=1 ;;
+            '  [feed.airplanes.test]') fh_ok=1 ;;
+        esac
+        # No bracket may ride inline on the Claim/Feed rows in compact.
+        case "$stripped" in
+            Claim*'['*|Feed\ *'['*) return 1 ;;
+        esac
+        (( ${#stripped} <= STATUS_PANEL_WIDTH ))
+    done
+    (( ws_ok )) && (( fh_ok ))
+}
+
+@test "default install: no backend brackets in any layout" {
+    collect_status_data snapshot
+    local builder row
+    for builder in 'build_status_lines_full live' build_status_lines_snapshot build_status_lines_compact; do
+        $builder
+        for row in "${STATUS_LINES[@]}"; do
+            case "$(printf '%s' "$row" | strip_ansi)" in
+                Claim*'['*|Feed\ *'['*) return 1 ;;
+            esac
+        done
+    done
+}
+
+@test "snapshot layout: bracketed rows stay within 80 cols at the 40-char host clamp" {
+    setup_feed_state_test_env
+    local long_host
+    long_host="$(printf 'h%.0s' {1..60}).example"
+    write_feed_state_endpoint "$long_host" 30004 false
+    write_feed_env_website "https://$long_host"
+    collect_status_data snapshot
+    # sanitize(40) caps the display host regardless of feed.env content.
+    [ "${#SD_FEED_TARGET_HOST}" -le 40 ]
+    [ "${#SD_WEBSITE_HOST}" -le 40 ]
+    build_status_lines_snapshot
+    local row stripped
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            Claim*|Feed\ *) (( ${#stripped} <= 80 )) ;;
+        esac
+    done
 }
