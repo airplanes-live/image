@@ -2310,22 +2310,80 @@ write_feed_env_website() {
     done
 }
 
-@test "snapshot layout: bracketed rows stay within 80 cols at the 40-char host clamp" {
+@test "snapshot layout: bracketed rows stay within 80 cols at the 30-char host clamp" {
     setup_feed_state_test_env
     local long_host
     long_host="$(printf 'h%.0s' {1..60}).example"
     write_feed_state_endpoint "$long_host" 30004 false
     write_feed_env_website "https://$long_host"
     collect_status_data snapshot
-    # sanitize(40) caps the display host regardless of feed.env content.
-    [ "${#SD_FEED_TARGET_HOST}" -le 40 ]
-    [ "${#SD_WEBSITE_HOST}" -le 40 ]
+    # sanitize(30) caps the display host regardless of feed.env content.
+    [ "${#SD_FEED_TARGET_HOST}" -le 30 ]
+    [ "${#SD_WEBSITE_HOST}" -le 30 ]
     build_status_lines_snapshot
     local row stripped
     for row in "${STATUS_LINES[@]}"; do
         stripped="$(printf '%s' "$row" | strip_ansi)"
         case "$stripped" in
             Claim*|Feed\ *) (( ${#stripped} <= 80 )) ;;
+        esac
+    done
+}
+
+@test "full layout: MLAT note spills to its own row when the Feed bracket is present" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    collect_status_data snapshot
+    SD_MLAT_WARN="Set lat/lon/alt to enable MLAT."
+    build_status_lines_full live
+    local row stripped feed_row="" spill_seen=0
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            Feed\ *) feed_row="$stripped" ;;
+            '            Set lat/lon/alt to enable MLAT.') spill_seen=1 ;;
+        esac
+    done
+    [[ "$feed_row" == *'[feed.airplanes.test]'* ]]
+    [[ "$feed_row" != *'MLAT'* ]]
+    (( spill_seen ))
+    (( ${#feed_row} <= 80 ))
+}
+
+@test "full layout: MLAT note stays inline on the Feed row without a bracket" {
+    collect_status_data snapshot
+    SD_FEED_TARGET_HOST=""
+    SD_MLAT_WARN="Set lat/lon/alt to enable MLAT."
+    build_status_lines_full live
+    local row stripped feed_ok=0
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            Feed\ *'Set lat/lon/alt to enable MLAT.'*) feed_ok=1 ;;
+        esac
+    done
+    (( feed_ok ))
+}
+
+@test "full layout: worst-case bracketed rows stay within 80 cols" {
+    setup_feed_state_test_env
+    local long_host
+    long_host="$(printf 'h%.0s' {1..60}).example"
+    write_feed_state_endpoint "$long_host" 30004 false
+    write_feed_env_website "https://$long_host"
+    collect_status_data snapshot
+    SD_MLAT_WARN="Set lat/lon/alt to enable MLAT."
+    build_status_lines_full live
+    # Measure characters, not bytes — the script's LC_ALL=C would count
+    # the claim hint's em-dash as 3, overstating the display width.
+    local row stripped
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            Claim*|Feed\ *)
+                local LC_ALL=C.UTF-8
+                (( ${#stripped} <= 80 ))
+                ;;
         esac
     done
 }

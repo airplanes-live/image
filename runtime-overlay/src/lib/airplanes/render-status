@@ -758,10 +758,13 @@ _derive_feed_target_host() {
     [[ "$is_default" == "false" ]] || return 0
     [[ "$host" =~ ^[][A-Za-z0-9._:-]+$ ]] || return 0
     port="$(airplanes_read_state "$PATHS_STATE_FILE_FEED" target_port)" || port=""
+    # 30-char display clamp: every real backend host fits; the cap keeps
+    # the worst-case full-layout rows (Claim with the register hint, Feed
+    # with msgs/s) inside the 80-col budget.
     if [[ "$port" =~ ^[0-9]+$ && "$port" != "30004" ]]; then
-        SD_FEED_TARGET_HOST="$(sanitize "${host}:${port}" 40)"
+        SD_FEED_TARGET_HOST="$(sanitize "${host}:${port}" 30)"
     else
-        SD_FEED_TARGET_HOST="$(sanitize "$host" 40)"
+        SD_FEED_TARGET_HOST="$(sanitize "$host" 30)"
     fi
 }
 
@@ -781,7 +784,7 @@ _derive_website_host() {
     s="${s##*@}"
     [[ "$s" =~ ^[A-Za-z0-9.:-]+$ ]] || return 0
     [[ "$s" != "airplanes.live" ]] || return 0
-    SD_WEBSITE_HOST="$(sanitize "$s" 40)"
+    SD_WEBSITE_HOST="$(sanitize "$s" 30)"
 }
 
 # ---- Terminal-width helper. ------------------------------------------------
@@ -1235,14 +1238,26 @@ build_status_lines_full() {
     done < <(display_service_rows "  ")
     STATUS_LINES+=("")
 
+    # With a backend bracket on the Feed row, the inline MLAT note can
+    # push the row past the 80-col budget — spill it onto its own
+    # indented row instead (the SD_978_NOTE pattern below).
+    local _feed_suffix="${SD_FEED_TARGET_HOST:+ [${SD_FEED_TARGET_HOST}]}"
+    local _feed_warn_inline="$SD_MLAT_WARN" _feed_warn_spill=""
+    if [[ -n "$_feed_suffix" && -n "$SD_MLAT_WARN" ]]; then
+        _feed_warn_inline=""
+        _feed_warn_spill="$SD_MLAT_WARN"
+    fi
     if [[ "$mode" == "snapshot" ]]; then
         STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s%s   %s' \
             "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" \
-            "${SD_FEED_TARGET_HOST:+ [${SD_FEED_TARGET_HOST}]}" "$SD_MLAT_WARN")")
+            "$_feed_suffix" "$_feed_warn_inline")")
     else
         STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s   msgs/s: %s%s   %s' \
             "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" "$SD_MPS" \
-            "${SD_FEED_TARGET_HOST:+ [${SD_FEED_TARGET_HOST}]}" "$SD_MLAT_WARN")")
+            "$_feed_suffix" "$_feed_warn_inline")")
+    fi
+    if [[ -n "$_feed_warn_spill" ]]; then
+        STATUS_LINES+=("            $_feed_warn_spill")
     fi
     if [[ -n "$SD_978_NOTE" ]]; then
         STATUS_LINES+=("            $SD_978_NOTE")
