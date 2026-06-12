@@ -8,14 +8,20 @@ name: build-image
 #   push to dev — post-merge validation. Every merge to dev rebuilds.
 #   push to a v* tag — release build with channel=stable. Cut a tag
 #       on main: `git tag v0.1.0 && git push origin v0.1.0`.
-#   pull_request — runs on PRs that touch image-build inputs (pi-gen stages,
-#       configs, build scripts, runtime overlay, this workflow). PR runs
-#       always build the dev channel; they upload the image as an artifact
-#       but never publish a release or push a tag. The paths filter keeps
-#       PRs that only touch tests, docs, or unrelated files from spending
-#       the multi-hour native-arm64 build budget. cancel-in-progress under
-#       the existing concurrency block tears down stale runs when a PR is
-#       updated, so only the latest commit's build holds a slot.
+#   pull_request — starts on EVERY PR; the `changes` job then decides
+#       whether the PR touches image-build inputs (pi-gen stages, configs,
+#       build scripts, runtime overlay, this workflow — see
+#       .github/scripts/changed-files-need-build.sh, the single source of
+#       truth). If not, the heavy jobs are skipped at the job level and
+#       report a `skipped` conclusion, which the branch rulesets count as
+#       passing. Deliberately NOT a workflow-level paths filter: a
+#       filtered-out workflow produces no check runs at all, leaving
+#       test-/docs-only PRs permanently blocked on the ruleset-required
+#       build checks. PR runs always build the dev channel; they upload
+#       the image as an artifact but never publish a release or push a
+#       tag. cancel-in-progress under the existing concurrency block tears
+#       down stale runs when a PR is updated, so only the latest commit's
+#       build holds a slot.
 
 on:
   workflow_dispatch:
@@ -37,37 +43,71 @@ on:
     branches: [dev, main]
     tags: ['v*']
   pull_request:
-    # Fire on PRs that affect what the image build produces OR the
-    # boot-smoke test harness that consumes
-    # the built artifact. test/boot-smoke/ is included so changes to
-    # extra-probe.sh and friends are validated end-to-end against a
-    # freshly built image; without it a probe regression would only
-    # surface after the change merged and the next image-build PR ran.
-    # Other test/ paths (BATS suites) are intentionally excluded —
-    # they're covered by ci.yml's shell-tests job and don't need the
-    # multi-hour native-arm64 build budget.
-    paths:
-      - 'stage-airplanes/**'
-      - 'stage0/**'
-      - 'stage1/**'
-      - 'stage2/**'
-      - 'config-dev'
-      - 'config-stable'
-      - 'runtime-overlay/**'
-      - 'scripts/**'
-      - 'depends'
-      - 'Dockerfile'
-      - 'build.sh'
-      - 'build-docker.sh'
-      - 'export-image/**'
-      - 'export-noobs/**'
-      - 'test/boot-smoke/**'
-      - '.github/workflows/build-image.yml'
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    # Decides whether this run needs the actual image build. Non-PR events
+    # (push to dev/main, v* tags, manual dispatch) always build. For PRs
+    # the changed-file list is matched against the build-input patterns in
+    # .github/scripts/changed-files-need-build.sh — which build-input
+    # paths trigger a build is owned there (and pinned by
+    # test/test_changed_files_need_build.bats), not by a workflow-level
+    # paths filter, so the ruleset-required job names below always
+    # materialise: gated jobs report `skipped`, which rulesets treat as
+    # passing. test/boot-smoke/ counts as a build input so probe changes
+    # are validated end-to-end against a freshly built image; other test/
+    # paths (BATS suites) are covered by ci.yml's shell-tests job and
+    # don't need the multi-hour native-arm64 build budget.
+    name: Detect build-input changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      build: ${{ steps.detect.outputs.build }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "$EVENT_NAME event: always build"
+            exit 0
+          fi
+          # previous_filename matters: a rename OUT of a build path only
+          # reports the new name in .filename — both sides must be matched
+          # or such a PR would skip the build that validates the removal.
+          #
+          # Fail open to build=true: if the file fetch or the matcher
+          # errors, a skipped `changes` output would let the gated jobs
+          # skip — and skipped counts as PASSING for the ruleset. Building
+          # unnecessarily is the safe failure direction; skipping a needed
+          # build is not.
+          result=true
+          if ! gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)' \
+              > "$RUNNER_TEMP/changed-files.txt"; then
+            echo "::warning::failed to list PR files; building as a precaution"
+          elif ! result="$(bash .github/scripts/changed-files-need-build.sh < "$RUNNER_TEMP/changed-files.txt")"; then
+            result=true
+            echo "::warning::changed-files matcher failed; building as a precaution"
+          fi
+          echo "build=$result" >> "$GITHUB_OUTPUT"
+          echo "build=$result ($(wc -l < "$RUNNER_TEMP/changed-files.txt" 2>/dev/null || echo '?') changed files)"
+
   resolve-product:
     name: Resolve product release identity
     runs-on: ubuntu-24.04
@@ -100,7 +140,15 @@ jobs:
 
   build-runtime:
     name: Build runtime-overlay-${{ matrix.arch }}
-    needs: resolve-product
+    # The single skip gate. Everything downstream needs this job (directly
+    # or transitively), so a build=false PR skips the whole heavy chain via
+    # needs-cascade — while resolve-product stays ungated because the
+    # ruleset-required check names of build/boot-smoke/runtime-overlay-
+    # upgrade are templated from its outputs (a skipped resolve-product
+    # would render them as e.g. "build--arm64", which never satisfies the
+    # required "build-dev-arm64" context).
+    needs: [resolve-product, changes]
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-24.04-arm
     # Build inside Debian trixie, not the Ubuntu runner userspace, so
     # decoder binaries link against the same SONAMEs the deployed image

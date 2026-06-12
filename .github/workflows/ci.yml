@@ -21,7 +21,7 @@ jobs:
         run: |
           shopt -s globstar nullglob
           mapfile -d '' files < <(
-            find scripts stage-airplanes test runtime-overlay -type f \
+            find scripts stage-airplanes test runtime-overlay .github/scripts -type f \
               \( -name '*.sh' \
                  -o -name 'systemctl-stub' \
                  -o -name 'airplanes-first-run' \
@@ -55,6 +55,7 @@ jobs:
                    runtime-overlay/src/share/airplanes/*.sh \
                    stage-airplanes/02-install-runtime-overlay/files/usr/local/lib/airplanes-runtime/recover-shim \
                    stage-airplanes/02-install-runtime-overlay/files/etc/update-motd.d/09-airplanes-recovery-status \
+                   .github/scripts/*.sh \
                    test/*.sh; do
             [[ -e "$f" ]] || continue
             bash -n "$f"
