@@ -1,0 +1,88 @@
+name: build-image (skipped)
+
+# Companion to build-image.yml, closing the "required check + path-filtered
+# workflow" gap: the dev-branch ruleset requires the build-image job
+# contexts on every PR, but build-image.yml deliberately skips PRs that
+# don't touch image-build inputs (the multi-hour native-arm64 build buys
+# nothing for test- or docs-only changes). Without this stub those PRs sit
+# at "Expected — waiting" forever and can only be bypass-merged.
+#
+# This workflow is the standard GitHub remedy: the same check-run names,
+# triggered by the INVERSE paths filter, reporting instant success. The
+# job names below must stay byte-identical to the check names the real
+# workflow produces on a PR run (PR runs always resolve channel=dev, so
+# the dynamic names expand to *-dev-arm64).
+#
+# paths-ignore here must mirror build-image.yml's on.pull_request.paths
+# exactly — test/test_build_image_paths_mirror.bats enforces both the
+# mirror and the job-name pairing.
+#
+# Mixed PRs (touching both ignored and build-input paths) run BOTH
+# workflows. That is harmless: the stub reports success instantly, the
+# real build finishes hours later, and the merge box reflects the newest
+# check run per name — a real build failure still blocks the merge.
+
+on:
+  pull_request:
+    paths-ignore:
+      - 'stage-airplanes/**'
+      - 'stage0/**'
+      - 'stage1/**'
+      - 'stage2/**'
+      - 'config-dev'
+      - 'config-stable'
+      - 'runtime-overlay/**'
+      - 'scripts/**'
+      - 'depends'
+      - 'Dockerfile'
+      - 'build.sh'
+      - 'build-docker.sh'
+      - 'export-image/**'
+      - 'export-noobs/**'
+      - 'test/boot-smoke/**'
+      - '.github/workflows/build-image.yml'
+
+permissions: {}
+
+jobs:
+  resolve-product:
+    name: Resolve product release identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "No image-build inputs changed — reporting success for the required check."
+
+  verify-runtime:
+    name: Verify runtime-overlay gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "No image-build inputs changed — reporting success for the required check."
+
+  sign-runtime:
+    name: Sign runtime-overlay assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "No image-build inputs changed — reporting success for the required check."
+
+  build:
+    name: build-dev-arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "No image-build inputs changed — reporting success for the required check."
+
+  boot-smoke:
+    name: boot-smoke-dev-arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "No image-build inputs changed — reporting success for the required check."
+
+  runtime-overlay-upgrade:
+    name: runtime-overlay-upgrade-dev-arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "No image-build inputs changed — reporting success for the required check."
