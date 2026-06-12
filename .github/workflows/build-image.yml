@@ -87,13 +87,26 @@ jobs:
             echo "$EVENT_NAME event: always build"
             exit 0
           fi
-          gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
-            --jq '.[].filename' > "$RUNNER_TEMP/changed-files.txt"
-          # The matcher prints true/false; any internal error fails this
-          # job (fail-safe: never silently skip a needed build).
-          result="$(bash .github/scripts/changed-files-need-build.sh < "$RUNNER_TEMP/changed-files.txt")"
+          # previous_filename matters: a rename OUT of a build path only
+          # reports the new name in .filename — both sides must be matched
+          # or such a PR would skip the build that validates the removal.
+          #
+          # Fail open to build=true: if the file fetch or the matcher
+          # errors, a skipped `changes` output would let the gated jobs
+          # skip — and skipped counts as PASSING for the ruleset. Building
+          # unnecessarily is the safe failure direction; skipping a needed
+          # build is not.
+          result=true
+          if ! gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)' \
+              > "$RUNNER_TEMP/changed-files.txt"; then
+            echo "::warning::failed to list PR files; building as a precaution"
+          elif ! result="$(bash .github/scripts/changed-files-need-build.sh < "$RUNNER_TEMP/changed-files.txt")"; then
+            result=true
+            echo "::warning::changed-files matcher failed; building as a precaution"
+          fi
           echo "build=$result" >> "$GITHUB_OUTPUT"
-          echo "build=$result ($(wc -l < "$RUNNER_TEMP/changed-files.txt") changed files)"
+          echo "build=$result ($(wc -l < "$RUNNER_TEMP/changed-files.txt" 2>/dev/null || echo '?') changed files)"
 
   resolve-product:
     name: Resolve product release identity
