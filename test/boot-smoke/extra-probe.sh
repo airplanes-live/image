@@ -1432,6 +1432,19 @@ assert_file /usr/local/lib/airplanes-webconfig/start-orchestrator.sh
 [[ -x /usr/local/lib/airplanes-webconfig/start-orchestrator.sh ]] \
     || fail "/usr/local/lib/airplanes-webconfig/start-orchestrator.sh is not executable"
 
+# RTL-SDR DVB blacklist (stage 00-prep/07-run.sh) ships as a real rootfs file
+# so the kernel DVB-T drivers stay off the SDR dongles and readsb / dump978-fa
+# can claim them via librtlsdr. QEMU has no USB SDR, so this asserts the file
+# is shipped with the key device-driver entries rather than the runtime effect.
+assert_file /etc/modprobe.d/airplanes-rtlsdr-blacklist.conf
+assert_contains /etc/modprobe.d/airplanes-rtlsdr-blacklist.conf 'blacklist dvb_usb_rtl28xxu'
+assert_contains /etc/modprobe.d/airplanes-rtlsdr-blacklist.conf 'blacklist rtl2832_sdr'
+# Stronger than file presence: confirm kmod actually parses the drop-in
+# (modprobe -c aggregates /etc/modprobe.d). Proves the blacklist is effective
+# without needing a USB SDR attached.
+modprobe -c 2>/dev/null | grep -qx 'blacklist dvb_usb_rtl28xxu' \
+    || fail 'modprobe config does not include the dvb_usb_rtl28xxu blacklist'
+
 # Tmpfs sizing oneshot ran (oneshot → inactive(dead) on success; not
 # "failed"). Then verify the actual on-disk effects.
 _runresize_state="$(systemctl show airplanes-run-resize.service \
