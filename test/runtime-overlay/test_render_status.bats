@@ -28,6 +28,7 @@ setup() {
     export PATHS_CLAIM_PENDING="$TMP/nx-claim-pending"
     export PATHS_CLAIM_VERSION="$TMP/nx-claim-version"
     export PATHS_AIRCRAFT_JSON="$TMP/nx-aircraft"
+    export PATHS_READSB_STATS="$TMP/nx-readsb-stats"
     export PATHS_THERMAL="$TMP/nx-thermal"
     export PATHS_LOGO="$LOGO"
     export PATHS_BANNER="$BANNER"
@@ -2455,4 +2456,151 @@ setup_readsb_state_test_env() {
     stub_systemctl active 0
     run unit_state_with_reason readsb.service
     [ "$output" = 'ok -' ]
+}
+
+# ---- effective gain: read_readsb_gain_db -----------------------------------
+
+@test "read_readsb_gain_db: missing file -> non-zero, empty" {
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
+
+@test "read_readsb_gain_db: numeric gain_db -> one-decimal value" {
+    printf '{"gain_db":49.6,"messages":1}\n' > "$PATHS_READSB_STATS"
+    [ "$(read_readsb_gain_db)" = "49.6" ]
+}
+
+@test "read_readsb_gain_db: integer gain_db normalised to one decimal" {
+    printf '{"gain_db":33}\n' > "$PATHS_READSB_STATS"
+    [ "$(read_readsb_gain_db)" = "33.0" ]
+}
+
+@test "read_readsb_gain_db: JSON string gain_db rejected (numbers type-gate)" {
+    printf '{"gain_db":"49.6"}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+}
+
+@test "read_readsb_gain_db: null or absent gain_db rejected" {
+    printf '{"gain_db":null}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+    printf '{"messages":1}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+}
+
+@test "read_readsb_gain_db: out-of-range dropped, boundary kept" {
+    printf '{"gain_db":99}\n' > "$PATHS_READSB_STATS"
+    [ "$(read_readsb_gain_db)" = "99.0" ]
+    printf '{"gain_db":100}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+    printf '{"gain_db":-10}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+}
+
+@test "read_readsb_gain_db: malformed JSON rejected" {
+    printf 'not json' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+}
+
+# ---- effective gain: collect_status_data gating ----------------------------
+#
+# Prime readsb's ActiveState via the systemctl-show shim so the gate's
+# `_unit_prop readsb.service ActiveState` resolves from the per-frame cache.
+
+_gain_prime_readsb() {
+    local active="${1:-active}"
+    local shim
+    shim="$(_systemctl_show_shim)"
+    PATH="$shim:$PATH"
+    cat > "$TMP/sysctl-show.out" <<EOF
+Id=readsb.service
+ActiveState=$active
+UnitFileState=enabled
+ExecMainStatus=0
+EOF
+}
+
+@test "gain gate: GAIN=auto + readsb active + fresh stats -> SD_GAIN_DB set" {
+    _gain_prime_readsb active
+    printf 'GAIN=auto\n' > "$PATHS_FEED_ENV"
+    printf '{"gain_db":49.6}\n' > "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ "$SD_GAIN_DB" = "49.6" ]
+    [ "$SD_GAIN_CFG" = "auto" ]
+}
+
+@test "gain gate: GAIN unset (defaults to auto) still surfaces effective gain" {
+    _gain_prime_readsb active
+    # No PATHS_FEED_ENV file -> _read_feed_env_value fails -> default auto.
+    printf '{"gain_db":40.0}\n' > "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ "$SD_GAIN_DB" = "40.0" ]
+    [ "$SD_GAIN_CFG" = "auto" ]
+}
+
+@test "gain gate: numeric GAIN hides effective gain (configured == effective)" {
+    _gain_prime_readsb active
+    printf 'GAIN=49.6\n' > "$PATHS_FEED_ENV"
+    printf '{"gain_db":49.6}\n' > "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ -z "$SD_GAIN_DB" ]
+}
+
+@test "gain gate: readsb inactive hides effective gain" {
+    _gain_prime_readsb inactive
+    printf 'GAIN=auto\n' > "$PATHS_FEED_ENV"
+    printf '{"gain_db":49.6}\n' > "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ -z "$SD_GAIN_DB" ]
+}
+
+@test "gain gate: stale stats.json (>90s) hides effective gain" {
+    _gain_prime_readsb active
+    printf 'GAIN=auto\n' > "$PATHS_FEED_ENV"
+    printf '{"gain_db":49.6}\n' > "$PATHS_READSB_STATS"
+    touch -d "@$(( $(date +%s) - 120 ))" "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ -z "$SD_GAIN_DB" ]
+}
+
+# ---- effective gain: builder rows ------------------------------------------
+
+# These call collect_status_data first (populating SD_NETWORK_LINES and the
+# rest of the SD_* globals the builders expand under `set -u`), then override
+# the gain globals to drive the row directly.
+
+@test "compact builder: gain row present and within 38 cols when SD_GAIN_DB set" {
+    _gain_prime_readsb active
+    collect_status_data snapshot
+    SD_GAIN_DB="49.6"
+    SD_GAIN_CFG="auto"
+    build_status_lines_compact
+    printf '%s\n' "${STATUS_LINES[@]}" | strip_ansi | grep -q '^Gain .*49\.6 dB'
+    local w
+    w="$(printf '%s\n' "${STATUS_LINES[@]}" | strip_ansi | max_display_width)"
+    (( w <= 38 ))
+}
+
+@test "compact builder: no gain row when SD_GAIN_DB empty" {
+    _gain_prime_readsb active
+    collect_status_data snapshot
+    SD_GAIN_DB=""
+    SD_GAIN_CFG=""
+    build_status_lines_compact
+    ! printf '%s\n' "${STATUS_LINES[@]}" | strip_ansi | grep -q '^Gain '
+}
+
+@test "snapshot builder: gain row shows 'cfg -> db dB'" {
+    _gain_prime_readsb active
+    collect_status_data snapshot
+    SD_GAIN_DB="49.6"
+    SD_GAIN_CFG="auto"
+    build_status_lines_snapshot
+    printf '%s\n' "${STATUS_LINES[@]}" | strip_ansi | grep -q 'Gain .*auto -> 49\.6 dB'
 }

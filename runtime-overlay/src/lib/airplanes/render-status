@@ -39,6 +39,7 @@ LC_ALL=C
 : "${PATHS_CLAIM_PENDING:=/etc/airplanes/feeder-claim-secret.pending}"
 : "${PATHS_CLAIM_VERSION:=/etc/airplanes/feeder-claim-secret.version}"
 : "${PATHS_AIRCRAFT_JSON:=/run/readsb/aircraft.json}"
+: "${PATHS_READSB_STATS:=/run/readsb/stats.json}"
 : "${PATHS_THERMAL:=/sys/class/thermal/thermal_zone0/temp}"
 : "${PATHS_LOGO:=/usr/local/share/airplanes/logo.txt}"
 : "${PATHS_BANNER:=/usr/local/share/airplanes/banner.txt}"
@@ -569,6 +570,25 @@ read_aircraft_snapshot() {
     printf '%s' "$out"
 }
 
+# Effective SDR gain from readsb stats.json (.gain_db). Echoes the value
+# (one decimal) on success; returns non-zero on any failure: missing/unreadable
+# file, no jq, non-numeric (the jq `numbers` type-gate rejects a JSON string
+# the same way the Go reader rejects it into a float), or outside a sane dB
+# range (drops the RTL hardware-AGC sentinel — we run software auto, so a real
+# reading is always a small positive dB).
+read_readsb_gain_db() {
+    [[ -r "$PATHS_READSB_STATS" ]] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    local out
+    # `|| return 1` propagates a non-zero jq exit (parse error on trailing
+    # garbage, timeout) so a partially-written file is rejected here the same
+    # way the Go reader rejects it on json.Unmarshal.
+    out="$(timeout 2 jq -r '.gain_db | numbers' "$PATHS_READSB_STATS" 2>/dev/null)" || return 1
+    [[ "$out" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] || return 1
+    awk -v g="$out" 'BEGIN{exit (g<0 || g>99)}' || return 1
+    awk -v g="$out" 'BEGIN{printf "%.1f", g}'
+}
+
 read_cpu_temp_c() {
     [[ -r "$PATHS_THERMAL" ]] || return 0
     local raw
@@ -895,6 +915,8 @@ SD_URL_IP=""
 SD_URL_LOCAL=""
 SD_AIRCRAFT_CNT=""
 SD_MPS="-"
+SD_GAIN_CFG=""
+SD_GAIN_DB=""
 SD_MLAT_NOTE=""
 SD_MLAT_WARN=""
 SD_978_NOTE=""
@@ -1041,6 +1063,37 @@ collect_status_data() {
     fi
     PREV_MSGS="$msgs"
     PREV_TS="$now"
+
+    # Effective SDR gain. Only surfaced when the configured gain is adaptive
+    # (auto/min/max, or unset → auto) — a pinned numeric gain is already its
+    # own answer. Gated further on readsb being active and the stats file
+    # being fresh (readsb rewrites it ~every 10s; >90s stale ⇒ wedged/stopped
+    # decoder, so the reading is dropped rather than frozen).
+    SD_GAIN_CFG=""
+    SD_GAIN_DB=""
+    local _gain_cfg
+    _gain_cfg="$(_read_feed_env_value GAIN 2>/dev/null || printf 'auto')"
+    [[ -n "$_gain_cfg" ]] || _gain_cfg="auto"
+    case "$_gain_cfg" in
+        auto|min|max)
+            if [[ "$(_unit_prop readsb.service ActiveState)" == "active" ]]; then
+                local _gdb _mtime _age
+                if _gdb="$(read_readsb_gain_db)" \
+                    && _mtime="$(stat -c %Y "$PATHS_READSB_STATS" 2>/dev/null)" \
+                    && [[ "$_mtime" =~ ^[0-9]+$ ]]; then
+                    _age=$(( $(date +%s) - _mtime ))
+                    # A future mtime (negative age) means the clock just
+                    # stepped — treat it as fresh, matching the Go reader which
+                    # clamps negative age to 0. RTC-less Pis do step on NTP sync.
+                    (( _age < 0 )) && _age=0
+                    if (( _age < 90 )); then
+                        SD_GAIN_CFG="$_gain_cfg"
+                        SD_GAIN_DB="$_gdb"
+                    fi
+                fi
+            fi
+            ;;
+    esac
 
     # MLAT note. Set by _compute_mlat_note from the daemon's published
     # decision in /run/airplanes-mlat/state — no feed.env reads.
@@ -1307,6 +1360,10 @@ build_status_lines_full() {
     if [[ -n "$_feed_warn_spill" ]]; then
         STATUS_LINES+=("            $_feed_warn_spill")
     fi
+    if [[ -n "$SD_GAIN_DB" ]]; then
+        STATUS_LINES+=("$(printf '%bGain%b        %s -> %s dB' \
+            "$C_BOLD" "$C_RESET" "${SD_GAIN_CFG:-auto}" "$SD_GAIN_DB")")
+    fi
     if [[ -n "$SD_978_NOTE" ]]; then
         STATUS_LINES+=("            $SD_978_NOTE")
     fi
@@ -1443,6 +1500,13 @@ build_status_lines_compact() {
         STATUS_LINES+=("$(printf '%b%s%b' "$C_DIM" "$_fh_line" "$C_RESET")")
     fi
 
+    # Gain — short form (just the effective dB) to stay inside 38 cols; the
+    # adaptive-config gating already happened in collect_status_data.
+    if [[ -n "$SD_GAIN_DB" ]]; then
+        STATUS_LINES+=("$(printf '%bGain%b       %s dB' \
+            "$C_BOLD" "$C_RESET" "$SD_GAIN_DB")")
+    fi
+
     # System — split across two indented rows so a worst-case "999d 23h
     # 59m" + load + CPU never crosses 38 cols. ASCII "C" (no ° degree
     # sign) keeps the second row to ASCII-only and shaves one cell.
@@ -1558,6 +1622,10 @@ build_status_lines_snapshot() {
     STATUS_LINES+=("$(printf '%bFeed%b        aircraft: %s%s' \
         "$C_BOLD" "$C_RESET" "${SD_AIRCRAFT_CNT:--}" \
         "${SD_FEED_TARGET_HOST:+ [${SD_FEED_TARGET_HOST}]}")")
+    if [[ -n "$SD_GAIN_DB" ]]; then
+        STATUS_LINES+=("$(printf '%bGain%b        %s -> %s dB' \
+            "$C_BOLD" "$C_RESET" "${SD_GAIN_CFG:-auto}" "$SD_GAIN_DB")")
+    fi
 
     # System — uptime + load + (optional) CPU, comma-separated.
     if [[ -n "$SD_CPU_TEMP" ]]; then
