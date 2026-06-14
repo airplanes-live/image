@@ -530,6 +530,14 @@ airplanes_runtime_extract_release_tarball() {
         echo "ERROR: release tarball extraction failed: $tarball" >&2
         return 1
     fi
+    # Normalize the manifest to world-readable regardless of the mode recorded
+    # in the tarball — historical tarballs packed it 0600 (mktemp default), and
+    # the unprivileged on-device webconfig must read it for /api/status. New
+    # builds already render it 0644; this also repairs older/pinned/local
+    # tarballs on install. SHA256SUMS covers content, not mode.
+    if [[ -f "$target_dir/manifest.json" ]]; then
+        chmod 0644 "$target_dir/manifest.json" || return 1
+    fi
 }
 
 # ---------------------------------------------------------------------------

@@ -125,10 +125,15 @@ airplanes_runtime_render_manifest() {
         return 1
     }
 
-    # Atomic write so a partial manifest never appears on disk.
+    # Atomic write so a partial manifest never appears on disk. World-readable
+    # (0644, not mktemp's 0600): the manifest is non-secret build provenance,
+    # and the unprivileged on-device webconfig reads it for /api/status the
+    # same way it reads the 0644 image build-manifest.json. Set the mode on
+    # the temp file so the rename lands the final perms atomically.
     local tmp_out
     tmp_out="$(mktemp "${output_path}.XXXXXX")"
     printf '%s\n' "$rendered" > "$tmp_out"
+    chmod 0644 "$tmp_out"
     mv -f -- "$tmp_out" "$output_path"
 }
 

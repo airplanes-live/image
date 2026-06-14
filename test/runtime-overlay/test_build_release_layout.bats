@@ -111,6 +111,18 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
+@test "manifest.json is world-readable (0644)" {
+    # The on-device webconfig runs unprivileged and reads the manifest for
+    # /api/status; mktemp's default 0600 would hide it. Non-secret provenance,
+    # so 0644 like the image build-manifest.json.
+    run "$BUILD" "${GOOD_ARGS[@]}"
+    [ "$status" -eq 0 ]
+
+    run stat -c '%a' "$OUTPUT_DIR/v1.4.0/manifest.json"
+    [ "$status" -eq 0 ]
+    [ "$output" = "644" ]
+}
+
 @test "SHA256SUMS verifies cleanly via sha256sum -c" {
     run "$BUILD" "${GOOD_ARGS[@]}"
     [ "$status" -eq 0 ]
