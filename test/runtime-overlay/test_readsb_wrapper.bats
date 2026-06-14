@@ -28,6 +28,49 @@ EOF
 
     export READSB_BIN
     export ARG_LOG
+
+    # Fake sysfs for the USB-serial probe; empty by default (no SDR present).
+    SYS_USB="$TMP/sys-usb"
+    mkdir -p "$SYS_USB"
+    export READSB_USB_SERIAL_GLOB="$SYS_USB/*/serial"
+
+    # Self-disable branch must not actually sleep in tests.
+    export READSB_NO_HARDWARE_SLEEP=0
+
+    # State file location + a minimal state-writer mock (the CI bats job checks
+    # out only the image repo, not feed/). Mirrors the airplanes_write_state
+    # contract from feed/scripts/lib/state-writer.sh: schema_version=1 first
+    # line, KEY=VALUE in caller order, atomic via mktemp+rename.
+    export READSB_RUNTIME_DIR="$TMP/run-readsb"
+    mkdir -p "$READSB_RUNTIME_DIR"
+    STATE_FILE="$READSB_RUNTIME_DIR/state"
+    export STATE_WRITER_LIB="$TMP/state-writer.sh"
+    cat > "$STATE_WRITER_LIB" <<'WRITER'
+airplanes_write_state() {
+    local target="$1"; shift
+    local kv key value tmp
+    tmp="$(mktemp "${target}.XXXXXX")" || return 1
+    {
+        printf 'schema_version=1\n'
+        for kv in "$@"; do
+            key="${kv%%=*}"
+            value="${kv#*=}"
+            printf '%s=%s\n' "$key" "$value"
+        done
+    } > "$tmp" || { rm -f "$tmp"; return 1; }
+    chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$target"
+}
+WRITER
+}
+
+# Seed a fake USB device exposing the given serial so the probe finds it.
+# Real sysfs serial files carry a trailing newline; the probe's command
+# substitution strips it, so we write it the same way here.
+seed_serial() {
+    local serial="$1" dir
+    dir="$(mktemp -d "$SYS_USB/dev.XXXXXX")"
+    printf '%s\n' "$serial" > "$dir/serial"
 }
 
 # Helper: assert that two literal argv values appear adjacent in $ARG_LOG.
@@ -144,6 +187,7 @@ teardown() { rm -rf "$TMP"; }
 }
 
 @test "READSB_SDR_SERIAL pins exactly one --device" {
+    seed_serial 1090
     READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
     [ "$status" -eq 0 ]
     [ "$(grep -cFx -- '--device' "$ARG_LOG")" = "1" ]
@@ -157,6 +201,7 @@ teardown() { rm -rf "$TMP"; }
     # ever started to, a migrated feeder could end up with two conflicting
     # --device args (last-wins would silently override the operator's
     # webconfig choice).
+    seed_serial 1090
     RECEIVER_OPTIONS="--device 00000001 --device-type rtlsdr --ppm 0" \
         READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
     [ "$status" -eq 0 ]
@@ -175,6 +220,91 @@ teardown() { rm -rf "$TMP"; }
     if grep -Fxq -- '--device' "$ARG_LOG"; then
         return 1
     fi
+}
+
+# ---- Pinned-SDR-absent self-disable (the hardware gate) --------------------
+
+@test "pinned SDR absent self-disables: no exec, exit 0, state no_hardware" {
+    # No matching serial seeded → probe fails → the wrapper publishes the
+    # decision, sleeps (0 in tests), and exits 0 instead of exec'ing readsb
+    # into a 15s restart loop.
+    READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ ! -f "$ARG_LOG" ]                  # readsb was never exec'd
+    grep -Fxq 'service=readsb'     "$STATE_FILE"
+    grep -Fxq 'state=disabled'     "$STATE_FILE"
+    grep -Fxq 'reason=no_hardware' "$STATE_FILE"
+    grep -Fxq 'sdr_serial=1090'    "$STATE_FILE"
+}
+
+@test "pinned SDR present execs readsb and publishes enabled/ok" {
+    seed_serial 1090
+    READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ -f "$ARG_LOG" ]
+    assert_args_adjacent '--device' '1090'
+    grep -Fxq 'state=enabled' "$STATE_FILE"
+    grep -Fxq 'reason=ok'     "$STATE_FILE"
+}
+
+@test "no pin: no probe, execs, publishes enabled/ok (single-SDR untouched)" {
+    # Empty SYS_USB + no pin → the probe must not run; the decoder starts
+    # exactly as before and reports enabled/ok.
+    run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ -f "$ARG_LOG" ]
+    if grep -Fxq -- '--device' "$ARG_LOG"; then return 1; fi
+    grep -Fxq 'state=enabled' "$STATE_FILE"
+    grep -Fxq 'reason=ok'     "$STATE_FILE"
+}
+
+@test "DUMP1090=no skips the probe and never self-disables on an absent pin" {
+    # Net-only mode does not touch the SDR, so a pinned-but-absent serial must
+    # NOT self-disable it — it execs --net-only and reports enabled/ok.
+    DUMP1090=no READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ -f "$ARG_LOG" ]
+    grep -Fxq -- '--net-only' "$ARG_LOG"
+    grep -Fxq 'state=enabled' "$STATE_FILE"
+    grep -Fxq 'reason=ok'     "$STATE_FILE"
+}
+
+@test "probe finds the pinned serial among multiple devices" {
+    seed_serial 00000001
+    seed_serial 1090
+    seed_serial 00000978
+    READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ -f "$ARG_LOG" ]
+    assert_args_adjacent '--device' '1090'
+}
+
+@test "a pin matching none of several present devices self-disables" {
+    seed_serial 00000001
+    seed_serial 00000978
+    READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ ! -f "$ARG_LOG" ]
+    grep -Fxq 'reason=no_hardware' "$STATE_FILE"
+}
+
+@test "empty serial files are skipped without aborting the probe" {
+    # An empty /sys/.../serial must not trip set -e before the real match.
+    local d; d="$(mktemp -d "$SYS_USB/dev.XXXXXX")"; : > "$d/serial"
+    seed_serial 1090
+    READSB_SDR_SERIAL=1090 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ -f "$ARG_LOG" ]
+    assert_args_adjacent '--device' '1090'
+}
+
+@test "no USB devices at all (empty glob) self-disables cleanly" {
+    # SYS_USB empty → the glob matches nothing; the for-loop must not abort
+    # under set -e, and the wrapper must self-disable rather than exec.
+    READSB_SDR_SERIAL=00000001 run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ ! -f "$ARG_LOG" ]
+    grep -Fxq 'reason=no_hardware' "$STATE_FILE"
 }
 
 # ---- Stale-NET_OPTIONS regression -----------------------------------------

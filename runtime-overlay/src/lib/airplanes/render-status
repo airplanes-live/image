@@ -48,6 +48,7 @@ LC_ALL=C
 : "${PATHS_STATE_FILE_FEED:=/run/airplanes-feed/state}"
 : "${PATHS_STATE_FILE_978:=/run/airplanes-978/state}"
 : "${PATHS_STATE_FILE_DUMP978FA:=/run/dump978-fa/state}"
+: "${PATHS_STATE_FILE_READSB:=/run/readsb/state}"
 : "${PATHS_STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
 : "${PATHS_FEED_ENV:=/etc/airplanes/feed.env}"
 : "${PATHS_SYSFS_NET:=/sys/class/net}"
@@ -342,6 +343,28 @@ _978_config_state() {
     esac
 }
 
+# Classify the readsb decoder's runtime decision from /run/readsb/state.
+# Echoes "<state> <reason>". readsb has no exit-64 misconfig path (its pin is
+# pre-validated by feed's writer), so only the active states consult the
+# state file; failed/inactive fall through to systemd-derived state in the
+# caller.
+readsb_config_state() {
+    local active_state="$1" decision reason
+    case "$active_state" in
+        active|activating|reloading)
+            if decision="$(airplanes_read_state "$PATHS_STATE_FILE_READSB" state)" \
+                && reason="$(airplanes_read_state "$PATHS_STATE_FILE_READSB" reason)"; then
+                printf '%s %s' "$decision" "$reason"
+                return
+            fi
+            printf 'unknown -'
+            ;;
+        *)
+            printf 'inactive -'
+            ;;
+    esac
+}
+
 # Compute SD_MLAT_NOTE from the airplanes-mlat daemon's published state.
 # Caller passes the unit's ActiveState (typically from _unit_prop). Reads
 # only the daemon-owned /run/airplanes-mlat/state — never feed.env. Empty
@@ -447,6 +470,31 @@ unit_state_with_reason() {
                             peer_no_hardware) printf 'idle %s' "$config_reason_978"; return ;;
                             *)                ;;  # fall through to plain ok
                         esac ;;
+                esac
+                ;;
+        esac
+    fi
+    # readsb: classify via the wrapper's published state file. A pinned-but-
+    # absent SDR self-disables (sleep + exit 0, unit stays active); surface it
+    # as wait/warn so it doesn't read as the green OK that would mislead.
+    if [[ "$unit" == 'readsb.service' ]]; then
+        active_state="$(_unit_prop "$unit" ActiveState)"
+        case "$active_state" in
+            active|activating|reloading)
+                local config_state_readsb config_reason_readsb
+                read -r config_state_readsb config_reason_readsb <<<"$(readsb_config_state "$active_state")"
+                case "$config_state_readsb" in
+                    disabled)
+                        case "$config_reason_readsb" in
+                            no_hardware) printf 'wait %s' "$config_reason_readsb"; return ;;
+                            *)           printf 'disabled-by-config %s' "$config_reason_readsb"; return ;;
+                        esac ;;
+                    # enabled, or unknown when the state file is absent/unreadable
+                    # (older overlay, pre-first-write, or a test without a
+                    # fixture): fall through to the systemd-derived path so an
+                    # active unit still renders ok. Only an explicit disabled
+                    # decision changes the tile.
+                    *)  ;;
                 esac
                 ;;
         esac
