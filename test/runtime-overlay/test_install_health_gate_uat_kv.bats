@@ -74,3 +74,18 @@ setup() {
     run _airplanes_runtime_probe_uat_state "$STATE_FILE" "$AIRPLANES_RUNTIME_HEALTH_DEADLINE"
     [ "$status" -eq 0 ]
 }
+
+# Boundary: an already-valid file must be accepted even when the deadline has
+# already elapsed on entry (deadline=0 forces now >= end on the first
+# iteration). Guards against a deadline-first loop ordering that would time out
+# without reading the file — the source of the intermittent CI flake.
+@test "boundary: valid file accepted when deadline already elapsed" {
+    printf 'state=enabled\nreason=\n' > "$STATE_FILE"
+    run _airplanes_runtime_probe_uat_state "$STATE_FILE" 0
+    [ "$status" -eq 0 ]
+}
+
+@test "boundary: missing file still times out promptly at deadline=0" {
+    run _airplanes_runtime_probe_uat_state "$STATE_FILE" 0
+    [ "$status" -ne 0 ]
+}

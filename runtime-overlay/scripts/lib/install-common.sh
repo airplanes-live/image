@@ -1610,12 +1610,11 @@ _airplanes_runtime_probe_uat_state() {
     local file="$1" deadline="$2"
     local end now state="" reason=""
     end=$(( $(date +%s) + deadline ))
+    # Check the file before the deadline so the boundary second still gets a
+    # read: if `end` is computed at the tail of one second and the next
+    # `date +%s` has already ticked over, a deadline-first ordering would
+    # time out without ever reading an already-valid file.
     while :; do
-        now="$(date +%s)"
-        if (( now >= end )); then
-            echo "ERROR: UAT state file never reached a valid (state, reason) combination within ${deadline}s: $file (state='${state}' reason='${reason}')" >&2
-            return 1
-        fi
         if [[ -f "$file" ]]; then
             state="$(_airplanes_runtime_parse_state_kv "$file" state)"
             reason="$(_airplanes_runtime_parse_state_kv "$file" reason)"
@@ -1624,6 +1623,11 @@ _airplanes_runtime_probe_uat_state() {
                     return 0
                     ;;
             esac
+        fi
+        now="$(date +%s)"
+        if (( now >= end )); then
+            echo "ERROR: UAT state file never reached a valid (state, reason) combination within ${deadline}s: $file (state='${state}' reason='${reason}')" >&2
+            return 1
         fi
         sleep 1
     done
