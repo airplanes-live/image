@@ -2387,3 +2387,72 @@ write_feed_env_website() {
         esac
     done
 }
+
+# ---- readsb_config_state — same shape as _978_config_state ----------------
+
+write_readsb_state() {
+    # write_readsb_state <decision> <reason>
+    local decision="$1" reason="$2"
+    mkdir -p "$(dirname "$PATHS_STATE_FILE_READSB")"
+    {
+        printf 'schema_version=1\n'
+        printf 'service=readsb\n'
+        printf 'state=%s\n' "$decision"
+        printf 'reason=%s\n' "$reason"
+    } > "$PATHS_STATE_FILE_READSB"
+}
+
+setup_readsb_state_test_env() {
+    install_state_reader_stub
+    PATHS_STATE_FILE_READSB="$TMP/run/readsb/state"
+}
+
+@test "readsb_config_state: active + state=enabled,reason=ok" {
+    setup_readsb_state_test_env
+    write_readsb_state enabled ok
+    run readsb_config_state active
+    [ "$status" -eq 0 ]
+    [ "$output" = 'enabled ok' ]
+}
+
+@test "readsb_config_state: active + state=disabled,reason=no_hardware" {
+    setup_readsb_state_test_env
+    write_readsb_state disabled no_hardware
+    run readsb_config_state active
+    [ "$output" = 'disabled no_hardware' ]
+}
+
+@test "readsb_config_state: active + state file absent → 'unknown -'" {
+    setup_readsb_state_test_env
+    run readsb_config_state active
+    [ "$output" = 'unknown -' ]
+}
+
+@test "readsb_config_state: inactive → 'inactive -'" {
+    setup_readsb_state_test_env
+    write_readsb_state disabled no_hardware
+    run readsb_config_state inactive
+    [ "$output" = 'inactive -' ]
+}
+
+# Integration: a pinned-SDR-absent self-disable (unit active,
+# state=disabled/no_hardware) must surface as the amber 'wait' token in the
+# tile, not the green ok that systemd-active alone would produce.
+@test "unit_state_with_reason readsb: active + no_hardware → 'wait no_hardware'" {
+    setup_readsb_state_test_env
+    write_readsb_state disabled no_hardware
+    SD_UNIT_PROPS_PRIMED=0
+    stub_systemctl active 0
+    run unit_state_with_reason readsb.service
+    [ "$output" = 'wait no_hardware' ]
+}
+
+# An active readsb with NO state file (older overlay / pre-first-write) falls
+# back to the systemd-derived 'ok', never 'unknown'.
+@test "unit_state_with_reason readsb: active + no state file → 'ok -'" {
+    setup_readsb_state_test_env
+    SD_UNIT_PROPS_PRIMED=0
+    stub_systemctl active 0
+    run unit_state_with_reason readsb.service
+    [ "$output" = 'ok -' ]
+}
