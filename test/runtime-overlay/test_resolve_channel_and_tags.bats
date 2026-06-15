@@ -37,6 +37,9 @@ setup() {
     [ "$status" -eq 0 ]
     run grep -E '^should_publish=true$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
+    # A supplied (tag) version must publish verbatim — never fingerprinted.
+    run grep -E '^augment_version=false$' "$GITHUB_OUTPUT"
+    [ "$status" -eq 0 ]
 }
 
 @test "dev branch push: channel=dev, release tag is dev-latest" {
@@ -54,6 +57,9 @@ setup() {
     run grep -E '^prerelease=true$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
     run grep -E '^version=[0-9]+\.[0-9]+\.[0-9]+-dev-[0-9]{8}-abcdef0$' "$GITHUB_OUTPUT"
+    [ "$status" -eq 0 ]
+    # A synthesised dev version is fingerprinted downstream.
+    run grep -E '^augment_version=true$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
 }
 
@@ -101,6 +107,27 @@ setup() {
     run grep -E '^release_tag=dev-latest$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
     run grep -E '^prerelease=true$' "$GITHUB_OUTPUT"
+    [ "$status" -eq 0 ]
+    run grep -E '^augment_version=true$' "$GITHUB_OUTPUT"
+    [ "$status" -eq 0 ]
+}
+
+@test "workflow_dispatch dev with explicit 7-hex version: verbatim, augment_version=false" {
+    export GITHUB_EVENT_NAME=workflow_dispatch
+    export GITHUB_REF=refs/heads/dev
+    export GITHUB_SHA=1111111111111111111111111111111111111111
+    export INPUT_CHANNEL=dev
+    export INPUT_VERSION=1.2.3-dev-20260601-abcdef0
+
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+
+    # An explicit override publishes exactly as supplied. The 7-hex suffix would
+    # match the helper's auto-form gate, so the resolver must signal false to
+    # keep build-runtime-assets.sh from fingerprinting it.
+    run grep -E '^version=1\.2\.3-dev-20260601-abcdef0$' "$GITHUB_OUTPUT"
+    [ "$status" -eq 0 ]
+    run grep -E '^augment_version=false$' "$GITHUB_OUTPUT"
     [ "$status" -eq 0 ]
 }
 

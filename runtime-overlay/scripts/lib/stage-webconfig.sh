@@ -31,11 +31,15 @@
 #
 # On success:
 #   <output-dir>/bin/airplanes-webconfig                        binary
-#   <output-dir>/lib/airplanes-webconfig/...                    helpers
+#   <output-dir>/bin/apl-aggregator                             helper
+#   <output-dir>/lib/airplanes-webconfig/...                    helpers (incl.
+#                                                               aggregator-run +
+#                                                               aggregators/*.desc)
 #   <output-dir>/lib/airplanes/wifi-validators.sh               wifi lib
 #   <output-dir>/lib/airplanes/wifi-keyfile.sh                  wifi lib
 #   <output-dir>/systemd/airplanes-webconfig.service            unit
 #   <output-dir>/systemd/airplanes-webconfig-reset.service      unit
+#   <output-dir>/systemd/airplanes-aggregator@.service          unit
 #   <output-dir>/etc/sudoers.d/010_airplanes-webconfig          sudoers
 #   <output-dir>/etc/lighttpd/conf-available/40-airplanes-webconfig.conf
 #   <output-dir>/components.webconfig.sha                       commit SHA
@@ -99,6 +103,33 @@ esac
 
 : "${DOWNLOAD_BASE:=https://github.com/airplanes-live/image-webconfig/releases/download}"
 
+# Transient-download resilience. dev-latest is a moving prerelease: while the
+# publisher force-moves the tag and re-uploads assets, a fetch can briefly race
+# a missing or half-published asset (HTTP 404) or a mirror hiccup. Retry a few
+# times with linear backoff so that window does not fail the whole build, while
+# a genuine, persistent failure still surfaces. Overridable for tests.
+: "${STAGE_WEBCONFIG_DL_ATTEMPTS:=5}"
+: "${STAGE_WEBCONFIG_DL_BACKOFF:=3}"
+[[ "$STAGE_WEBCONFIG_DL_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] \
+    || die "STAGE_WEBCONFIG_DL_ATTEMPTS must be a positive integer (got: $STAGE_WEBCONFIG_DL_ATTEMPTS)"
+[[ "$STAGE_WEBCONFIG_DL_BACKOFF" =~ ^[0-9]+$ ]] \
+    || die "STAGE_WEBCONFIG_DL_BACKOFF must be a non-negative integer (got: $STAGE_WEBCONFIG_DL_BACKOFF)"
+
+fetch_asset() {
+    local url="$1" dest="$2" attempt=1
+    while :; do
+        if curl -fsSL --max-time 120 -o "$dest" "$url"; then
+            return 0
+        fi
+        if (( attempt >= STAGE_WEBCONFIG_DL_ATTEMPTS )); then
+            return 1
+        fi
+        echo "stage-webconfig: fetch attempt ${attempt}/${STAGE_WEBCONFIG_DL_ATTEMPTS} failed; retrying in ${STAGE_WEBCONFIG_DL_BACKOFF}s: $url" >&2
+        sleep "$STAGE_WEBCONFIG_DL_BACKOFF"
+        attempt=$(( attempt + 1 ))
+    done
+}
+
 work="$(mktemp -d "${TMPDIR:-/tmp}/stage-webconfig.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 
@@ -109,8 +140,8 @@ base_url="${DOWNLOAD_BASE}/${RELEASE_TAG}"
 binary_name="airplanes-webconfig-${ARCH}"
 for asset in "$binary_name" rootfs.tar.gz manifest.json SHA256SUMS; do
     echo "stage-webconfig: downloading $asset"
-    if ! curl -fsSL --max-time 120 -o "$work/$asset" "$base_url/$asset"; then
-        die "download failed: $base_url/$asset"
+    if ! fetch_asset "$base_url/$asset" "$work/$asset"; then
+        die "download failed after ${STAGE_WEBCONFIG_DL_ATTEMPTS} attempts: $base_url/$asset"
     fi
 done
 
@@ -176,6 +207,17 @@ if [[ -f "$rootfs/usr/local/bin/apl-wifi" ]]; then
     install -m 0755 "$rootfs/usr/local/bin/apl-wifi" "$OUTPUT_DIR/bin/apl-wifi"
 fi
 
+# apl-aggregator helper → overlay bin/. Its run-helper (aggregator-run) and the
+# adapter descriptors under aggregators/ already arrive via the
+# lib/airplanes-webconfig/ copy above. managed_paths.json exposes aggregators/
+# as a single directory symlink, so new descriptors (e.g. a future adapter)
+# ship automatically with no manifest change — and conversely must NOT be added
+# as per-file managed_paths under that directory (a child symlink would be
+# created through the parent symlink into the release tree).
+if [[ -f "$rootfs/usr/local/bin/apl-aggregator" ]]; then
+    install -m 0755 "$rootfs/usr/local/bin/apl-aggregator" "$OUTPUT_DIR/bin/apl-aggregator"
+fi
+
 # WiFi libs → overlay lib/airplanes/
 install -d -m 0755 "$OUTPUT_DIR/lib/airplanes"
 for lib in wifi-validators.sh wifi-keyfile.sh; do
@@ -184,9 +226,15 @@ for lib in wifi-validators.sh wifi-keyfile.sh; do
     fi
 done
 
-# Systemd units → overlay systemd/
+# Systemd units → overlay systemd/. airplanes-aggregator@.service is a template
+# enabled per-instance at runtime by apl-aggregator, so it is deliberately not
+# in systemd.json's enable list. An overlay self-update lands a changed template
+# or run-helper but does not restart already-running aggregator instances (the
+# update restart pass only touches enabled units); they pick up changes on the
+# next enable/disable or reboot — acceptable for non-critical external feeders.
 install -d -m 0755 "$OUTPUT_DIR/systemd"
-for unit in airplanes-webconfig.service airplanes-webconfig-reset.service; do
+for unit in airplanes-webconfig.service airplanes-webconfig-reset.service \
+            airplanes-aggregator@.service; do
     if [[ -f "$rootfs/etc/systemd/system/$unit" ]]; then
         install -m 0644 "$rootfs/etc/systemd/system/$unit" "$OUTPUT_DIR/systemd/$unit"
     fi

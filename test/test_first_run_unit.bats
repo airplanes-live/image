@@ -39,13 +39,6 @@ unit_get() {
     [[ "$val" == *"/boot/firmware"* ]]
 }
 
-@test "ReadWritePaths contains /usr/local/share/airplanes" {
-    # Required for feed/create-uuid.sh's legacy
-    # /usr/local/share/airplanes/airplanes-uuid symlink.
-    val="$(unit_get ReadWritePaths)"
-    [[ "$val" == *"/usr/local/share/airplanes"* ]]
-}
-
 @test "RuntimeDirectory=airplanes" {
     # Creates /run/airplanes/ so the feed.env flock has a parent dir on a
     # fresh boot. Matches webconfig's expected lock-file directory.

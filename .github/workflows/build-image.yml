@@ -8,14 +8,20 @@ name: build-image
 #   push to dev — post-merge validation. Every merge to dev rebuilds.
 #   push to a v* tag — release build with channel=stable. Cut a tag
 #       on main: `git tag v0.1.0 && git push origin v0.1.0`.
-#   pull_request — runs on PRs that touch image-build inputs (pi-gen stages,
-#       configs, build scripts, runtime overlay, this workflow). PR runs
-#       always build the dev channel; they upload the image as an artifact
-#       but never publish a release or push a tag. The paths filter keeps
-#       PRs that only touch tests, docs, or unrelated files from spending
-#       the multi-hour native-arm64 build budget. cancel-in-progress under
-#       the existing concurrency block tears down stale runs when a PR is
-#       updated, so only the latest commit's build holds a slot.
+#   pull_request — starts on EVERY PR; the `changes` job then decides
+#       whether the PR touches image-build inputs (pi-gen stages, configs,
+#       build scripts, runtime overlay, this workflow — see
+#       .github/scripts/changed-files-need-build.sh, the single source of
+#       truth). If not, the heavy jobs are skipped at the job level and
+#       report a `skipped` conclusion, which the branch rulesets count as
+#       passing. Deliberately NOT a workflow-level paths filter: a
+#       filtered-out workflow produces no check runs at all, leaving
+#       test-/docs-only PRs permanently blocked on the ruleset-required
+#       build checks. PR runs always build the dev channel; they upload
+#       the image as an artifact but never publish a release or push a
+#       tag. cancel-in-progress under the existing concurrency block tears
+#       down stale runs when a PR is updated, so only the latest commit's
+#       build holds a slot.
 
 on:
   workflow_dispatch:
@@ -37,37 +43,71 @@ on:
     branches: [dev, main]
     tags: ['v*']
   pull_request:
-    # Fire on PRs that affect what the image build produces OR the
-    # boot-smoke test harness that consumes
-    # the built artifact. test/boot-smoke/ is included so changes to
-    # extra-probe.sh and friends are validated end-to-end against a
-    # freshly built image; without it a probe regression would only
-    # surface after the change merged and the next image-build PR ran.
-    # Other test/ paths (BATS suites) are intentionally excluded —
-    # they're covered by ci.yml's shell-tests job and don't need the
-    # multi-hour native-arm64 build budget.
-    paths:
-      - 'stage-airplanes/**'
-      - 'stage0/**'
-      - 'stage1/**'
-      - 'stage2/**'
-      - 'config-dev'
-      - 'config-stable'
-      - 'runtime-overlay/**'
-      - 'scripts/**'
-      - 'depends'
-      - 'Dockerfile'
-      - 'build.sh'
-      - 'build-docker.sh'
-      - 'export-image/**'
-      - 'export-noobs/**'
-      - 'test/boot-smoke/**'
-      - '.github/workflows/build-image.yml'
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    # Decides whether this run needs the actual image build. Non-PR events
+    # (push to dev/main, v* tags, manual dispatch) always build. For PRs
+    # the changed-file list is matched against the build-input patterns in
+    # .github/scripts/changed-files-need-build.sh — which build-input
+    # paths trigger a build is owned there (and pinned by
+    # test/test_changed_files_need_build.bats), not by a workflow-level
+    # paths filter, so the ruleset-required job names below always
+    # materialise: gated jobs report `skipped`, which rulesets treat as
+    # passing. test/boot-smoke/ counts as a build input so probe changes
+    # are validated end-to-end against a freshly built image; other test/
+    # paths (BATS suites) are covered by ci.yml's shell-tests job and
+    # don't need the multi-hour native-arm64 build budget.
+    name: Detect build-input changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      build: ${{ steps.detect.outputs.build }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "$EVENT_NAME event: always build"
+            exit 0
+          fi
+          # previous_filename matters: a rename OUT of a build path only
+          # reports the new name in .filename — both sides must be matched
+          # or such a PR would skip the build that validates the removal.
+          #
+          # Fail open to build=true: if the file fetch or the matcher
+          # errors, a skipped `changes` output would let the gated jobs
+          # skip — and skipped counts as PASSING for the ruleset. Building
+          # unnecessarily is the safe failure direction; skipping a needed
+          # build is not.
+          result=true
+          if ! gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)' \
+              > "$RUNNER_TEMP/changed-files.txt"; then
+            echo "::warning::failed to list PR files; building as a precaution"
+          elif ! result="$(bash .github/scripts/changed-files-need-build.sh < "$RUNNER_TEMP/changed-files.txt")"; then
+            result=true
+            echo "::warning::changed-files matcher failed; building as a precaution"
+          fi
+          echo "build=$result" >> "$GITHUB_OUTPUT"
+          echo "build=$result ($(wc -l < "$RUNNER_TEMP/changed-files.txt" 2>/dev/null || echo '?') changed files)"
+
   resolve-product:
     name: Resolve product release identity
     runs-on: ubuntu-24.04
@@ -79,6 +119,7 @@ jobs:
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       commit_sha: ${{ steps.resolve.outputs.commit_sha }}
       should_publish: ${{ steps.resolve.outputs.should_publish }}
+      augment_version: ${{ steps.resolve.outputs.augment_version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -98,8 +139,19 @@ jobs:
         run: bash runtime-overlay/scripts/release-workflow/resolve-channel-and-tags.sh
 
   build-runtime:
-    name: Build runtime-overlay-${{ matrix.arch }}
-    needs: resolve-product
+    # Job names that branch rulesets require must be STATIC: a job skipped
+    # by the `changes` gate does not render ${{ }} expressions in its name
+    # (it reports literally as "build-${{ ... }}"), which can never match a
+    # required context. The channel/arch are visible in the run's logs and
+    # artifact names instead.
+    name: Build runtime-overlay-arm64
+    # The single skip gate. Everything downstream needs this job (directly
+    # or transitively), so a build=false PR skips the whole heavy chain via
+    # needs-cascade. resolve-product stays ungated: it is cheap, its
+    # "Resolve product release identity" check is ruleset-required, and the
+    # publish jobs' if-conditions read its outputs.
+    needs: [resolve-product, changes]
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-24.04-arm
     # Build inside Debian trixie, not the Ubuntu runner userspace, so
     # decoder binaries link against the same SONAMEs the deployed image
@@ -115,14 +167,11 @@ jobs:
     defaults:
       run:
         shell: bash
-    strategy:
-      matrix:
-        arch: [arm64]
-      fail-fast: false
     env:
       CHANNEL: ${{ needs.resolve-product.outputs.channel }}
       VERSION: ${{ needs.resolve-product.outputs.version }}
       COMMIT_SHA: ${{ needs.resolve-product.outputs.commit_sha }}
+      AUGMENT_VERSION: ${{ needs.resolve-product.outputs.augment_version }}
       DEBIAN_FRONTEND: noninteractive
     steps:
       - name: Bootstrap container
@@ -177,13 +226,14 @@ jobs:
               --channel "$CHANNEL" \
               --version "$VERSION" \
               --commit-sha "$COMMIT_SHA" \
-              --arch "${{ matrix.arch }}" \
+              --augment-dev-version "$AUGMENT_VERSION" \
+              --arch "arm64" \
               --output-dir "$RUNNER_TEMP/runtime-assets" \
               --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: runtime-assets-unsigned-${{ matrix.arch }}
+          name: runtime-assets-unsigned-arm64
           path: ${{ runner.temp }}/runtime-assets
           retention-days: 7
           if-no-files-found: error
@@ -195,7 +245,6 @@ jobs:
     timeout-minutes: 15
     env:
       CHANNEL: ${{ needs.resolve-product.outputs.channel }}
-      VERSION: ${{ needs.resolve-product.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -226,19 +275,34 @@ jobs:
         # actions/upload-artifact/download-artifact strips Unix mode bits
         # from loose files. The tarball preserves them, so restore the
         # tree before running exec-bit-check and any future mode-aware gate.
+        # The published dev version embeds a payload fingerprint the resolve
+        # job cannot know, so derive the real version from the bundled manifest
+        # rather than the base version.
         run: |
           set -euo pipefail
           tarball="$RUNNER_TEMP/runtime-assets/runtime-overlay-arm64.tar.gz"
+          manifest="$RUNNER_TEMP/runtime-assets/runtime-manifest.json"
           if [[ ! -f "$tarball" ]]; then
               echo "::error::expected runtime tarball missing: $tarball" >&2
               ls -la "$RUNNER_TEMP/runtime-assets/" >&2
               exit 1
           fi
-          rm -rf -- "$RUNNER_TEMP/runtime-assets/tree/v$VERSION"
+          if [[ ! -f "$manifest" ]]; then
+              echo "::error::expected runtime manifest missing: $manifest" >&2
+              ls -la "$RUNNER_TEMP/runtime-assets/" >&2
+              exit 1
+          fi
+          ASSET_VERSION="$(jq -r '.version' "$manifest")"
+          if [[ -z "$ASSET_VERSION" || "$ASSET_VERSION" == "null" ]]; then
+              echo "::error::runtime manifest has no version field: $manifest" >&2
+              exit 1
+          fi
+          echo "ASSET_VERSION=$ASSET_VERSION" >> "$GITHUB_ENV"
+          rm -rf -- "$RUNNER_TEMP/runtime-assets/tree"
           mkdir -p "$RUNNER_TEMP/runtime-assets/tree"
           tar -xzf "$tarball" -C "$RUNNER_TEMP/runtime-assets/tree"
-          if [[ ! -d "$RUNNER_TEMP/runtime-assets/tree/v$VERSION" ]]; then
-              echo "::error::tarball did not produce expected v$VERSION dir" >&2
+          if [[ ! -d "$RUNNER_TEMP/runtime-assets/tree/v$ASSET_VERSION" ]]; then
+              echo "::error::tarball did not produce expected v$ASSET_VERSION dir" >&2
               tar -tzf "$tarball" | head -20 >&2
               exit 1
           fi
@@ -246,7 +310,7 @@ jobs:
       - name: Run runtime release gates
         run: |
           bash runtime-overlay/scripts/release-workflow/verify-gates.sh \
-              --release-dir "$RUNNER_TEMP/runtime-assets/tree/v$VERSION" \
+              --release-dir "$RUNNER_TEMP/runtime-assets/tree/v$ASSET_VERSION" \
               --channel "$CHANNEL"
 
   sign-runtime:
@@ -312,17 +376,16 @@ jobs:
           if-no-files-found: error
 
   build:
-    name: build-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    # Static for ruleset matching — see the note on build-runtime's name.
+    name: build-arm64
     needs: [resolve-product, sign-runtime]
-    strategy:
-      matrix:
-        # armhf code paths exist but firmware package set has not been
-        # adapted for dual-arch yet; keep the matrix at arm64 until a
-        # follow-up step adds armhf-specific firmware/kernel handling.
-        arch: [arm64]
-      fail-fast: false
+    # arm64-only: armhf code paths exist but the firmware package set has
+    # not been adapted for dual-arch. No job matrix — ruleset-required job
+    # names must stay free of matrix suffixes (executed matrix jobs report
+    # "name (arm64)" while skipped ones report the bare name, so a matrixed
+    # required job can never satisfy its context on both paths).
     concurrency:
-      group: image-build-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}-${{ github.ref }}
+      group: image-build-${{ needs.resolve-product.outputs.channel }}-arm64-${{ github.ref }}
       cancel-in-progress: true
     # Native arm64 runner: host arch matches our target arch, so the entire
     # pi-gen build runs without qemu-user-aarch64 emulation. Free for public
@@ -336,7 +399,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: runtime-assets-signed-${{ matrix.arch }}
+          name: runtime-assets-signed-arm64
           path: ${{ runner.temp }}/runtime-assets
 
       - name: Load channel config
@@ -381,9 +444,9 @@ jobs:
 
       - name: Build
         env:
-          ARCH: ${{ matrix.arch }}
-          IMG_NAME: airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}
-          ARCHIVE_FILENAME: airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}
+          ARCH: arm64
+          IMG_NAME: airplanes-feeder-${{ env.CHANNEL }}-arm64
+          ARCHIVE_FILENAME: airplanes-feeder-${{ env.CHANNEL }}-arm64
           DEPLOY_COMPRESSION: xz
           IMG_SUFFIX: ""
           AIRPLANES_RUNTIME_RELEASE_ASSET_DIR: ${{ runner.temp }}/runtime-assets
@@ -401,11 +464,11 @@ jobs:
       # image contract via the ci.yml feed-update-regression job.
 
       - name: First-run chroot smoke
-        run: sudo -E bash scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz"
+        run: sudo -E bash scripts/first-run-chroot-smoke.sh "deploy/airplanes-feeder-${{ env.CHANNEL }}-arm64.img.xz"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
+          name: image-${{ env.CHANNEL }}-arm64
           path: deploy/
           if-no-files-found: error
 
@@ -417,13 +480,10 @@ jobs:
     # via test/boot-smoke/extra-probe.sh, sourced post-reboot through the
     # AIRPLANES_BOOT_SMOKE_EXTRA_SETUP hook on image-boot.sh.
     needs: [resolve-product, build]
-    name: boot-smoke-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    # Static for ruleset matching — see the note on build-runtime's name.
+    name: boot-smoke-arm64
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
-    strategy:
-      matrix:
-        arch: [arm64]
-      fail-fast: false
     env:
       CHANNEL: ${{ needs.resolve-product.outputs.channel }}
     steps:
@@ -445,7 +505,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
+          name: image-${{ env.CHANNEL }}-arm64
           path: deploy
 
       - name: Install QEMU smoke dependencies
@@ -474,10 +534,10 @@ jobs:
       - name: Run image boot smoke
         env:
           GH_TOKEN: ${{ github.token }}
-          AIRPLANES_IMAGE_PATH: ${{ github.workspace }}/deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz
+          AIRPLANES_IMAGE_PATH: ${{ github.workspace }}/deploy/airplanes-feeder-${{ env.CHANNEL }}-arm64.img.xz
           AIRPLANES_IMAGE_CONTRACT: new
           AIRPLANES_IMAGE_CHANNEL: ${{ env.CHANNEL }}
-          AIRPLANES_IMAGE_ARCH: ${{ matrix.arch }}
+          AIRPLANES_IMAGE_ARCH: arm64
           AIRPLANES_BOOT_SMOKE_EXTRA_SETUP: ${{ github.workspace }}/test/boot-smoke/setup.sh
           AIRPLANES_BOOT_SMOKE_WORK_DIR: ${{ runner.temp }}/airplanes-image-boot
           # Preserve qemu-logs across the cleanup trap so the failure-artifact
@@ -491,7 +551,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: boot-smoke-${{ env.CHANNEL }}-${{ matrix.arch }}-logs
+          name: boot-smoke-${{ env.CHANNEL }}-arm64-logs
           path: ${{ runner.temp }}/airplanes-image-boot/qemu-logs
           if-no-files-found: warn
 
@@ -501,13 +561,10 @@ jobs:
     # signed with a test key, asserts convergence then rollback, reboots and
     # verifies the rolled-back release persists.
     needs: [resolve-product, sign-runtime, build]
-    name: runtime-overlay-upgrade-${{ needs.resolve-product.outputs.channel }}-${{ matrix.arch }}
+    # Static for ruleset matching — see the note on build-runtime's name.
+    name: runtime-overlay-upgrade-arm64
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
-    strategy:
-      matrix:
-        arch: [arm64]
-      fail-fast: false
     env:
       CHANNEL: ${{ needs.resolve-product.outputs.channel }}
     steps:
@@ -529,12 +586,12 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: runtime-assets-signed-${{ matrix.arch }}
+          name: runtime-assets-signed-arm64
           path: ${{ runner.temp }}/runtime-assets
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: image-${{ env.CHANNEL }}-${{ matrix.arch }}
+          name: image-${{ env.CHANNEL }}-arm64
           path: deploy
 
       - name: Install QEMU smoke dependencies
@@ -575,10 +632,10 @@ jobs:
       - name: Run image boot smoke (runtime-overlay-upgrade variant)
         env:
           GH_TOKEN: ${{ github.token }}
-          AIRPLANES_IMAGE_PATH: ${{ github.workspace }}/deploy/airplanes-feeder-${{ env.CHANNEL }}-${{ matrix.arch }}.img.xz
+          AIRPLANES_IMAGE_PATH: ${{ github.workspace }}/deploy/airplanes-feeder-${{ env.CHANNEL }}-arm64.img.xz
           AIRPLANES_IMAGE_CONTRACT: new
           AIRPLANES_IMAGE_CHANNEL: ${{ env.CHANNEL }}
-          AIRPLANES_IMAGE_ARCH: ${{ matrix.arch }}
+          AIRPLANES_IMAGE_ARCH: arm64
           AIRPLANES_BOOT_SMOKE_EXTRA_SETUP: ${{ github.workspace }}/test/boot-smoke/setup.sh
           AIRPLANES_BOOT_SMOKE_WORK_DIR: ${{ runner.temp }}/airplanes-image-boot-upgrade
           AIRPLANES_BOOT_SMOKE_KEEP_WORK_DIR: '1'
@@ -594,7 +651,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: runtime-overlay-upgrade-${{ env.CHANNEL }}-${{ matrix.arch }}-logs
+          name: runtime-overlay-upgrade-${{ env.CHANNEL }}-arm64-logs
           path: ${{ runner.temp }}/airplanes-image-boot-upgrade/qemu-logs
           if-no-files-found: warn
 

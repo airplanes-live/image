@@ -176,6 +176,26 @@
   },
   {
     "mode": "symlink",
+    "link": "/usr/local/bin/apl-aggregator",
+    "target": "/opt/airplanes-runtime/current/bin/apl-aggregator"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes-webconfig/aggregator-run",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/aggregator-run"
+  },
+  {
+    "mode": "symlink",
+    "link": "/usr/local/lib/airplanes-webconfig/aggregators",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/aggregators"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-aggregator@.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-aggregator@.service"
+  },
+  {
+    "mode": "symlink",
     "link": "/etc/lighttpd/conf-available/40-airplanes-webconfig.conf",
     "target": "/opt/airplanes-runtime/current/etc/lighttpd/conf-available/40-airplanes-webconfig.conf"
   },
@@ -236,5 +256,25 @@
     "mode": "symlink",
     "link": "/etc/systemd/system/airplanes-mlat.service",
     "target": "/opt/airplanes-runtime/current/systemd/airplanes-mlat.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-diagnostics.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-diagnostics.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-diagnostics.timer",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-diagnostics.timer"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-config-sync.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-config-sync.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-config-sync.timer",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-config-sync.timer"
   }
 ]

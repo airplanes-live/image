@@ -114,6 +114,39 @@ run_stage() {
     [[ "$output" == *"40 lowercase hex"* ]]
 }
 
+@test "populated rootfs: stages apl-aggregator helper, unit, run-helper, descriptors" {
+    # The other tests use an empty rootfs so the per-file copies no-op. This one
+    # carries the webconfig-owned aggregator artifacts and asserts they land in
+    # the overlay tree (helper binary, run-helper, adapter descriptors dir, and
+    # the systemd template) — the files managed_paths then symlinks onto the image.
+    local sha="abcabcabcabcabcabcabcabcabcabcabcabcabca"
+    local dir="$BASE/$TAG"
+    mkdir -p "$dir"
+    printf 'stub-webconfig-binary\n' > "$dir/airplanes-webconfig-${ARCH}"
+
+    local rfs="$BATS_TEST_TMPDIR/rootfs-pop"
+    mkdir -p "$rfs/usr/local/bin" \
+             "$rfs/usr/local/lib/airplanes-webconfig/aggregators" \
+             "$rfs/etc/systemd/system"
+    printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/bin/apl-aggregator"
+    printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/bin/apl-wifi"
+    printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/lib/airplanes-webconfig/aggregator-run"
+    printf 'id=fr24\n'             > "$rfs/usr/local/lib/airplanes-webconfig/aggregators/fr24.desc"
+    printf '[Unit]\n'             > "$rfs/etc/systemd/system/airplanes-aggregator@.service"
+    printf '[Unit]\n'             > "$rfs/etc/systemd/system/airplanes-webconfig.service"
+    tar -czf "$dir/rootfs.tar.gz" -C "$rfs" .
+
+    printf '{"version": "9.9.9", "commit_sha": "%s"}\n' "$sha" > "$dir/manifest.json"
+    ( cd "$dir" && sha256sum "airplanes-webconfig-${ARCH}" rootfs.tar.gz manifest.json > SHA256SUMS )
+
+    run_stage
+    [ "$status" -eq 0 ]
+    [ -f "$OUT/bin/apl-aggregator" ]
+    [ -f "$OUT/lib/airplanes-webconfig/aggregator-run" ]
+    [ -f "$OUT/lib/airplanes-webconfig/aggregators/fr24.desc" ]
+    [ -f "$OUT/systemd/airplanes-aggregator@.service" ]
+}
+
 @test "malformed manifest commit_sha (not 40-hex): fails even without a pin" {
     local dir="$BASE/$TAG"
     mkdir -p "$dir"
@@ -127,4 +160,68 @@ run_stage() {
     run_stage
     [ "$status" -ne 0 ]
     [[ "$output" == *"40 lowercase hex"* ]]
+}
+
+# Install a PATH-shim `curl` that fails fetches whose URL ends in <suffix> for
+# the first <times> invocations (counted in $FAIL_COUNTER), then delegates to
+# the real curl. Simulates an asset briefly 404ing while dev-latest republishes.
+install_flaky_curl() {
+    local suffix="$1" times="$2"
+    local shimdir="$BATS_TEST_TMPDIR/shim"
+    mkdir -p "$shimdir"
+    REAL_CURL="$(command -v curl)"
+    FAIL_SUFFIX="$suffix"
+    FAIL_TIMES="$times"
+    FAIL_COUNTER="$BATS_TEST_TMPDIR/curlfail.count"
+    : > "$FAIL_COUNTER"
+    cat > "$shimdir/curl" <<'SHIM'
+#!/usr/bin/env bash
+url="${@: -1}"
+if [[ "$url" == *"$FAIL_SUFFIX" ]]; then
+    n=0; [ -s "$FAIL_COUNTER" ] && n="$(cat "$FAIL_COUNTER")"
+    n=$((n + 1)); printf '%s' "$n" > "$FAIL_COUNTER"
+    if [ "$n" -le "$FAIL_TIMES" ]; then
+        echo "fake curl: simulated transient failure $n for $url" >&2
+        exit 22
+    fi
+fi
+exec "$REAL_CURL" "$@"
+SHIM
+    chmod +x "$shimdir/curl"
+    export PATH="$shimdir:$PATH"
+    export REAL_CURL FAIL_SUFFIX FAIL_TIMES FAIL_COUNTER
+    export STAGE_WEBCONFIG_DL_BACKOFF=0
+}
+
+@test "transient asset failure during republish: retries then succeeds" {
+    local sha="abcabcabcabcabcabcabcabcabcabcabcabcabca"
+    mk_fixture "$sha" "1.2.3"
+    install_flaky_curl "manifest.json" 2
+    export STAGE_WEBCONFIG_DL_ATTEMPTS=5
+
+    run_stage
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FAIL_COUNTER")" = "3" ]   # 2 transient failures + 1 success
+    [[ "$output" == *"retrying"* ]]
+    [ "$(cat "$OUT/components.webconfig.sha")" = "$sha" ]
+}
+
+@test "persistent asset failure: dies after the attempt budget" {
+    mk_fixture "abcabcabcabcabcabcabcabcabcabcabcabcabca" "1.2.3"
+    install_flaky_curl "manifest.json" 999
+    export STAGE_WEBCONFIG_DL_ATTEMPTS=3
+
+    run_stage
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"after 3 attempts"* ]]
+    [ "$(cat "$FAIL_COUNTER")" = "3" ]   # exactly the budget, no extra attempts
+}
+
+@test "invalid attempt budget is rejected before any download" {
+    mk_fixture "abcabcabcabcabcabcabcabcabcabcabcabcabca" "1.2.3"
+    export STAGE_WEBCONFIG_DL_ATTEMPTS=08   # would loop forever in arithmetic without the guard
+
+    run_stage
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"must be a positive integer"* ]]
 }

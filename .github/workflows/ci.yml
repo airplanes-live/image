@@ -21,7 +21,7 @@ jobs:
         run: |
           shopt -s globstar nullglob
           mapfile -d '' files < <(
-            find scripts stage-airplanes test runtime-overlay -type f \
+            find scripts stage-airplanes test runtime-overlay .github/scripts -type f \
               \( -name '*.sh' \
                  -o -name 'systemctl-stub' \
                  -o -name 'airplanes-first-run' \
@@ -55,6 +55,7 @@ jobs:
                    runtime-overlay/src/share/airplanes/*.sh \
                    stage-airplanes/02-install-runtime-overlay/files/usr/local/lib/airplanes-runtime/recover-shim \
                    stage-airplanes/02-install-runtime-overlay/files/etc/update-motd.d/09-airplanes-recovery-status \
+                   .github/scripts/*.sh \
                    test/*.sh; do
             [[ -e "$f" ]] || continue
             bash -n "$f"
@@ -79,21 +80,24 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Resolve image-webconfig ref from overlay config-stable
-        id: webconfig-ref
+      - name: Resolve sibling-repo refs from overlay config-stable
+        id: sibling-refs
         # runtime-overlay/config-stable is the single source of truth for the
-        # webconfig commit the stable image ships. Test against that so a
-        # mismatch blows up here, not on a customer device.
+        # commits the stable image ships. Test against those so a mismatch
+        # blows up here, not on a customer device.
         run: |
           set -a
           # shellcheck disable=SC1091
           . runtime-overlay/config-stable
           set +a
-          # Fail loudly if the pin is empty/malformed — otherwise actions/checkout
+          # Fail loudly if a pin is empty/malformed — otherwise actions/checkout
           # silently falls back to the default branch.
           [[ "${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
             || { echo "::error::AIRPLANES_WEBCONFIG_COMMIT_SHA is not a 40-hex SHA: '${AIRPLANES_WEBCONFIG_COMMIT_SHA:-}'"; exit 1; }
-          echo "ref=$AIRPLANES_WEBCONFIG_COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          [[ "${AIRPLANES_FEED_OVERLAY_BRANCH:-}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::AIRPLANES_FEED_OVERLAY_BRANCH is not a 40-hex SHA: '${AIRPLANES_FEED_OVERLAY_BRANCH:-}'"; exit 1; }
+          echo "webconfig=$AIRPLANES_WEBCONFIG_COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "feed=$AIRPLANES_FEED_OVERLAY_BRANCH" >> "$GITHUB_OUTPUT"
 
       # Several first-run bats tests source wifi-validators.sh /
       # wifi-keyfile.sh from airplanes-live/image-webconfig (the libs moved
@@ -103,8 +107,19 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: airplanes-live/image-webconfig
-          ref: ${{ steps.webconfig-ref.outputs.ref }}
+          ref: ${{ steps.sibling-refs.outputs.webconfig }}
           path: image-webconfig-sibling
+
+      # test_stage_feed_unit_symmetry.bats enumerates feed/scripts/airplanes-*.{service,timer}
+      # and asserts every unit is symlinked by managed_paths.json, and that
+      # systemd.json enable matches exactly the set of those units that carry
+      # an [Install] section. Pin to the same feed commit the stable image
+      # bakes so the symmetry pin tracks what users actually run.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: airplanes-live/feed
+          ref: ${{ steps.sibling-refs.outputs.feed }}
+          path: feed-sibling
 
       - name: Install bats and manifest-validator deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats jq python3-jsonschema
@@ -132,6 +147,7 @@ jobs:
       - name: bats test/
         env:
           AIRPLANES_IMAGE_WEBCONFIG_ROOT: ${{ github.workspace }}/image-webconfig-sibling
+          AIRPLANES_FEED_SRC: ${{ github.workspace }}/feed-sibling
         run: bats -r test/
 
       - name: Verify host state untouched (post-bats)
@@ -165,10 +181,10 @@ jobs:
   # what the script actually writes (e.g. a ProtectSystem= re-mount that
   # silently locks /etc, which chroot tests cannot see).
   #
-  # feeder-id is pre-seeded so generate_feeder_id no-ops — that lets us
-  # skip the feed/ checkout (create-uuid.sh is exercised separately by the
-  # feed repo's CI). The runner is ephemeral, so /etc / /boot/firmware /
-  # /run/airplanes state created here is discarded with the VM.
+  # feeder-id is pre-seeded so generate_feeder_id no-ops, keeping this job
+  # focused on the unit's sandbox directives rather than UUID generation. The
+  # runner is ephemeral, so /etc / /boot/firmware / /run/airplanes state
+  # created here is discarded with the VM.
   first-run-systemd:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -189,13 +205,10 @@ jobs:
           # under real systemd sandboxing).
           printf '00000000-0000-0000-0000-000000000000\n' \
             | sudo tee /etc/airplanes/feeder-id >/dev/null
+          # /boot/firmware is in the unit's ReadWritePaths= and must exist on
+          # disk before the unit starts — otherwise systemd fails the mount-
+          # namespace setup with status=226/NAMESPACE.
           sudo install -d -m 0755 /boot/firmware
-          # Every path in the unit's ReadWritePaths= must exist on disk before
-          # the unit starts — otherwise systemd fails the mount-namespace setup
-          # with status=226/NAMESPACE. On the real image, /usr/local/share/airplanes
-          # is created by stage-airplanes/01-install-feed; here we have to
-          # materialise it ourselves.
-          sudo install -d -m 0755 /usr/local/share/airplanes
           # apply_hostname rewrites the /etc/hosts 127.0.1.1 line whose
           # hostname matches /etc/hostname's current value. GitHub-hosted
           # runners don't always have a 127.0.1.1 entry that matches, so

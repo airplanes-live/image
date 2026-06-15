@@ -28,6 +28,7 @@ setup() {
     export PATHS_CLAIM_PENDING="$TMP/nx-claim-pending"
     export PATHS_CLAIM_VERSION="$TMP/nx-claim-version"
     export PATHS_AIRCRAFT_JSON="$TMP/nx-aircraft"
+    export PATHS_READSB_STATS="$TMP/nx-readsb-stats"
     export PATHS_THERMAL="$TMP/nx-thermal"
     export PATHS_LOGO="$LOGO"
     export PATHS_BANNER="$BANNER"
@@ -42,6 +43,7 @@ setup() {
     export PATHS_STATE_FILE_978="$TMP/nx-978-state"
     export PATHS_STATE_FILE_DUMP978FA="$TMP/nx-dump978fa-state"
     export PATHS_STATE_READER_LIB="$TMP/nx-state-reader-lib"
+    export PATHS_FEED_ENV="$TMP/nx-feed-env"
     export PATHS_SYSFS_NET="$TMP/sysfs-net"
     export TERM=dumb  # disable color so assertions match plain text
 
@@ -1552,7 +1554,7 @@ STUB
 @test "svc_token_text: masked → 'MASK'"                 { [ "$(svc_token_text masked)" = 'MASK' ]; }
 @test "svc_token_text: disabled → 'off'"                { [ "$(svc_token_text disabled)" = 'off' ]; }
 @test "svc_token_text: disabled-by-config → 'off'"      { [ "$(svc_token_text disabled-by-config)" = 'off' ]; }
-@test "svc_token_text: wait → 'wait'"                   { [ "$(svc_token_text wait)" = 'wait' ]; }
+@test "svc_token_text: wait → 'no SDR'"                 { [ "$(svc_token_text wait)" = 'no SDR' ]; }
 @test "svc_token_text: idle → 'idle'"                   { [ "$(svc_token_text idle)" = 'idle' ]; }
 @test "svc_token_text: partial → 'partial'"             { [ "$(svc_token_text partial)" = 'partial' ]; }
 @test "svc_token_text: unknown/timeout/other → '?'" {
@@ -2149,4 +2151,456 @@ EOF
         fi
     done
     (( header_seen ))
+}
+
+# --- backend endpoint brackets (non-default backends) ------------------------
+
+setup_feed_state_test_env() {
+    install_state_reader_stub
+    PATHS_STATE_FILE_FEED="$TMP/run/airplanes-feed/state"
+}
+
+# write_feed_state_endpoint <host> <port> <is_default>
+write_feed_state_endpoint() {
+    mkdir -p "$(dirname "$PATHS_STATE_FILE_FEED")"
+    {
+        printf 'schema_version=1\n'
+        printf 'service=airplanes-feed\n'
+        printf 'state=enabled\n'
+        printf 'reason=ok\n'
+        printf 'target_host=%s\n' "$1"
+        printf 'target_port=%s\n' "$2"
+        printf 'target_is_default=%s\n' "$3"
+    } > "$PATHS_STATE_FILE_FEED"
+}
+
+write_feed_env_website() {
+    printf 'APL_FEED_WEBSITE_URL=%s\n' "$1" > "$TMP/feed.env"
+    PATHS_FEED_ENV="$TMP/feed.env"
+}
+
+@test "_derive_feed_target_host: non-default endpoint sets the display host" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    _derive_feed_target_host
+    [ "$SD_FEED_TARGET_HOST" = "feed.airplanes.test" ]
+}
+
+@test "_derive_feed_target_host: default endpoint stays empty" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.live 30004 true
+    _derive_feed_target_host
+    [ -z "$SD_FEED_TARGET_HOST" ]
+}
+
+@test "_derive_feed_target_host: non-default port renders host:port" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.live 9999 false
+    _derive_feed_target_host
+    [ "$SD_FEED_TARGET_HOST" = "feed.airplanes.live:9999" ]
+}
+
+@test "_derive_feed_target_host: invalid (present-but-empty) endpoint stays empty" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint '' '' ''
+    _derive_feed_target_host
+    [ -z "$SD_FEED_TARGET_HOST" ]
+}
+
+@test "_derive_feed_target_host: missing state file clears a stale value" {
+    setup_feed_state_test_env
+    SD_FEED_TARGET_HOST="stale.example"
+    _derive_feed_target_host
+    [ -z "$SD_FEED_TARGET_HOST" ]
+}
+
+@test "_derive_website_host: non-default URL sets the display host" {
+    write_feed_env_website 'https://web.dev.airplanes.live'
+    _derive_website_host
+    [ "$SD_WEBSITE_HOST" = "web.dev.airplanes.live" ]
+}
+
+@test "_derive_website_host: quoted URL with path parses to the host" {
+    write_feed_env_website '"https://airplanes.test/some/path"'
+    _derive_website_host
+    [ "$SD_WEBSITE_HOST" = "airplanes.test" ]
+}
+
+@test "_derive_website_host: default URL stays empty" {
+    write_feed_env_website 'https://airplanes.live'
+    _derive_website_host
+    [ -z "$SD_WEBSITE_HOST" ]
+}
+
+@test "_derive_website_host: missing feed.env clears a stale value" {
+    SD_WEBSITE_HOST="stale.example"
+    _derive_website_host
+    [ -z "$SD_WEBSITE_HOST" ]
+}
+
+@test "_derive_website_host: host outside the charset stays empty" {
+    write_feed_env_website 'https://bad_host;injection'
+    _derive_website_host
+    [ -z "$SD_WEBSITE_HOST" ]
+}
+
+@test "full layout: Claim and Feed rows carry brackets for non-default backends" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    write_feed_env_website 'https://web.dev.airplanes.live'
+    collect_status_data snapshot
+    build_status_lines_full live
+    local row claim_ok=0 feed_ok=0
+    for row in "${STATUS_LINES[@]}"; do
+        case "$(printf '%s' "$row" | strip_ansi)" in
+            Claim*'[web.dev.airplanes.live]'*) claim_ok=1 ;;
+            Feed\ *'[feed.airplanes.test]'*) feed_ok=1 ;;
+        esac
+    done
+    (( claim_ok )) && (( feed_ok ))
+}
+
+@test "snapshot layout: Claim and Feed rows carry brackets for non-default backends" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    write_feed_env_website 'https://web.dev.airplanes.live'
+    collect_status_data snapshot
+    build_status_lines_snapshot
+    local row claim_ok=0 feed_ok=0
+    for row in "${STATUS_LINES[@]}"; do
+        case "$(printf '%s' "$row" | strip_ansi)" in
+            Claim*'[web.dev.airplanes.live]'*) claim_ok=1 ;;
+            Feed\ *'[feed.airplanes.test]'*) feed_ok=1 ;;
+        esac
+    done
+    (( claim_ok )) && (( feed_ok ))
+}
+
+@test "compact layout: brackets land on dim continuation rows within panel width" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    write_feed_env_website 'https://web.dev.airplanes.live'
+    collect_status_data snapshot
+    build_status_lines_compact
+    local row stripped ws_ok=0 fh_ok=0
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            '  [web.dev.airplanes.live]') ws_ok=1 ;;
+            '  [feed.airplanes.test]') fh_ok=1 ;;
+        esac
+        # No bracket may ride inline on the Claim/Feed rows in compact.
+        case "$stripped" in
+            Claim*'['*|Feed\ *'['*) return 1 ;;
+        esac
+        (( ${#stripped} <= STATUS_PANEL_WIDTH ))
+    done
+    (( ws_ok )) && (( fh_ok ))
+}
+
+@test "default install: no backend brackets in any layout" {
+    collect_status_data snapshot
+    local builder row
+    for builder in 'build_status_lines_full live' build_status_lines_snapshot build_status_lines_compact; do
+        $builder
+        for row in "${STATUS_LINES[@]}"; do
+            case "$(printf '%s' "$row" | strip_ansi)" in
+                Claim*'['*|Feed\ *'['*) return 1 ;;
+            esac
+        done
+    done
+}
+
+@test "snapshot layout: bracketed rows stay within 80 cols at the 30-char host clamp" {
+    setup_feed_state_test_env
+    local long_host
+    long_host="$(printf 'h%.0s' {1..60}).example"
+    write_feed_state_endpoint "$long_host" 30004 false
+    write_feed_env_website "https://$long_host"
+    collect_status_data snapshot
+    # sanitize(30) caps the display host regardless of feed.env content.
+    [ "${#SD_FEED_TARGET_HOST}" -le 30 ]
+    [ "${#SD_WEBSITE_HOST}" -le 30 ]
+    build_status_lines_snapshot
+    local row stripped
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            Claim*|Feed\ *) (( ${#stripped} <= 80 )) ;;
+        esac
+    done
+}
+
+@test "full layout: MLAT note spills to its own row when the Feed bracket is present" {
+    setup_feed_state_test_env
+    write_feed_state_endpoint feed.airplanes.test 30004 false
+    collect_status_data snapshot
+    SD_MLAT_WARN="Set lat/lon/alt to enable MLAT."
+    build_status_lines_full live
+    local row stripped feed_row="" spill_seen=0
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            Feed\ *) feed_row="$stripped" ;;
+            '            Set lat/lon/alt to enable MLAT.') spill_seen=1 ;;
+        esac
+    done
+    [[ "$feed_row" == *'[feed.airplanes.test]'* ]]
+    [[ "$feed_row" != *'MLAT'* ]]
+    (( spill_seen ))
+    (( ${#feed_row} <= 80 ))
+}
+
+@test "full layout: MLAT note stays inline on the Feed row without a bracket" {
+    collect_status_data snapshot
+    SD_FEED_TARGET_HOST=""
+    SD_MLAT_WARN="Set lat/lon/alt to enable MLAT."
+    build_status_lines_full live
+    local row stripped feed_ok=0
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            Feed\ *'Set lat/lon/alt to enable MLAT.'*) feed_ok=1 ;;
+        esac
+    done
+    (( feed_ok ))
+}
+
+@test "full layout: worst-case bracketed rows stay within 80 cols" {
+    setup_feed_state_test_env
+    local long_host
+    long_host="$(printf 'h%.0s' {1..60}).example"
+    write_feed_state_endpoint "$long_host" 30004 false
+    write_feed_env_website "https://$long_host"
+    collect_status_data snapshot
+    SD_MLAT_WARN="Set lat/lon/alt to enable MLAT."
+    build_status_lines_full live
+    # Measure characters, not bytes — the script's LC_ALL=C would count
+    # the claim hint's em-dash as 3, overstating the display width.
+    local row stripped
+    for row in "${STATUS_LINES[@]}"; do
+        stripped="$(printf '%s' "$row" | strip_ansi)"
+        case "$stripped" in
+            Claim*|Feed\ *)
+                local LC_ALL=C.UTF-8
+                (( ${#stripped} <= 80 ))
+                ;;
+        esac
+    done
+}
+
+# ---- readsb_config_state — same shape as _978_config_state ----------------
+
+write_readsb_state() {
+    # write_readsb_state <decision> <reason>
+    local decision="$1" reason="$2"
+    mkdir -p "$(dirname "$PATHS_STATE_FILE_READSB")"
+    {
+        printf 'schema_version=1\n'
+        printf 'service=readsb\n'
+        printf 'state=%s\n' "$decision"
+        printf 'reason=%s\n' "$reason"
+    } > "$PATHS_STATE_FILE_READSB"
+}
+
+setup_readsb_state_test_env() {
+    install_state_reader_stub
+    PATHS_STATE_FILE_READSB="$TMP/run/readsb/state"
+}
+
+@test "readsb_config_state: active + state=enabled,reason=ok" {
+    setup_readsb_state_test_env
+    write_readsb_state enabled ok
+    run readsb_config_state active
+    [ "$status" -eq 0 ]
+    [ "$output" = 'enabled ok' ]
+}
+
+@test "readsb_config_state: active + state=disabled,reason=no_hardware" {
+    setup_readsb_state_test_env
+    write_readsb_state disabled no_hardware
+    run readsb_config_state active
+    [ "$output" = 'disabled no_hardware' ]
+}
+
+@test "readsb_config_state: active + state file absent → 'unknown -'" {
+    setup_readsb_state_test_env
+    run readsb_config_state active
+    [ "$output" = 'unknown -' ]
+}
+
+@test "readsb_config_state: inactive → 'inactive -'" {
+    setup_readsb_state_test_env
+    write_readsb_state disabled no_hardware
+    run readsb_config_state inactive
+    [ "$output" = 'inactive -' ]
+}
+
+# Integration: a pinned-SDR-absent self-disable (unit active,
+# state=disabled/no_hardware) must surface as the amber 'wait' token in the
+# tile, not the green ok that systemd-active alone would produce.
+@test "unit_state_with_reason readsb: active + no_hardware → 'wait no_hardware'" {
+    setup_readsb_state_test_env
+    write_readsb_state disabled no_hardware
+    SD_UNIT_PROPS_PRIMED=0
+    stub_systemctl active 0
+    run unit_state_with_reason readsb.service
+    [ "$output" = 'wait no_hardware' ]
+}
+
+# An active readsb with NO state file (older overlay / pre-first-write) falls
+# back to the systemd-derived 'ok', never 'unknown'.
+@test "unit_state_with_reason readsb: active + no state file → 'ok -'" {
+    setup_readsb_state_test_env
+    SD_UNIT_PROPS_PRIMED=0
+    stub_systemctl active 0
+    run unit_state_with_reason readsb.service
+    [ "$output" = 'ok -' ]
+}
+
+# ---- effective gain: read_readsb_gain_db -----------------------------------
+
+@test "read_readsb_gain_db: missing file -> non-zero, empty" {
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
+
+@test "read_readsb_gain_db: numeric gain_db -> one-decimal value" {
+    printf '{"gain_db":49.6,"messages":1}\n' > "$PATHS_READSB_STATS"
+    [ "$(read_readsb_gain_db)" = "49.6" ]
+}
+
+@test "read_readsb_gain_db: integer gain_db normalised to one decimal" {
+    printf '{"gain_db":33}\n' > "$PATHS_READSB_STATS"
+    [ "$(read_readsb_gain_db)" = "33.0" ]
+}
+
+@test "read_readsb_gain_db: JSON string gain_db rejected (numbers type-gate)" {
+    printf '{"gain_db":"49.6"}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+}
+
+@test "read_readsb_gain_db: null or absent gain_db rejected" {
+    printf '{"gain_db":null}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+    printf '{"messages":1}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+}
+
+@test "read_readsb_gain_db: out-of-range dropped, boundary kept" {
+    printf '{"gain_db":99}\n' > "$PATHS_READSB_STATS"
+    [ "$(read_readsb_gain_db)" = "99.0" ]
+    printf '{"gain_db":100}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+    printf '{"gain_db":-10}\n' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+}
+
+@test "read_readsb_gain_db: malformed JSON rejected" {
+    printf 'not json' > "$PATHS_READSB_STATS"
+    run read_readsb_gain_db
+    [ "$status" -ne 0 ]
+}
+
+# ---- effective gain: collect_status_data gating ----------------------------
+#
+# Prime readsb's ActiveState via the systemctl-show shim so the gate's
+# `_unit_prop readsb.service ActiveState` resolves from the per-frame cache.
+
+_gain_prime_readsb() {
+    local active="${1:-active}"
+    local shim
+    shim="$(_systemctl_show_shim)"
+    PATH="$shim:$PATH"
+    cat > "$TMP/sysctl-show.out" <<EOF
+Id=readsb.service
+ActiveState=$active
+UnitFileState=enabled
+ExecMainStatus=0
+EOF
+}
+
+@test "gain gate: GAIN=auto + readsb active + fresh stats -> SD_GAIN_DB set" {
+    _gain_prime_readsb active
+    printf 'GAIN=auto\n' > "$PATHS_FEED_ENV"
+    printf '{"gain_db":49.6}\n' > "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ "$SD_GAIN_DB" = "49.6" ]
+    [ "$SD_GAIN_CFG" = "auto" ]
+}
+
+@test "gain gate: GAIN unset (defaults to auto) still surfaces effective gain" {
+    _gain_prime_readsb active
+    # No PATHS_FEED_ENV file -> _read_feed_env_value fails -> default auto.
+    printf '{"gain_db":40.0}\n' > "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ "$SD_GAIN_DB" = "40.0" ]
+    [ "$SD_GAIN_CFG" = "auto" ]
+}
+
+@test "gain gate: numeric GAIN hides effective gain (configured == effective)" {
+    _gain_prime_readsb active
+    printf 'GAIN=49.6\n' > "$PATHS_FEED_ENV"
+    printf '{"gain_db":49.6}\n' > "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ -z "$SD_GAIN_DB" ]
+}
+
+@test "gain gate: readsb inactive hides effective gain" {
+    _gain_prime_readsb inactive
+    printf 'GAIN=auto\n' > "$PATHS_FEED_ENV"
+    printf '{"gain_db":49.6}\n' > "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ -z "$SD_GAIN_DB" ]
+}
+
+@test "gain gate: stale stats.json (>90s) hides effective gain" {
+    _gain_prime_readsb active
+    printf 'GAIN=auto\n' > "$PATHS_FEED_ENV"
+    printf '{"gain_db":49.6}\n' > "$PATHS_READSB_STATS"
+    touch -d "@$(( $(date +%s) - 120 ))" "$PATHS_READSB_STATS"
+    collect_status_data snapshot
+    [ -z "$SD_GAIN_DB" ]
+}
+
+# ---- effective gain: builder rows ------------------------------------------
+
+# These call collect_status_data first (populating SD_NETWORK_LINES and the
+# rest of the SD_* globals the builders expand under `set -u`), then override
+# the gain globals to drive the row directly.
+
+@test "compact builder: gain row present and within 38 cols when SD_GAIN_DB set" {
+    _gain_prime_readsb active
+    collect_status_data snapshot
+    SD_GAIN_DB="49.6"
+    SD_GAIN_CFG="auto"
+    build_status_lines_compact
+    printf '%s\n' "${STATUS_LINES[@]}" | strip_ansi | grep -q '^Gain .*49\.6 dB'
+    local w
+    w="$(printf '%s\n' "${STATUS_LINES[@]}" | strip_ansi | max_display_width)"
+    (( w <= 38 ))
+}
+
+@test "compact builder: no gain row when SD_GAIN_DB empty" {
+    _gain_prime_readsb active
+    collect_status_data snapshot
+    SD_GAIN_DB=""
+    SD_GAIN_CFG=""
+    build_status_lines_compact
+    ! printf '%s\n' "${STATUS_LINES[@]}" | strip_ansi | grep -q '^Gain '
+}
+
+@test "snapshot builder: gain row shows 'cfg -> db dB'" {
+    _gain_prime_readsb active
+    collect_status_data snapshot
+    SD_GAIN_DB="49.6"
+    SD_GAIN_CFG="auto"
+    build_status_lines_snapshot
+    printf '%s\n' "${STATUS_LINES[@]}" | strip_ansi | grep -q 'Gain .*auto -> 49\.6 dB'
 }

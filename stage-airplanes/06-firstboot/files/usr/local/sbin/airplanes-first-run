@@ -3,9 +3,8 @@
 #
 # Runs every boot. Two responsibilities:
 #   1. Generate /etc/airplanes/feeder-id (skipped when one already exists,
-#      since create-uuid.sh would otherwise churn the file and the legacy
-#      symlink on every boot, and could orphan a claim secret if the
-#      canonical file ever ended up corrupted).
+#      so a later boot can't mint a fresh UUID over a still-valid one and
+#      orphan the claim secret tied to it).
 #   2. If /boot/firmware/airplanes-config.txt is present: parse + apply
 #      (NM keyfile, WiFi country, hostname, FEED_HOST expansion, feed.env
 #      merge) → rename the source to airplanes-config.applied.txt on full
@@ -23,7 +22,6 @@ FEED_ENV="${FEED_ENV:-/etc/airplanes/feed.env}"
 BOOT_CONFIG="${BOOT_CONFIG:-/boot/firmware/airplanes-config.txt}"
 LOCK_FILE="${LOCK_FILE:-/run/airplanes/feed-env.lock}"
 FEEDER_ID_FILE="${FEEDER_ID_FILE:-/etc/airplanes/feeder-id}"
-CREATE_UUID="${CREATE_UUID:-/usr/local/share/airplanes/git/create-uuid.sh}"
 WIFI_KEYFILE_DIR="${WIFI_KEYFILE_DIR:-/etc/NetworkManager/system-connections}"
 WIFI_KEYFILE="${WIFI_KEYFILE:-${WIFI_KEYFILE_DIR}/airplanes-config-wifi.nmconnection}"
 HOSTNAME_FILE="${HOSTNAME_FILE:-/etc/hostname}"
@@ -129,27 +127,15 @@ reject_unknown_boot_key() {
 	fi
 }
 
-# Skip if a canonical feeder-id already exists. create-uuid.sh is technically
-# idempotent (it reuses an existing valid UUID) but unconditionally rewrites
-# FEEDER_ID_FILE and reinstalls the legacy symlink on every call — and if the
-# canonical file ever ended up corrupted while a claim secret still referenced
-# the old UUID, an every-boot invocation could silently rotate identity.
+# Skip if a canonical feeder-id already exists: regenerating would mint a fresh
+# UUID on every boot, and if the canonical file were ever corrupted while a
+# claim secret still referenced the old UUID, that would silently rotate the
+# feeder's identity.
 generate_feeder_id() {
 	if [[ -f "$FEEDER_ID_FILE" ]]; then
 		return 0
 	fi
-	if [[ -f "$CREATE_UUID" ]]; then
-		if ! bash "$CREATE_UUID"; then
-			log "create-uuid.sh exited non-zero"
-			return 1
-		fi
-		return 0
-	fi
-	# Feed overlay delivers the feed stack via managed_paths; the legacy
-	# $GIT/create-uuid.sh is no longer on disk. Generate the feeder-id
-	# inline (same logic, simplified). Legacy-UUID migration is no longer
-	# needed on the new image (no $IPATH/airplanes-uuid to migrate from).
-	log "create-uuid.sh not found; generating feeder-id inline"
+	log "generating feeder-id"
 	local uuid
 	uuid="$(cat /proc/sys/kernel/random/uuid)" || {
 		log "failed to read /proc/sys/kernel/random/uuid"
@@ -162,7 +148,7 @@ generate_feeder_id() {
 	printf '%s\n' "$uuid" > "$tmp"
 	chmod 0644 "$tmp"
 	mv -f "$tmp" "$FEEDER_ID_FILE"
-	log "feeder-id=$uuid (generated inline)"
+	log "feeder-id=$uuid"
 }
 
 # Verify the BOOT_CONFIG directory accepts create/rename/unlink before any
