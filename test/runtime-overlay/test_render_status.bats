@@ -1554,7 +1554,7 @@ STUB
 @test "svc_token_text: masked → 'MASK'"                 { [ "$(svc_token_text masked)" = 'MASK' ]; }
 @test "svc_token_text: disabled → 'off'"                { [ "$(svc_token_text disabled)" = 'off' ]; }
 @test "svc_token_text: disabled-by-config → 'off'"      { [ "$(svc_token_text disabled-by-config)" = 'off' ]; }
-@test "svc_token_text: wait → 'wait'"                   { [ "$(svc_token_text wait)" = 'wait' ]; }
+@test "svc_token_text: wait → 'no SDR'"                 { [ "$(svc_token_text wait)" = 'no SDR' ]; }
 @test "svc_token_text: idle → 'idle'"                   { [ "$(svc_token_text idle)" = 'idle' ]; }
 @test "svc_token_text: partial → 'partial'"             { [ "$(svc_token_text partial)" = 'partial' ]; }
 @test "svc_token_text: unknown/timeout/other → '?'" {

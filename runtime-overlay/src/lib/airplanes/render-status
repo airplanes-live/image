@@ -1257,7 +1257,7 @@ svc_token_text() {
         misconfigured)                 printf '!!' ;;
         masked)                        printf 'MASK' ;;
         disabled|disabled-by-config)   printf 'off' ;;
-        wait)                          printf 'wait' ;;
+        wait)                          printf 'no SDR' ;;
         idle)                          printf 'idle' ;;
         partial)                       printf 'partial' ;;
         *)                             printf '?' ;;
