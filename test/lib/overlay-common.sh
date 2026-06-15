@@ -19,11 +19,12 @@ export -f on_chroot
 export ROOTFS_DIR=/
 export BASE_DIR=/image
 
-# Source config-dev so feed + readsb + webconfig repo/branch env vars are in
-# scope — avoids drifting between the smoke and what production builds
-# actually use. Capture caller-supplied AIRPLANES_FEED_BRANCH first so
-# config-dev's default (dev) doesn't clobber it; the feed-CI gate runs the
-# smoke against a PR head branch, while image-CI runs it against feed/dev.
+# Source config-dev for CHANNEL=dev (and the runtime update channel). The
+# component repo/branch pins now live in runtime-overlay/config-dev; this file
+# overrides AIRPLANES_FEED_REPO to the bind-mounted checkout (below) and takes
+# the feed branch from the caller. Capture the caller-supplied
+# AIRPLANES_FEED_BRANCH first so a sourced default can't clobber it (the feed-CI
+# gate runs the smoke against a PR head branch, image-CI against feed/dev).
 caller_feed_branch="${AIRPLANES_FEED_BRANCH:-}"
 set -a
 . /image/config-dev
