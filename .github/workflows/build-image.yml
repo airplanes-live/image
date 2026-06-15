@@ -402,19 +402,13 @@ jobs:
           name: runtime-assets-signed-arm64
           path: ${{ runner.temp }}/runtime-assets
 
-      - name: Load channel config
+      - name: Resolve feed checkout ref from overlay config
         run: |
           set -a
           # shellcheck disable=SC1090
-          source "config-$CHANNEL"
+          source "runtime-overlay/config-$CHANNEL"
           set +a
-          {
-            echo "AIRPLANES_FEED_REPO=$AIRPLANES_FEED_REPO"
-            echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_BRANCH"
-            echo "AIRPLANES_READSB_REPO=$AIRPLANES_READSB_REPO"
-            echo "AIRPLANES_READSB_BRANCH=$AIRPLANES_READSB_BRANCH"
-            echo "CHANNEL=$CHANNEL"
-          } >> "$GITHUB_ENV"
+          echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_OVERLAY_BRANCH" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -489,13 +483,13 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Load channel config
+      - name: Resolve feed checkout ref from overlay config
         run: |
           set -a
           # shellcheck disable=SC1090
-          source "config-$CHANNEL"
+          source "runtime-overlay/config-$CHANNEL"
           set +a
-          echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_BRANCH" >> "$GITHUB_ENV"
+          echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_OVERLAY_BRANCH" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -570,13 +564,13 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Load channel config
+      - name: Resolve feed checkout ref from overlay config
         run: |
           set -a
           # shellcheck disable=SC1090
-          source "config-$CHANNEL"
+          source "runtime-overlay/config-$CHANNEL"
           set +a
-          echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_BRANCH" >> "$GITHUB_ENV"
+          echo "AIRPLANES_FEED_BRANCH=$AIRPLANES_FEED_OVERLAY_BRANCH" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
