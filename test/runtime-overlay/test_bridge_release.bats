@@ -53,8 +53,8 @@ setup() {
     printf 'ok' > "$HTTPD_DOC/graphs1090/index.html"
 
     : > "$TARGET_ROOT/run/readsb/aircraft.json"
-    printf 'state=enabled\nreason=\n' > "$TARGET_ROOT/run/dump978-fa/state"
-    printf 'state=enabled\nreason=\n' > "$TARGET_ROOT/run/airplanes-978/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/dump978-fa/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes-978/state"
 }
 
 teardown() {
