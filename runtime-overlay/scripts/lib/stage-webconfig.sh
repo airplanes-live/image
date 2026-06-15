@@ -103,6 +103,33 @@ esac
 
 : "${DOWNLOAD_BASE:=https://github.com/airplanes-live/image-webconfig/releases/download}"
 
+# Transient-download resilience. dev-latest is a moving prerelease: while the
+# publisher force-moves the tag and re-uploads assets, a fetch can briefly race
+# a missing or half-published asset (HTTP 404) or a mirror hiccup. Retry a few
+# times with linear backoff so that window does not fail the whole build, while
+# a genuine, persistent failure still surfaces. Overridable for tests.
+: "${STAGE_WEBCONFIG_DL_ATTEMPTS:=5}"
+: "${STAGE_WEBCONFIG_DL_BACKOFF:=3}"
+[[ "$STAGE_WEBCONFIG_DL_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] \
+    || die "STAGE_WEBCONFIG_DL_ATTEMPTS must be a positive integer (got: $STAGE_WEBCONFIG_DL_ATTEMPTS)"
+[[ "$STAGE_WEBCONFIG_DL_BACKOFF" =~ ^[0-9]+$ ]] \
+    || die "STAGE_WEBCONFIG_DL_BACKOFF must be a non-negative integer (got: $STAGE_WEBCONFIG_DL_BACKOFF)"
+
+fetch_asset() {
+    local url="$1" dest="$2" attempt=1
+    while :; do
+        if curl -fsSL --max-time 120 -o "$dest" "$url"; then
+            return 0
+        fi
+        if (( attempt >= STAGE_WEBCONFIG_DL_ATTEMPTS )); then
+            return 1
+        fi
+        echo "stage-webconfig: fetch attempt ${attempt}/${STAGE_WEBCONFIG_DL_ATTEMPTS} failed; retrying in ${STAGE_WEBCONFIG_DL_BACKOFF}s: $url" >&2
+        sleep "$STAGE_WEBCONFIG_DL_BACKOFF"
+        attempt=$(( attempt + 1 ))
+    done
+}
+
 work="$(mktemp -d "${TMPDIR:-/tmp}/stage-webconfig.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 
@@ -113,8 +140,8 @@ base_url="${DOWNLOAD_BASE}/${RELEASE_TAG}"
 binary_name="airplanes-webconfig-${ARCH}"
 for asset in "$binary_name" rootfs.tar.gz manifest.json SHA256SUMS; do
     echo "stage-webconfig: downloading $asset"
-    if ! curl -fsSL --max-time 120 -o "$work/$asset" "$base_url/$asset"; then
-        die "download failed: $base_url/$asset"
+    if ! fetch_asset "$base_url/$asset" "$work/$asset"; then
+        die "download failed after ${STAGE_WEBCONFIG_DL_ATTEMPTS} attempts: $base_url/$asset"
     fi
 done
 
