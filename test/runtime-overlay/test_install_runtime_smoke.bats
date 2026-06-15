@@ -79,8 +79,8 @@ JSON
 
     # Pre-stage the on-device gate inputs:
     : > "$TARGET_ROOT/run/readsb/aircraft.json"
-    printf 'state=enabled\nreason=\n' > "$TARGET_ROOT/run/dump978-fa/state"
-    printf 'state=enabled\nreason=\n' > "$TARGET_ROOT/run/airplanes-978/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/dump978-fa/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes-978/state"
 
     # Spawn http.server.
     HTTPD_LOG="$BATS_TEST_TMPDIR/httpd.log"

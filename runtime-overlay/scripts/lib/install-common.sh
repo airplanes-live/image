@@ -1600,12 +1600,15 @@ _airplanes_runtime_parse_state_kv() {
 }
 
 # UAT state gate: state file at /run/<unit>/state, key-value format.
-# Valid combinations (decision 4):
-#   state=enabled,  reason=               (active)
-#   state=disabled, reason=uat_disabled
-#   state=enabled,  reason=no_hardware
-#   state=enabled,  reason=peer_no_hardware
-# Anything else fails.
+# Valid (healthy, converged) combinations — these must match what the
+# dump978-fa (producer) and airplanes-978 (consumer) wrappers actually emit;
+# see runtime-overlay/src/share/airplanes/{dump978-fa,airplanes-978}.sh:
+#   state=enabled,  reason=ok               active: decoding (producer) / relaying (consumer)
+#   state=disabled, reason=uat_disabled     978 turned off (UAT_INPUT empty)
+#   state=disabled, reason=no_hardware      producer self-disabled: 978 SDR absent
+#   state=enabled,  reason=peer_no_hardware consumer relaying idle while the producer has no SDR
+# Anything else fails (incl. misconfigured|uat_input_invalid, which is a real
+# operator error the daemon surfaces via exit 64).
 _airplanes_runtime_probe_uat_state() {
     local file="$1" deadline="$2"
     local end now state="" reason=""
@@ -1619,7 +1622,7 @@ _airplanes_runtime_probe_uat_state() {
             state="$(_airplanes_runtime_parse_state_kv "$file" state)"
             reason="$(_airplanes_runtime_parse_state_kv "$file" reason)"
             case "${state}|${reason}" in
-                "enabled|"|"disabled|uat_disabled"|"enabled|no_hardware"|"enabled|peer_no_hardware")
+                "enabled|ok"|"disabled|uat_disabled"|"disabled|no_hardware"|"enabled|peer_no_hardware")
                     return 0
                     ;;
             esac
