@@ -21,16 +21,16 @@
 # been validated on the dev channel.
 
 export AIRPLANES_READSB_DECODER_REPO="${AIRPLANES_READSB_DECODER_REPO:-https://github.com/wiedehopf/readsb.git}"
-export AIRPLANES_READSB_DECODER_BRANCH="${AIRPLANES_READSB_DECODER_BRANCH:-caf2c5a6dccf1e079d0ae63d2b7dd45d568de265}"
+export AIRPLANES_READSB_DECODER_BRANCH="${AIRPLANES_READSB_DECODER_BRANCH:-0bfd0473d0d6c9bd46dcc7091a323b945b165d15}"
 
 export AIRPLANES_DUMP978_REPO="${AIRPLANES_DUMP978_REPO:-https://github.com/flightaware/dump978.git}"
-export AIRPLANES_DUMP978_BRANCH="${AIRPLANES_DUMP978_BRANCH:-e827042420ac615f9b9993a21535fd7def21f974}"
+export AIRPLANES_DUMP978_BRANCH="${AIRPLANES_DUMP978_BRANCH:-41516d887096a511546fd50653459d3bd8e05d16}"
 
 export AIRPLANES_TAR1090_REPO="${AIRPLANES_TAR1090_REPO:-https://github.com/wiedehopf/tar1090.git}"
-export AIRPLANES_TAR1090_BRANCH="${AIRPLANES_TAR1090_BRANCH:-c2ebe61910d2e06860c849a66077455d2635f9e9}"
+export AIRPLANES_TAR1090_BRANCH="${AIRPLANES_TAR1090_BRANCH:-d892b99d75ed0d09927a2af9b97587c37c8b2d58}"
 
 export AIRPLANES_TAR1090_DB_REPO="${AIRPLANES_TAR1090_DB_REPO:-https://github.com/wiedehopf/tar1090-db.git}"
-export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-758ddafab66fb997de2a81d2d5a317db55aaf9be}"
+export AIRPLANES_TAR1090_DB_BRANCH="${AIRPLANES_TAR1090_DB_BRANCH:-608668c169dea8bfad1968adfd19770eced88cd8}"
 
 export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.com/wiedehopf/graphs1090.git}"
 export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889de2a8f63f2b40133ea72a08537ce}"
@@ -40,21 +40,20 @@ export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889d
 # tags up to v0.1.2 still carried the removed self-update surface). COMMIT_SHA
 # must equal the release manifest's commit_sha — stage-webconfig.sh hard-fails
 # the build on mismatch.
-export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.1.3}"
-export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-2063d1b2a5c44e40251f51080d45519f1433eb97}"
+export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.2.0}"
+export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-127ffe323f119e05d7f751c98673aeacab2ee6fb}"
 
-# Feed scripts — overlay-built. Pinned to the feed v0.0.1 release commit (the
-# pin must be a 40-hex SHA per test_channel_configs.bats; the tag is recorded
-# here for provenance).
+# Feed scripts — overlay-built. The feed repo's only tag (v0.0.1) lags the dev
+# head, so the stable pin is the current feed dev HEAD SHA as of this pin date
+# (the pin must be a 40-hex SHA per test_channel_configs.bats).
 export AIRPLANES_FEED_OVERLAY_REPO="${AIRPLANES_FEED_OVERLAY_REPO:-https://github.com/airplanes-live/feed.git}"
-# feed v0.0.1
-export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-d120b953329ab8c1d9d613d9cdcd57c471ca1914}"
+export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-4682d75ba2521e3a07612867432ddf78c926d14e}"
 
 # Feeder readsb fork (outbound airplanes-feed binary). The repo's version tags
 # mirror upstream wiedehopf and lag the fork's dev head by hundreds of commits,
 # so the stable pin is the current dev HEAD SHA as of this pin date.
 export AIRPLANES_FEED_READSB_REPO="${AIRPLANES_FEED_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
-export AIRPLANES_FEED_READSB_BRANCH="${AIRPLANES_FEED_READSB_BRANCH:-b499ecbd18dc4a2ec6098c31de31508017fa6190}"
+export AIRPLANES_FEED_READSB_BRANCH="${AIRPLANES_FEED_READSB_BRANCH:-0adaebb8d49988fb8e2db5dc835daf7e95aea496}"
 
 # mlat-client. Latest tag (v0.4.2) lags the master head by ~30 commits, so the
 # stable pin is the current master HEAD SHA as of this pin date.
