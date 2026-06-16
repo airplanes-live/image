@@ -128,8 +128,11 @@ run_stage() {
     mkdir -p "$rfs/usr/local/bin" \
              "$rfs/usr/local/lib/airplanes-webconfig/aggregators" \
              "$rfs/etc/systemd/system"
+    mkdir -p "$rfs/usr/local/lib/airplanes"
     printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/bin/apl-aggregator"
     printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/bin/apl-wifi"
+    printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/bin/apl-ssh"
+    printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/lib/airplanes/ssh-validators.sh"
     printf '#!/usr/bin/env bash\n' > "$rfs/usr/local/lib/airplanes-webconfig/aggregator-run"
     printf 'id=fr24\n'             > "$rfs/usr/local/lib/airplanes-webconfig/aggregators/fr24.desc"
     printf '[Unit]\n'             > "$rfs/etc/systemd/system/airplanes-aggregator@.service"
@@ -142,6 +145,8 @@ run_stage() {
     run_stage
     [ "$status" -eq 0 ]
     [ -f "$OUT/bin/apl-aggregator" ]
+    [ -f "$OUT/bin/apl-ssh" ]
+    [ -f "$OUT/lib/airplanes/ssh-validators.sh" ]
     [ -f "$OUT/lib/airplanes-webconfig/aggregator-run" ]
     [ -f "$OUT/lib/airplanes-webconfig/aggregators/fr24.desc" ]
     [ -f "$OUT/systemd/airplanes-aggregator@.service" ]
