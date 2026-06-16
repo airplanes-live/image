@@ -56,3 +56,19 @@
 # /path. No userinfo, query, or fragment. For development only — production
 # feeders should leave this commented out.
 #WEBSITE_URL=http://airplanes.test/
+
+# Optional per-device SSH access for the built-in 'pi' account. This is an
+# opt-in recovery path; the web UI at http://<hostname>.local/ is the normal
+# way to manage the feeder and needs no SSH. Leave both commented out unless
+# you specifically want shell access. SSH itself is also configurable via
+# rpi-imager's "Edit Settings" at flash time and via the web UI.
+#
+# SSH_PASSWORD: enables password SSH for 'pi' and sets its password. Minimum
+#               12 characters. Logging in this way drops you into the 'pi'
+#               account, which has full sudo. As soon as the password is set,
+#               this line is removed from this file (replaced by a redaction
+#               marker) so the cleartext password is not left on the card.
+# SSH_PUBKEY:   installs a single OpenSSH public key for 'pi' (key-only login).
+#               Paste the full one-line key, e.g. 'ssh-ed25519 AAAA... you@host'.
+#SSH_PASSWORD=change-me-please
+#SSH_PUBKEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@host

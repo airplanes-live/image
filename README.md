@@ -78,6 +78,16 @@ The web UI at `http://<hostname>.local/` is the recommended way to change settin
 
 It writes `/etc/airplanes/feed.env` atomically and restarts services as needed. Command-line users can SSH in and edit `/etc/airplanes/feed.env` directly, then `sudo systemctl restart airplanes-feed.service` (and `airplanes-mlat.service` for MLAT changes).
 
+### SSH access (optional)
+
+The web UI is the normal way to manage the feeder and needs no SSH. If you do want shell access to the built-in `pi` account, there are three opt-in ways to enable it — pick whichever fits how you flashed the card:
+
+- **Raspberry Pi Imager** — in **Edit Settings** before writing, enable SSH and set a password or paste a public key. This is the easiest path if you flash with Imager.
+- **Web UI** — after first boot, enable SSH from the web UI at `http://<hostname>.local/` (set a password or add a public key).
+- **Boot config** — set `SSH_PASSWORD` (min 12 characters) and/or `SSH_PUBKEY` in `/boot/firmware/airplanes-config.txt`. Useful for recovery when the Pi is unreachable. Logging in this way drops you into `pi`, which has full sudo. Once the password is applied it is wiped from the file automatically, so the cleartext isn't left on the card; a public key is left in place (it's not a secret).
+
+SSH is disabled for password login by default, so a freshly flashed feeder is reachable but not password-loginnable until you opt in via one of the above.
+
 ### Forgot the web UI password?
 
 The web UI password is set on your first visit and can't be recovered — but you can clear it and set a new one. There's no in-UI reset: you're locked out, so the trigger lives on the SD card instead.

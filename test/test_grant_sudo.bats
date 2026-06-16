@@ -58,7 +58,8 @@ write_passwd() { printf '%s\n' "$@" >"$PASSWD_FILE"; }
     # pi-gen ships a stock pi user (UID 1000, /bin/bash, --disabled-login);
     # rpi-imager creates a second human user (e.g. airplanes at UID 1001).
     # We grant sudo to both — pi's disabled-login state makes the grant
-    # harmless, and an operator who re-enables pi gets sudo immediately.
+    # dormant until SSH is enabled for pi (webconfig or airplanes-config.txt),
+    # at which point pi reaches root NOPASSWD by design, same as any operator.
     write_passwd \
         "pi:x:1000:1000:,,,:/home/pi:/bin/bash" \
         "airplanes:x:1001:1001::/home/airplanes:/bin/bash"
