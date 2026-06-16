@@ -242,6 +242,16 @@ echo "==> asserting managed authorized_keys.d directory exists"
 [[ -d "$ROOT_MNT/etc/ssh/authorized_keys.d" ]] \
 	|| { echo "missing /etc/ssh/authorized_keys.d"; exit 1; }
 
+echo "==> asserting the pi operator account ships with a real login shell"
+# pi is created --disabled-login (locked, keyless), but it is the account the
+# SSH opt-in paths (rpi-imager / webconfig / airplanes-config.txt) enable, so it
+# must have a usable shell — not the /usr/sbin/nologin that adduser leaves. A
+# nologin pi authenticates fine and then dies at the shell, and also fails
+# grant-sudo's shell allowlist.
+pi_shell="$(awk -F: '$1=="pi"{print $7}' "$ROOT_MNT/etc/passwd")"
+[[ "$pi_shell" == "/bin/bash" ]] \
+	|| { echo "pi login shell is '$pi_shell', expected /bin/bash"; exit 1; }
+
 # sshd -T resolves the *effective* config (Include chain + first-match), not
 # what's in any one snippet. Catches drift like the main sshd_config moving
 # the Include below a hardcoded PasswordAuthentication, or a future stage
