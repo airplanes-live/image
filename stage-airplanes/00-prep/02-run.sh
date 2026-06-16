@@ -26,5 +26,15 @@ cat > "${ROOTFS_DIR}/etc/ssh/sshd_config.d/90-airplanes.conf" <<'EOF'
 PubkeyAuthentication yes
 PasswordAuthentication no
 KbdInteractiveAuthentication no
+# Keep the stock per-user ~/.ssh/authorized_keys (so rpi-imager-injected keys
+# still authenticate) AND add a managed drop-in directory. The per-device SSH
+# opt-in (boot config / webconfig) writes the pi account's key to
+# /etc/ssh/authorized_keys.d/pi.
+AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u
 EOF
 chmod 0644 "${ROOTFS_DIR}/etc/ssh/sshd_config.d/90-airplanes.conf"
+
+# Managed authorized_keys directory for the per-device SSH opt-in. The pi
+# account's key lands here as /etc/ssh/authorized_keys.d/pi (written by
+# airplanes-first-run from the boot config, or by webconfig's apl-ssh helper).
+install -d -m 755 "${ROOTFS_DIR}/etc/ssh/authorized_keys.d"

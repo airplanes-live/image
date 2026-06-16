@@ -235,6 +235,12 @@ grep -Eq '^[[:space:]]*KbdInteractiveAuthentication[[:space:]]+no[[:space:]]*$' 
 	|| { echo "KbdInteractiveAuthentication no missing from drop-in"; exit 1; }
 grep -Eq '^[[:space:]]*PubkeyAuthentication[[:space:]]+yes[[:space:]]*$' "$SSHD_DROPIN" \
 	|| { echo "PubkeyAuthentication yes missing from drop-in"; exit 1; }
+grep -Eq '^[[:space:]]*AuthorizedKeysFile[[:space:]]+\.ssh/authorized_keys[[:space:]]+/etc/ssh/authorized_keys\.d/%u[[:space:]]*$' "$SSHD_DROPIN" \
+	|| { echo "AuthorizedKeysFile line missing from drop-in"; exit 1; }
+
+echo "==> asserting managed authorized_keys.d directory exists"
+[[ -d "$ROOT_MNT/etc/ssh/authorized_keys.d" ]] \
+	|| { echo "missing /etc/ssh/authorized_keys.d"; exit 1; }
 
 # sshd -T resolves the *effective* config (Include chain + first-match), not
 # what's in any one snippet. Catches drift like the main sshd_config moving
@@ -285,5 +291,28 @@ sshd_dump | grep -qx 'passwordauthentication yes' \
 sshd_dump | grep -qx 'kbdinteractiveauthentication yes' \
 	|| { echo "cloud-init 50- override did not flip kbd-interactive to yes"; exit 1; }
 rm -f "$ROOT_MNT/etc/ssh/sshd_config.d/50-cloud-init.conf"
+
+echo "==> asserting the per-device SSH opt-in snippet scopes pwauth to pi only"
+# The 99-airplanes-ssh-pi.conf snippet (dropped by apply_ssh_password / apl-ssh)
+# is Match User pi -> PasswordAuthentication yes. With it present, the effective
+# config must flip pwauth to yes for user=pi while every other user keeps the
+# 90-airplanes.conf default of no.
+cat > "$ROOT_MNT/etc/ssh/sshd_config.d/99-airplanes-ssh-pi.conf" <<'PIEOF'
+# airplanes.live per-device opt-in: enables password SSH for the pi account
+# only (Match-scoped, so other users keep the 90-airplanes.conf default of
+# PasswordAuthentication no). Written by airplanes-first-run (boot config) and
+# webconfig's apl-ssh helper.
+Match User pi
+    PasswordAuthentication yes
+Match all
+PIEOF
+sshd_dump_user() {
+	chroot "$ROOT_MNT" /usr/sbin/sshd -T -C "user=$1,host=localhost,addr=127.0.0.1" 2>/dev/null
+}
+sshd_dump_user pi | grep -qx 'passwordauthentication yes' \
+	|| { echo "99 snippet did not enable pwauth for user=pi"; exit 1; }
+sshd_dump_user matt | grep -qx 'passwordauthentication no' \
+	|| { echo "99 snippet leaked pwauth to a non-pi user (user=matt)"; exit 1; }
+rm -f "$ROOT_MNT/etc/ssh/sshd_config.d/99-airplanes-ssh-pi.conf"
 
 echo "OK: feeder-id=$FEEDER_ID, boot-config merge confirmed, WiFi keyfile written, no leaks"
