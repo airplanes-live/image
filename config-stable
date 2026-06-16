@@ -32,37 +32,15 @@ export IMG_SUFFIX="${IMG_SUFFIX:-}"
 #                                   reachable but unauthenticatable
 export ENABLE_SSH="${ENABLE_SSH:-1}"
 
-# Feed test-harness checkout ref. NOT the feed baked into the image (that ships
-# via the runtime overlay, pinned in runtime-overlay/config-stable) — this ref
-# is checked out by build-image.yml's boot-smoke and overlay-smoke jobs to run
-# feed's own test/image-boot.sh against the built image. Must match the commit
-# the overlay pins.
-export AIRPLANES_FEED_REPO="${AIRPLANES_FEED_REPO:-https://github.com/airplanes-live/feed.git}"
-# feed v0.0.1
-export AIRPLANES_FEED_BRANCH="${AIRPLANES_FEED_BRANCH:-d120b953329ab8c1d9d613d9cdcd57c471ca1914}"
-# Runtime update channel baked into /etc/airplanes/release-channel by stage
-# 06. The feed-side resolver reads this at update time and (for stable)
-# resolves the latest v[MAJOR].[MINOR].[PATCH] release tag via git
-# ls-remote. AIRPLANES_FEED_BRANCH above pins the BUILD-time source clone;
-# AIRPLANES_FEED_UPDATE_CHANNEL below names the RUNTIME release stream.
+# Runtime update channel baked into /etc/airplanes/release-channel by stage 06.
+# The feed-side resolver reads this at update time and (for stable) resolves the
+# latest v[MAJOR].[MINOR].[PATCH] release tag via git ls-remote.
 # Allowlist enforced by stage 06: stable, dev.
+#
+# The feed / readsb / webconfig component pins — both the build-time clone refs
+# and the commits baked into the runtime overlay — live in
+# runtime-overlay/config-stable, the single source of truth. build-image.yml
+# resolves the feed checkout ref from there (AIRPLANES_FEED_OVERLAY_BRANCH), and
+# ci.yml does the same for its smoke jobs. Nothing about those components is
+# duplicated in this file.
 export AIRPLANES_FEED_UPDATE_CHANNEL="${AIRPLANES_FEED_UPDATE_CHANNEL:-stable}"
-
-# webconfig ships inside the runtime overlay (built/pinned in
-# runtime-overlay/config-stable, not cloned by a stage here). The authoritative
-# pin is runtime-overlay/config-stable's AIRPLANES_WEBCONFIG_COMMIT_SHA, which
-# ci.yml now sources directly for its shell-tests / systemd-verify checkout. The
-# pin below is retained only for the overlay-smoke / update-regression test
-# harness (which passes it through to docker) and MUST equal the overlay
-# COMMIT_SHA (image-webconfig v0.1.3 commit). Must be a post-self-update-removal
-# ref — the v0.1.x tags up to v0.1.2 still carried the removed self-update
-# surface.
-export AIRPLANES_WEBCONFIG_REPO="${AIRPLANES_WEBCONFIG_REPO:-https://github.com/airplanes-live/image-webconfig.git}"
-export AIRPLANES_WEBCONFIG_BRANCH="${AIRPLANES_WEBCONFIG_BRANCH:-2063d1b2a5c44e40251f51080d45519f1433eb97}"
-
-# Legacy/unused: the outbound feeder readsb now ships via the runtime overlay
-# (pinned in runtime-overlay/config-stable as AIRPLANES_FEED_READSB_BRANCH).
-# This pin is still loaded into GITHUB_ENV by build-image.yml but no longer
-# consumed by any build stage; left in place to defer the workflow cleanup.
-export AIRPLANES_READSB_REPO="${AIRPLANES_READSB_REPO:-https://github.com/airplanes-live/readsb.git}"
-export AIRPLANES_READSB_BRANCH="${AIRPLANES_READSB_BRANCH:-4d6c614d7940ce0117db61b1fa91c81fd9e67988}"
