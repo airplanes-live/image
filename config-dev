@@ -20,22 +20,22 @@ export DEPLOY_COMPRESSION="${DEPLOY_COMPRESSION:-xz}"
 export COMPRESSION_LEVEL="${COMPRESSION_LEVEL:-1}"
 export IMG_SUFFIX="${IMG_SUFFIX:-}"
 
-# Ship sshd enabled so rpi-imager's v2.0.x customization can reach a working
-# SSH posture (the bare `enable_ssh: true` flag the imager emits is a no-op
-# nobody handles — fixed upstream in 2c428de4 but not yet released as of
-# v2.0.8). Password auth stays off in shipped sshd_config via
-# stage-airplanes/00-prep/02-run.sh dropping
-# /etc/ssh/sshd_config.d/90-airplanes.conf; cloud-init's 50-cloud-init.conf
-# wins lexical order when ssh_pwauth is emitted. Posture per case:
-#   - SSH off + user/pass set     → user created, sshd up but pwauth off,
-#                                   no key dropped → no SSH access (matches
-#                                   "password is for console only" intent)
-#   - SSH on + key                → ssh_pwauth: false → key auth only
-#   - SSH on + password           → ssh_pwauth: true  → password SSH works
-#   - No customization at all     → only the upstream pi user with
-#                                   --disabled-login, no creds → sshd
-#                                   reachable but unauthenticatable
+# Ship sshd enabled with password authentication — the stock OpenSSH default;
+# we no longer drop a hardening snippet to disable it. The image bakes a
+# default pi/airplanes login (FIRST_USER_PASS below) so a fresh feeder is
+# reachable over SSH out of the box; users are expected to change it. The bare
+# `enable_ssh: true` flag rpi-imager v2.0.x emits is a no-op nobody handles
+# (fixed upstream in 2c428de4 but unreleased as of v2.0.8), so we ship sshd
+# already enabled. rpi-imager customization overrides the default login: its
+# own user/pass or an injected SSH key arrives via cloud-init at first boot.
 export ENABLE_SSH="${ENABLE_SSH:-1}"
+
+# Default first-user credentials baked into the image (FIRST_USER_NAME defaults
+# to "pi" in build.sh). DISABLE_FIRST_BOOT_USER_RENAME=1 ships that user as-is;
+# build.sh requires FIRST_USER_PASS in that mode, and the first-boot rename
+# stage is already skipped (export-image/01-user-rename/SKIP).
+export FIRST_USER_PASS="${FIRST_USER_PASS:-airplanes}"
+export DISABLE_FIRST_BOOT_USER_RENAME="${DISABLE_FIRST_BOOT_USER_RENAME:-1}"
 
 # Branch-tracking on dev — moving target by design, catches upstream drift early.
 export AIRPLANES_FEED_REPO="${AIRPLANES_FEED_REPO:-https://github.com/airplanes-live/feed.git}"

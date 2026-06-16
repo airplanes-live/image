@@ -53,7 +53,7 @@ bats test/test_first_run_basic.bats
 ```
 stage0  stage1  stage2          ← upstream pi-gen (base OS, boot files, networking)
 stage-airplanes/                 ← fork-specific
-  00-prep                        build deps + chroot hygiene (policy-rc.d, systemctl shim) + SSH posture + cloud-init/first-boot-wizard mask
+  00-prep                        build deps + chroot hygiene (policy-rc.d, systemctl shim) + cloud-init/first-boot-wizard mask
   01-install-feed                setup-only: airplanes-feed service account + group + state dir (the feeder readsb, mlat-client venv, feed scripts, apl-feed CLI, and feed/mlat units now arrive via the overlay at stage 02)
   02-install-runtime-overlay     downloads + verifies the signed runtime-overlay release tarball (decode stack: readsb + dump978 + tar1090 + graphs1090 + render-status; webconfig binary + helpers + wifi libs; feeder readsb + mlat-client venv + feed scripts) and lays it at /opt/airplanes-runtime/releases/vX.Y.Z, flips `current`, and installs the managed_paths entries (symlinks + copy-mode drop-ins)
   05-install-webconfig           setup-only: webconfig system user, state dirs, lighttpd mod_proxy + conf-enabled activation, /run tmpfiles spec (the webconfig binary/helpers/units/sudoers now arrive via the overlay at stage 02, not a clone here)

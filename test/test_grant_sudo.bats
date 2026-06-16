@@ -55,10 +55,10 @@ write_passwd() { printf '%s\n' "$@" >"$PASSWD_FILE"; }
 }
 
 @test "grants both pi and a custom user when both exist" {
-    # pi-gen ships a stock pi user (UID 1000, /bin/bash, --disabled-login);
-    # rpi-imager creates a second human user (e.g. airplanes at UID 1001).
-    # We grant sudo to both — pi's disabled-login state makes the grant
-    # harmless, and an operator who re-enables pi gets sudo immediately.
+    # pi-gen ships a stock pi user (UID 1000, /bin/bash); this image gives it a
+    # default password (FIRST_USER_PASS=airplanes), and rpi-imager may add a
+    # second human user (e.g. airplanes at UID 1001). We grant sudo to both —
+    # the pi grant is live by design (apl-feed auto-elevation needs NOPASSWD).
     write_passwd \
         "pi:x:1000:1000:,,,:/home/pi:/bin/bash" \
         "airplanes:x:1001:1001::/home/airplanes:/bin/bash"

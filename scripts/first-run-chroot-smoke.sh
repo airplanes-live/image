@@ -226,35 +226,28 @@ if grep -E '^WIFI_' "$ROOT_MNT/etc/airplanes/feed.env"; then
 	echo "WIFI_* keys leaked into feed.env"; exit 1
 fi
 
-echo "==> asserting SSH posture drop-in is shipped"
+echo "==> asserting no SSH hardening drop-in is shipped (stock password auth)"
 SSHD_DROPIN="$ROOT_MNT/etc/ssh/sshd_config.d/90-airplanes.conf"
-[[ -f "$SSHD_DROPIN" ]] || { echo "missing $SSHD_DROPIN"; exit 1; }
-grep -Eq '^[[:space:]]*PasswordAuthentication[[:space:]]+no[[:space:]]*$' "$SSHD_DROPIN" \
-	|| { echo "PasswordAuthentication no missing from drop-in"; exit 1; }
-grep -Eq '^[[:space:]]*KbdInteractiveAuthentication[[:space:]]+no[[:space:]]*$' "$SSHD_DROPIN" \
-	|| { echo "KbdInteractiveAuthentication no missing from drop-in"; exit 1; }
-grep -Eq '^[[:space:]]*PubkeyAuthentication[[:space:]]+yes[[:space:]]*$' "$SSHD_DROPIN" \
-	|| { echo "PubkeyAuthentication yes missing from drop-in"; exit 1; }
+[[ ! -e "$SSHD_DROPIN" ]] || { echo "unexpected $SSHD_DROPIN present"; exit 1; }
+
+echo "==> asserting the default pi user ships with a usable password"
+chroot "$ROOT_MNT" passwd -S pi 2>/dev/null | grep -Eq '^pi +P' \
+	|| { echo "pi user missing or has no usable password"; exit 1; }
 
 # sshd -T resolves the *effective* config (Include chain + first-match), not
-# what's in any one snippet. Catches drift like the main sshd_config moving
-# the Include below a hardcoded PasswordAuthentication, or a future stage
-# adding an overriding snippet that lexically wins. Host keys are needed for
+# what's in any one snippet. Guards the intended posture: password auth is the
+# stock OpenSSH default and nothing re-disables it. Host keys are needed for
 # sshd to start; ssh-keygen -A here doesn't reach the .img.xz artifact since
 # smoke operates on a temp-decompressed copy.
-echo "==> asserting effective sshd config rejects password auth by default"
+echo "==> asserting effective sshd config accepts password auth by default"
 mkdir -p "$ROOT_MNT/run/sshd"
 chroot "$ROOT_MNT" /usr/bin/ssh-keygen -A >/dev/null 2>&1 \
 	|| { echo "ssh-keygen -A failed in chroot"; exit 1; }
 sshd_dump() {
 	chroot "$ROOT_MNT" /usr/sbin/sshd -T -C "user=pi,host=localhost,addr=127.0.0.1" 2>/dev/null
 }
-sshd_dump | grep -qx 'passwordauthentication no' \
-	|| { echo "effective PasswordAuthentication != no"; sshd_dump | grep -E 'authentication' >&2; exit 1; }
-sshd_dump | grep -qx 'kbdinteractiveauthentication no' \
-	|| { echo "effective KbdInteractiveAuthentication != no"; exit 1; }
-sshd_dump | grep -qx 'pubkeyauthentication yes' \
-	|| { echo "effective PubkeyAuthentication != yes"; exit 1; }
+sshd_dump | grep -qx 'passwordauthentication yes' \
+	|| { echo "effective PasswordAuthentication != yes"; sshd_dump | grep -E 'authentication' >&2; exit 1; }
 
 echo "==> asserting stale 'valid user' SSH banner is absent"
 for stale_banner in /etc/ssh/sshd_banner /etc/ssh/sshd_config.d/rename_user.conf; do
@@ -270,20 +263,5 @@ for masked_unit in userconfig.service systemd-firstboot.service; do
 	[[ "$(readlink "$link")" == "/dev/null" ]] \
 		|| { echo "$masked_unit symlink does not point at /dev/null"; exit 1; }
 done
-
-echo "==> asserting cloud-init's 50-cloud-init.conf can override 90-airplanes.conf"
-# Simulates the rpi-imager "SSH on + password" path: cc_set_passwords writes
-# PasswordAuthentication yes into 50-cloud-init.conf, lexically beats our
-# 90-airplanes.conf. Regression guard for any future change that would block
-# the explicit-opt-in flow.
-cat > "$ROOT_MNT/etc/ssh/sshd_config.d/50-cloud-init.conf" <<'CIEOF'
-PasswordAuthentication yes
-KbdInteractiveAuthentication yes
-CIEOF
-sshd_dump | grep -qx 'passwordauthentication yes' \
-	|| { echo "cloud-init 50- override did not flip pwauth to yes"; exit 1; }
-sshd_dump | grep -qx 'kbdinteractiveauthentication yes' \
-	|| { echo "cloud-init 50- override did not flip kbd-interactive to yes"; exit 1; }
-rm -f "$ROOT_MNT/etc/ssh/sshd_config.d/50-cloud-init.conf"
 
 echo "OK: feeder-id=$FEEDER_ID, boot-config merge confirmed, WiFi keyfile written, no leaks"

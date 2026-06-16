@@ -44,6 +44,10 @@ The OS-list entry's name carries a `· <sha> · <HH:MM>Z` suffix on dev builds �
 
 Imager downloads and flashes the image for you. After first boot, browse to `http://<hostname>.local/` to set your receiver location and MLAT display name via the web UI.
 
+### SSH access
+
+The image ships with SSH enabled and a default login — username `pi`, password `airplanes` — so a fresh feeder is reachable over SSH with no extra setup (`ssh pi@<hostname>.local`). **Change it on first login** with `passwd`: the default is public and identical on every image, so anything that can reach the Pi on your network can log in until you change it. Setting your own username/password (or an SSH key) in Raspberry Pi Imager replaces the default.
+
 ### Already have a Pi feeding another aggregator?
 
 You don't need to reflash. The [airplanes.live feed scripts](https://github.com/airplanes-live/feed) layer airplanes.live on top of an existing readsb setup (FlightAware, ADSBexchange, etc.).

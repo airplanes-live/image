@@ -31,8 +31,10 @@ VISUDO_BIN="${VISUDO_BIN:-/usr/sbin/visudo}"
 #
 # `pi` is intentionally NOT in this list — operators may pick `pi` as their
 # rpi-imager username, in which case they need sudo like any other operator
-# account. pi-gen's stock `pi` account is created `--disabled-login`, so a
-# sudoers grant on a stale `pi` account is harmless (no way to log in).
+# account. This image also ships a default `pi`/`airplanes` login
+# (FIRST_USER_PASS in config-{dev,stable}), so the grant is live by design:
+# apl-feed's auto-elevation needs NOPASSWD sudo to reach root. The default
+# password — not this grant — is the gate, and users are told to change it.
 SERVICE_USERS=(airplanes-feed airplanes-webconfig readsb)
 
 log() {
