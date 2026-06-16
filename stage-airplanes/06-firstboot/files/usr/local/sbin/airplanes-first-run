@@ -729,6 +729,27 @@ apply_ssh_password() {
 	# validation failure returns early below.
 	unset 'BOOT_CFG[SSH_PASSWORD]'
 
+	# Redact the cleartext from the FAT source BEFORE touching any credential or
+	# enabling password SSH — so we can never leave password auth on while the
+	# password still sits in cleartext on the SD card. If redaction fails, refuse
+	# to enable SSH at all (the value stays only in this process's memory).
+	if ! redact_ssh_password_source "$BOOT_CONFIG"; then
+		record_error "SSH_PASSWORD: could not redact the source file; not enabling password SSH"
+		return 0
+	fi
+
+	# Reject C0/DEL control bytes: a newline would inject a second user:password
+	# record into chpasswd's line-based stdin (e.g. setting root's password). The
+	# line-based boot-config parser already prevents a literal newline reaching
+	# here; this is defense in depth, matching the webconfig validator.
+	local _pw_total _pw_stripped
+	_pw_total="$(LC_ALL=C printf '%s' "$pw" | wc -c)"
+	_pw_stripped="$(LC_ALL=C printf '%s' "$pw" | LC_ALL=C tr -d '\000-\037\177' | wc -c)"
+	if [[ "$_pw_total" != "$_pw_stripped" ]]; then
+		record_error "SSH_PASSWORD: contains control characters"
+		return 0
+	fi
+
 	if (( ${#pw} < SSH_MIN_PASSWORD_LEN )); then
 		record_error "SSH_PASSWORD: too short (need at least ${SSH_MIN_PASSWORD_LEN} characters)"
 		return 0
@@ -745,11 +766,6 @@ apply_ssh_password() {
 		record_error "SSH_PASSWORD: failed to set the pi account password"
 		return 0
 	fi
-
-	# Redact the cleartext from the FAT source the instant the password lands,
-	# independent of whether the overall apply later succeeds.
-	redact_ssh_password_source "$BOOT_CONFIG" \
-		|| record_error "SSH_PASSWORD: applied but failed to redact source file"
 
 	# Drop the shared opt-in snippet enabling password SSH for pi only.
 	if ! write_ssh_pi_pwauth_snippet; then

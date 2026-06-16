@@ -80,6 +80,26 @@ EOF
     [ -f "$SSHD_PI_PWAUTH_CONF" ]
 }
 
+@test "password with a control byte is rejected (no chpasswd, no snippet)" {
+    BOOT_CFG=([SSH_PASSWORD]=$'abcdefghij\x01kl')   # 13 chars incl. a control byte
+    apply_ssh_password
+    [ "${#BOOT_CFG_ERRORS[@]}" -ne 0 ]
+    [ ! -f "$SSHD_PI_PWAUTH_CONF" ]
+    [ ! -f "$CHPASSWD_LOG" ]
+}
+
+@test "cleartext is redacted from the source before chpasswd, even when chpasswd fails" {
+    printf 'SSH_PASSWORD=supersecret1234\nHOSTNAME=foo\n' > "$BOOT_CONFIG"
+    BOOT_CFG=([SSH_PASSWORD]="supersecret1234")
+    CHPASSWD_RC=1 apply_ssh_password
+    # chpasswd failed -> error recorded, snippet must NOT be written.
+    [ "${#BOOT_CFG_ERRORS[@]}" -ne 0 ]
+    [ ! -f "$SSHD_PI_PWAUTH_CONF" ]
+    # ...but the cleartext password is already gone from the FAT source.
+    ! grep -q 'supersecret1234' "$BOOT_CONFIG"
+    grep -q 'SSH_PASSWORD applied and redacted' "$BOOT_CONFIG"
+}
+
 @test "password under 12 chars is rejected (secret-safe error, no value)" {
     BOOT_CFG=([SSH_PASSWORD]="elevenchar1")    # 11 chars
     apply_ssh_password
