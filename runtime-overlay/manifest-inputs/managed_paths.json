@@ -141,18 +141,8 @@
   },
   {
     "mode": "symlink",
-    "link": "/usr/local/bin/apl-ssh",
-    "target": "/opt/airplanes-runtime/current/bin/apl-ssh"
-  },
-  {
-    "mode": "symlink",
     "link": "/usr/local/lib/airplanes/wifi-validators.sh",
     "target": "/opt/airplanes-runtime/current/lib/airplanes/wifi-validators.sh"
-  },
-  {
-    "mode": "symlink",
-    "link": "/usr/local/lib/airplanes/ssh-validators.sh",
-    "target": "/opt/airplanes-runtime/current/lib/airplanes/ssh-validators.sh"
   },
   {
     "mode": "symlink",
