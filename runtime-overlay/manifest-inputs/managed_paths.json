@@ -171,6 +171,11 @@
   },
   {
     "mode": "symlink",
+    "link": "/usr/local/lib/airplanes-webconfig/claim-rotate.sh",
+    "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/claim-rotate.sh"
+  },
+  {
+    "mode": "symlink",
     "link": "/usr/local/lib/airplanes-webconfig/reset",
     "target": "/opt/airplanes-runtime/current/lib/airplanes-webconfig/reset"
   },
