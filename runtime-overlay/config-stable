@@ -40,14 +40,14 @@ export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889d
 # tags up to v0.1.2 still carried the removed self-update surface). COMMIT_SHA
 # must equal the release manifest's commit_sha — stage-webconfig.sh hard-fails
 # the build on mismatch.
-export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.2.0}"
-export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-127ffe323f119e05d7f751c98673aeacab2ee6fb}"
+export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.3.0}"
+export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-30448fe56d121268bb91fada04d48611d3fc2156}"
 
 # Feed scripts — overlay-built. The feed repo's only tag (v0.0.1) lags the dev
 # head, so the stable pin is the current feed dev HEAD SHA as of this pin date
 # (the pin must be a 40-hex SHA per test_channel_configs.bats).
 export AIRPLANES_FEED_OVERLAY_REPO="${AIRPLANES_FEED_OVERLAY_REPO:-https://github.com/airplanes-live/feed.git}"
-export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-4682d75ba2521e3a07612867432ddf78c926d14e}"
+export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-18a07314a49f483e545d00da2532c72ccda03e5f}"
 
 # Feeder readsb fork (outbound airplanes-feed binary). The repo's version tags
 # mirror upstream wiedehopf and lag the fork's dev head by hundreds of commits,
