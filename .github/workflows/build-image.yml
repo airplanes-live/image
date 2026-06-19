@@ -871,6 +871,11 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # build-changelog.sh diffs config-stable against the previous stable
+          # tag, so it needs full history + tags, not the default shallow clone.
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -919,13 +924,27 @@ jobs:
           runtime_version="$(jq -r '.version' "$runtime_assets/runtime-manifest.json")"
 
           notes="$RUNNER_TEMP/release-notes.md"
-          {
-              printf '# airplanes.live feeder %s\n\n' "$RELEASE_TAG"
-              printf 'Flashable image and runtime overlay update assets for %s.\n\n' "$RELEASE_TAG"
-              printf -- '- Source: `%s @ %s`\n' "$GITHUB_REPOSITORY" "$SHA"
-              printf -- '- Runtime overlay: `%s`\n' "$runtime_version"
-              printf -- '- Workflow run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-          } > "$notes"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # Combined changelog (image PRs + changed component pins). Best-effort:
+          # internal failures degrade per-component and still exit 0, so this
+          # fallback only fires on a hard error (bad args, missing config).
+          if ! scripts/build-changelog.sh \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --tag "$RELEASE_TAG" \
+                  --sha "$SHA" \
+                  --runtime-version "$runtime_version" \
+                  --run-url "$run_url" \
+                  --config runtime-overlay/config-stable \
+                  > "$notes" || [[ ! -s "$notes" ]]; then
+              echo "build-changelog.sh failed; using minimal release notes" >&2
+              {
+                  printf '# airplanes.live feeder %s\n\n' "$RELEASE_TAG"
+                  printf 'Flashable image and runtime overlay update assets for %s.\n\n' "$RELEASE_TAG"
+                  printf -- '- Source: `%s @ %s`\n' "$GITHUB_REPOSITORY" "$SHA"
+                  printf -- '- Runtime overlay: `%s`\n' "$runtime_version"
+                  printf -- '- Workflow run: %s\n' "$run_url"
+              } > "$notes"
+          fi
 
           if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json id >/dev/null 2>&1; then
               echo "release already exists: $RELEASE_TAG" >&2

@@ -37,6 +37,8 @@
 #                                                               aggregators/*.desc)
 #   <output-dir>/lib/airplanes/wifi-validators.sh               wifi lib
 #   <output-dir>/lib/airplanes/wifi-keyfile.sh                  wifi lib
+#   <output-dir>/lib/airplanes/ssh-validators.sh                ssh lib
+#   <output-dir>/bin/apl-ssh                                    helper
 #   <output-dir>/systemd/airplanes-webconfig.service            unit
 #   <output-dir>/systemd/airplanes-webconfig-reset.service      unit
 #   <output-dir>/systemd/airplanes-aggregator@.service          unit
@@ -207,6 +209,13 @@ if [[ -f "$rootfs/usr/local/bin/apl-wifi" ]]; then
     install -m 0755 "$rootfs/usr/local/bin/apl-wifi" "$OUTPUT_DIR/bin/apl-wifi"
 fi
 
+# apl-ssh helper → overlay bin/. Backs the webconfig per-device SSH opt-in
+# (enable password SSH for pi / install a pi pubkey) — the same shared
+# artifacts airplanes-first-run writes from the boot config.
+if [[ -f "$rootfs/usr/local/bin/apl-ssh" ]]; then
+    install -m 0755 "$rootfs/usr/local/bin/apl-ssh" "$OUTPUT_DIR/bin/apl-ssh"
+fi
+
 # apl-aggregator helper → overlay bin/. Its run-helper (aggregator-run) and the
 # adapter descriptors under aggregators/ already arrive via the
 # lib/airplanes-webconfig/ copy above. managed_paths.json exposes aggregators/
@@ -218,9 +227,11 @@ if [[ -f "$rootfs/usr/local/bin/apl-aggregator" ]]; then
     install -m 0755 "$rootfs/usr/local/bin/apl-aggregator" "$OUTPUT_DIR/bin/apl-aggregator"
 fi
 
-# WiFi libs → overlay lib/airplanes/
+# Shared libs → overlay lib/airplanes/. wifi-* are sourced by airplanes-first-run
+# (boot-config flow) and apl-wifi (UI flow); ssh-validators.sh is sourced by
+# apl-ssh and shares the OpenSSH public-key shape gate with the boot-config flow.
 install -d -m 0755 "$OUTPUT_DIR/lib/airplanes"
-for lib in wifi-validators.sh wifi-keyfile.sh; do
+for lib in wifi-validators.sh wifi-keyfile.sh ssh-validators.sh; do
     if [[ -f "$rootfs/usr/local/lib/airplanes/$lib" ]]; then
         install -m 0644 "$rootfs/usr/local/lib/airplanes/$lib" "$OUTPUT_DIR/lib/airplanes/$lib"
     fi

@@ -18,7 +18,10 @@ Description=airplanes.live first-run setup
 # /etc/hostname + hostnamectl run before mDNS broadcasts the system name and
 # before lighttpd serves its first response with hostname-derived headers.
 After=local-fs.target systemd-rfkill.service
-Before=NetworkManager.service network-pre.target avahi-daemon.service lighttpd.service
+# Before=ssh.service so the SSH_PASSWORD opt-in's 99-airplanes-ssh-pi.conf
+# drop-in (and the pi authorized_keys file) are in place before sshd reads its
+# config on the same first boot.
+Before=NetworkManager.service network-pre.target avahi-daemon.service lighttpd.service ssh.service
 Wants=local-fs.target
 
 [Service]
@@ -34,10 +37,13 @@ ExecStart=/usr/local/sbin/airplanes-first-run
 # ProtectSystem=true keeps /usr and /boot read-only but leaves /etc
 # writable — required for the script's writes to /etc/airplanes/,
 # /etc/hostname, /etc/hosts, /etc/NetworkManager/system-connections/,
-# /etc/wpa_supplicant/, /etc/default/. ProtectSystem=full would re-mount
-# /etc read-only too (per systemd.exec(5)); ProtectSystem=strict would
-# require enumerating every /etc subdir (and raspi-config's WiFi-country
-# path may touch more), which is brittle.
+# /etc/wpa_supplicant/, /etc/default/, and (for the SSH opt-in) /etc/ssh/
+# (the 99-airplanes-ssh-pi.conf drop-in + the pi authorized_keys file) and
+# /etc/shadow (chpasswd sets the pi password). All under /etc, so
+# ProtectSystem=true + ProtectHome=yes leave them writable.
+# ProtectSystem=full would re-mount /etc read-only too (per systemd.exec(5));
+# ProtectSystem=strict would require enumerating every /etc subdir (and
+# raspi-config's WiFi-country path may touch more), which is brittle.
 #
 # ReadWritePaths re-opens the path that ProtectSystem=true closed:
 #   /boot/firmware  — needed for consume_boot_config's rename of

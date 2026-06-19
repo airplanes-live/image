@@ -12,6 +12,8 @@
 #   1. validate-manifest.sh on <release-dir>/manifest.json
 #   2. systemd-verify.sh
 #   3. exec-bit-check.sh — managed_paths + ExecStart= shape (mode + shebang)
+#   3b. sudoers-managed-check.sh — every sudoers grant resolves to a path
+#       the overlay update provides (managed_paths) or a base-OS binary
 #   4. lighttpd-verify.sh
 #   5. migration-pair-check.sh
 #   6. shellcheck -x over staged shell files in share/airplanes/, lib/,
@@ -59,6 +61,9 @@ echo "verify-gates: systemd-verify"
 
 echo "verify-gates: exec-bit-check"
 "$gates_dir/exec-bit-check.sh" --release-dir "$RELEASE_DIR"
+
+echo "verify-gates: sudoers-managed-check"
+"$gates_dir/sudoers-managed-check.sh" --release-dir "$RELEASE_DIR"
 
 echo "verify-gates: lighttpd-verify"
 "$gates_dir/lighttpd-verify.sh" --release-dir "$RELEASE_DIR"

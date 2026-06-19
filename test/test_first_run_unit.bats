@@ -87,6 +87,31 @@ unit_get() {
     [[ "$val" == *"lighttpd.service"* ]]
 }
 
+@test "Before= includes ssh.service" {
+    # The SSH_PASSWORD opt-in's 99-airplanes-ssh-pi.conf drop-in and the pi
+    # authorized_keys file must land before sshd reads its config on the same
+    # first boot.
+    val="$(unit_get Before)"
+    [[ "$val" == *"ssh.service"* ]]
+}
+
+# ---- SSH-opt-in write paths stay inside the writable sandbox ----------------
+
+@test "ProtectSystem=true keeps the SSH-opt-in /etc writes valid" {
+    # apply_ssh_password / apply_ssh_pubkey write /etc/ssh/sshd_config.d/,
+    # /etc/ssh/authorized_keys.d/, and (via chpasswd) /etc/shadow. All live
+    # under /etc, which ProtectSystem=true leaves writable — so no extra
+    # ReadWritePaths entry is needed. Guard against a future tightening to
+    # ProtectSystem=full/strict that would re-mount /etc read-only and silently
+    # break these writes (chroot tests can't see it).
+    [ "$(unit_get ProtectSystem)" = "true" ]
+    # The script writes under /etc/ssh; assert it really targets /etc so a
+    # refactor moving the keyfile under /home (ProtectHome=yes territory) trips
+    # this lint.
+    grep -qE 'SSHD_PI_PWAUTH_CONF=.*/etc/ssh/' "$SCRIPT"
+    grep -qE 'SSH_AUTH_KEYS_DIR=.*/etc/ssh/' "$SCRIPT"
+}
+
 @test "Type=oneshot with RemainAfterExit=yes" {
     # The unit must be Type=oneshot so it runs to completion each boot, and
     # RemainAfterExit=yes so downstream units that order After=this unit
