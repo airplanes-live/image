@@ -249,6 +249,11 @@
   },
   {
     "mode": "symlink",
+    "link": "/usr/local/share/airplanes/airplanes-stats.sh",
+    "target": "/opt/airplanes-runtime/current/share/airplanes/airplanes-stats.sh"
+  },
+  {
+    "mode": "symlink",
     "link": "/usr/local/share/airplanes/apl-feed",
     "target": "/opt/airplanes-runtime/current/share/airplanes/apl-feed"
   },
@@ -291,5 +296,15 @@
     "mode": "symlink",
     "link": "/etc/systemd/system/airplanes-config-sync.timer",
     "target": "/opt/airplanes-runtime/current/systemd/airplanes-config-sync.timer"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-stats.service",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-stats.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-stats.timer",
+    "target": "/opt/airplanes-runtime/current/systemd/airplanes-stats.timer"
   }
 ]

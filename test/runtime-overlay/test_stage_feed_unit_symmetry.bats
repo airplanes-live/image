@@ -68,6 +68,23 @@ _feed_units() {
     done | LC_ALL=C sort
 }
 
+# Collect every airplanes-*.sh daemon wrapper feed ships from scripts/ — the
+# top-level wrappers stage-feed.sh installs into share/airplanes/. Excludes
+# apl-feed.sh (apl-* CLI entry point → bin/) and the curated scripts/lib/
+# runtime libs. Empty result in a populated checkout is structural breakage.
+_feed_wrappers() {
+    local f
+    shopt -s nullglob
+    local -a wrappers=("$FEED_SRC"/scripts/airplanes-*.sh)
+    shopt -u nullglob
+    if (( ${#wrappers[@]} == 0 )); then
+        return 1
+    fi
+    for f in "${wrappers[@]}"; do
+        basename "$f"
+    done | LC_ALL=C sort
+}
+
 # A unit "needs enabling" iff it carries an [Install] section that wires it
 # into a target at boot. Oneshot timer-driven services carry no [Install] —
 # the timer's `Unit=` directive activates them — and must stay out of the
@@ -101,6 +118,32 @@ _unit_needs_enable() {
         printf 'managed_paths.json missing symlink for feed unit: %s\n' "${missing[@]}" >&2
         echo "expected entry shape:" >&2
         echo '  { "mode": "symlink", "link": "/etc/systemd/system/<unit>", "target": "/opt/airplanes-runtime/current/systemd/<unit>" }' >&2
+        return 1
+    fi
+}
+
+@test "every feed airplanes-*.sh wrapper is symlinked by managed_paths.json" {
+    local wrappers_out
+    wrappers_out="$(_feed_wrappers)" \
+        || { echo "no airplanes-*.sh wrappers in $FEED_SRC/scripts/ — feed restructure?" >&2; return 1; }
+    mapfile -t wrappers <<< "$wrappers_out"
+
+    local missing=()
+    local wrapper expected_link expected_target
+    for wrapper in "${wrappers[@]}"; do
+        expected_link="/usr/local/share/airplanes/$wrapper"
+        expected_target="/opt/airplanes-runtime/current/share/airplanes/$wrapper"
+        if ! jq -e --arg link "$expected_link" --arg target "$expected_target" '
+            any(.[]; .mode == "symlink" and .link == $link and .target == $target)
+        ' "$MANAGED_PATHS_JSON" >/dev/null; then
+            missing+=("$wrapper")
+        fi
+    done
+
+    if (( ${#missing[@]} > 0 )); then
+        printf 'managed_paths.json missing symlink for feed wrapper: %s\n' "${missing[@]}" >&2
+        echo "expected entry shape:" >&2
+        echo '  { "mode": "symlink", "link": "/usr/local/share/airplanes/<wrapper>.sh", "target": "/opt/airplanes-runtime/current/share/airplanes/<wrapper>.sh" }' >&2
         return 1
     fi
 }

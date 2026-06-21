@@ -169,11 +169,24 @@ fetch_repo "$FEED_SRC" "$FEED_REPO" "$FEED_REF"
 FEED_SHA="$(git -C "$FEED_SRC" rev-parse HEAD)"
 
 # Daemon wrappers → share/airplanes/
+#
+# Glob feed/scripts/airplanes-*.sh, mirroring the unit glob below, so a wrapper
+# added in feed lands on the image automatically. The previous hand-listed
+# allowlist (airplanes-feed/mlat/diagnostics.sh) silently dropped
+# airplanes-stats.sh when feed added it — the overlay shipped airplanes-stats.timer
+# (globbed) pointing at a script that wasn't staged. apl-feed.sh is NOT matched
+# (apl-* prefix) and is staged to bin/ below; the runtime libs under
+# scripts/lib/ stay an explicit curated subset (install/update-only libs are
+# deliberately excluded — see below).
 install -d -m 0755 "$OUTPUT_DIR/share/airplanes"
-for wrapper in airplanes-feed.sh airplanes-mlat.sh airplanes-diagnostics.sh; do
-    if [[ -f "$FEED_SRC/scripts/$wrapper" ]]; then
-        install -m 0755 "$FEED_SRC/scripts/$wrapper" "$OUTPUT_DIR/share/airplanes/$wrapper"
-    fi
+shopt -s nullglob
+feed_wrappers=("$FEED_SRC"/scripts/airplanes-*.sh)
+shopt -u nullglob
+if [[ ${#feed_wrappers[@]} -eq 0 ]]; then
+    die "no airplanes-*.sh daemon wrappers found in $FEED_SRC/scripts/"
+fi
+for wrapper in "${feed_wrappers[@]}"; do
+    install -m 0755 "$wrapper" "$OUTPUT_DIR/share/airplanes/$(basename "$wrapper")"
 done
 
 # apl-feed CLI entry point → bin/

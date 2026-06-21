@@ -212,21 +212,46 @@ if [[ -d "$systemd_dir" ]]; then
                 raw="${raw:1}"
             done
             bin_path="${raw%% *}"
-            [[ "$bin_path" == /* ]] || continue
 
-            rel=""
-            if [[ "$bin_path" == "$CURRENT_PREFIX"* ]]; then
-                rel="${bin_path#"$CURRENT_PREFIX"}"
-            elif [[ -n "${managed_link_to_release_local[$bin_path]:-}" ]]; then
-                rel="${managed_link_to_release_local[$bin_path]}"
-            else
-                # Host-installed binary; out of scope.
-                continue
+            # (1) argv[0] exec-bit / shebang shape check, when the executable
+            #     resolves into the release tree (directly under the release
+            #     prefix or via a managed_paths symlink). A host binary
+            #     (/usr/bin/..., /bin/...) or a path under a managed directory
+            #     symlink resolves to nothing here and is left to the host — its
+            #     shape is out of scope.
+            if [[ "$bin_path" == /* ]]; then
+                rel=""
+                if [[ "$bin_path" == "$CURRENT_PREFIX"* ]]; then
+                    rel="${bin_path#"$CURRENT_PREFIX"}"
+                elif [[ -n "${managed_link_to_release_local[$bin_path]:-}" ]]; then
+                    rel="${managed_link_to_release_local[$bin_path]}"
+                fi
+                if [[ -n "$rel" ]] && ! _assert_exec_file "$rel" "$unit_base Exec=$bin_path"; then
+                    fail_count=$((fail_count + 1))
+                fi
             fi
 
-            if ! _assert_exec_file "$rel" "$unit_base Exec=$bin_path"; then
+            # (2) Every absolute path in the Exec line that is a DIRECT child of
+            #     the overlay-managed runtime dir must have a managed_paths
+            #     symlink. Scan the whole line, not just argv[0], so an
+            #     interpreter form (`/bin/bash /usr/local/share/airplanes/foo.sh`)
+            #     is covered as well as the direct form. A missing managed link
+            #     means the overlay ships a unit referencing a runtime script it
+            #     doesn't manage — exactly the airplanes-stats gap: the
+            #     .timer/.service were globbed into the overlay but
+            #     airplanes-stats.sh had no managed_paths row and was never
+            #     staged, so a feeder updating to it got a timer pointing at a
+            #     missing ExecStart. Deeper paths (venv/bin/..., apl-feed/*,
+            #     lib/*) are provided wholesale by a managed *directory* symlink
+            #     and carry a further slash, so they're excluded by design.
+            read -ra _exec_tokens <<< "$raw"
+            for tok in "${_exec_tokens[@]}"; do
+                [[ "$tok" == /usr/local/share/airplanes/* \
+                   && "$tok" != /usr/local/share/airplanes/*/* ]] || continue
+                [[ -n "${managed_link_to_release_local[$tok]:-}" ]] && continue
+                echo "exec-bit-check: $unit_base Exec references unmanaged runtime script: $tok — add a managed_paths symlink for it" >&2
                 fail_count=$((fail_count + 1))
-            fi
+            done
         done < <(grep -hE '^[[:space:]]*Exec(Start|StartPre|StartPost|Stop|StopPost|Reload)=' \
                     "$unit" 2>/dev/null || true)
     done
