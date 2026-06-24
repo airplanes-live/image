@@ -23,7 +23,7 @@ _mk_symlink_manifest() {
     "managed_paths": [
         { "mode": "symlink",
           "link": "/usr/local/share/tar1090",
-          "target": "/opt/airplanes-runtime/current/share/tar1090" }
+          "target": "/opt/airplanes/current/share/tar1090" }
     ]
 }
 JSON
@@ -41,7 +41,7 @@ JSON
 
     # Simulate apply: rm the dir and place a symlink.
     rm -rf "$TARGET_ROOT/usr/local/share/tar1090"
-    ln -s /opt/airplanes-runtime/current/share/tar1090 \
+    ln -s /opt/airplanes/current/share/tar1090 \
         "$TARGET_ROOT/usr/local/share/tar1090"
 
     run airplanes_runtime_restore_all_symlink_paths \
@@ -115,7 +115,7 @@ JSON
         "$BATS_TEST_TMPDIR/manifest.json" "$RELEASE_DIR" "$TARGET_ROOT"
     # Simulate first-time install: created by apply.
     install -d -m 755 "$TARGET_ROOT/usr/local/share"
-    ln -s /opt/airplanes-runtime/current/share/tar1090 \
+    ln -s /opt/airplanes/current/share/tar1090 \
         "$TARGET_ROOT/usr/local/share/tar1090"
 
     airplanes_runtime_restore_all_symlink_paths \

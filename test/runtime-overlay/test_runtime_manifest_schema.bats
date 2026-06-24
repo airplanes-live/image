@@ -150,7 +150,7 @@ mutate_golden() {
     mutated="$(mutate_golden '
         (.managed_paths
          | map(if .mode == "copy"
-               then .path = "/usr/bin/readsb"
+               then .path = "/etc/systemd/system/readsb.service"
                else .
                end)) as $p
         | .managed_paths = $p

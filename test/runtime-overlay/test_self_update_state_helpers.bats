@@ -22,25 +22,25 @@ setup() {
 
 @test "state_write writes all keys and state_read returns the state" {
     airplanes_runtime_state_write "$TARGET_ROOT" STARTED \
-        "prev_release=/opt/airplanes-runtime/releases/v1.0.0" \
-        "new_release=/opt/airplanes-runtime/releases/v1.1.0" \
+        "prev_release=/opt/airplanes/releases/v1.0.0" \
+        "new_release=/opt/airplanes/releases/v1.1.0" \
         "started_at=2026-05-20T00:00:00Z"
     run airplanes_runtime_state_read "$TARGET_ROOT"
     [ "$status" -eq 0 ]
     [ "$output" = "STARTED" ]
 
     run airplanes_runtime_state_get "$TARGET_ROOT" prev_release
-    [ "$output" = "/opt/airplanes-runtime/releases/v1.0.0" ]
+    [ "$output" = "/opt/airplanes/releases/v1.0.0" ]
     run airplanes_runtime_state_get "$TARGET_ROOT" new_release
-    [ "$output" = "/opt/airplanes-runtime/releases/v1.1.0" ]
+    [ "$output" = "/opt/airplanes/releases/v1.1.0" ]
     run airplanes_runtime_state_get "$TARGET_ROOT" started_at
     [ "$output" = "2026-05-20T00:00:00Z" ]
 }
 
 @test "state_write preserves prev_release / new_release on subsequent transitions" {
     airplanes_runtime_state_write "$TARGET_ROOT" STARTED \
-        "prev_release=/opt/airplanes-runtime/releases/v1.0.0" \
-        "new_release=/opt/airplanes-runtime/releases/v1.1.0"
+        "prev_release=/opt/airplanes/releases/v1.0.0" \
+        "new_release=/opt/airplanes/releases/v1.1.0"
     airplanes_runtime_state_write "$TARGET_ROOT" PAYLOAD_EXTRACTED
     airplanes_runtime_state_write "$TARGET_ROOT" MIGRATIONS_FORWARD_DONE
     airplanes_runtime_state_write "$TARGET_ROOT" SYMLINK_FLIPPED
@@ -48,9 +48,9 @@ setup() {
     run airplanes_runtime_state_read "$TARGET_ROOT"
     [ "$output" = "SYMLINK_FLIPPED" ]
     run airplanes_runtime_state_get "$TARGET_ROOT" prev_release
-    [ "$output" = "/opt/airplanes-runtime/releases/v1.0.0" ]
+    [ "$output" = "/opt/airplanes/releases/v1.0.0" ]
     run airplanes_runtime_state_get "$TARGET_ROOT" new_release
-    [ "$output" = "/opt/airplanes-runtime/releases/v1.1.0" ]
+    [ "$output" = "/opt/airplanes/releases/v1.1.0" ]
 }
 
 @test "state_write captures failure_reason on terminal failure" {
@@ -77,9 +77,9 @@ setup() {
 }
 
 @test "state_read on malformed file returns UNKNOWN" {
-    install -d -m 755 "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade"
+    install -d -m 755 "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade"
     printf 'this is not a state file\n' \
-        > "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state"
+        > "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state"
     run airplanes_runtime_state_read "$TARGET_ROOT"
     [ "$output" = "UNKNOWN" ]
 }
@@ -96,13 +96,17 @@ setup() {
     # Remove the state dir BEFORE locking the parent so ensure_state_dir's
     # install -d fails. ensure_state_dir's `install -d -m 755` overrides
     # any chmod we apply to the state dir directly, so we must break
-    # the next-higher level instead.
-    rm -rf "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade"
-    chmod 0555 "$TARGET_ROOT/var/lib"
+    # the next-higher level instead. The state dir is now nested two deep
+    # (/var/lib/airplanes/runtime-upgrade), and /var/lib/airplanes already
+    # exists writable, so locking /var/lib no longer blocks the leaf — lock
+    # the immediate parent /var/lib/airplanes instead.
+    mkdir -p "$TARGET_ROOT/var/lib/airplanes"
+    rm -rf "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade"
+    chmod 0555 "$TARGET_ROOT/var/lib/airplanes"
 
     run airplanes_runtime_state_write "$TARGET_ROOT" STARTED
     rc=$status
-    chmod 0755 "$TARGET_ROOT/var/lib"
+    chmod 0755 "$TARGET_ROOT/var/lib/airplanes"
 
     [ "$rc" -ne 0 ]
 }

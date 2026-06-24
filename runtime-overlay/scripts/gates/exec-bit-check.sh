@@ -19,7 +19,7 @@
 #   2. Every ExecStart=/ExecStartPre=/ExecStartPost=/ExecStop=/
 #      ExecStopPost=/ExecReload= absolute path referenced by a unit in
 #      the staged tree, whose path resolves into the release tree
-#      (either directly under /opt/airplanes-runtime/current/ or via a
+#      (either directly under /opt/airplanes/current/ or via a
 #      managed_paths symlink), must satisfy the same shape constraints.
 #
 # Mode check is "regular file + any execute bit", not exact 0755. Git
@@ -61,7 +61,7 @@ command -v jq >/dev/null 2>&1 || die "jq is required"
 manifest="$RELEASE_DIR/manifest.json"
 [[ -f "$manifest" ]] || die "manifest.json missing under $RELEASE_DIR"
 
-CURRENT_PREFIX="/opt/airplanes-runtime/current/"
+CURRENT_PREFIX="/opt/airplanes/current/"
 
 # Build a lookup from on-device absolute path -> release-local path for
 # every managed_paths symlink entry. This is how an ExecStart= that
@@ -185,15 +185,25 @@ while IFS= read -r rel; do
 done < <(jq -r '.managed_paths[]? | select(.mode == "symlink") | .target' "$manifest" \
             | awk -v p="$CURRENT_PREFIX" 'index($0, p) == 1 { print substr($0, length(p) + 1) }')
 
+# Gate-validity guard. Every check above filters on CURRENT_PREFIX, so if the
+# manifest declares symlink managed_paths but NONE resolved under it, the
+# prefix has drifted out of sync with the manifest's targets and every shape
+# check silently verified an empty set — emitting a false "ok". An /opt path
+# rename that misses this constant springs exactly that trap, so fail loud.
+managed_symlink_total="$(jq -r '[.managed_paths[]? | select(.mode == "symlink")] | length' "$manifest")"
+if (( managed_symlink_total > 0 )) && (( ${#managed_link_to_release_local[@]} == 0 )); then
+    die "no managed_paths symlink target resolved under CURRENT_PREFIX=$CURRENT_PREFIX ($managed_symlink_total symlink entries declared) — prefix/manifest drift; the gate would otherwise silently pass"
+fi
+
 # --- ExecStart references gate -------------------------------------------
 
 # Walk every unit in the staged systemd/ tree, parse Exec*= absolute
 # paths, and assert any path that resolves into the release tree is
 # executable. Resolution is:
-#   - Direct: path starts with /opt/airplanes-runtime/current/<rel>
+#   - Direct: path starts with /opt/airplanes/current/<rel>
 #       -> release-local <rel>
 #   - Indirect: path is a managed_paths[].link whose target starts with
-#     /opt/airplanes-runtime/current/<rel> -> release-local <rel>
+#     /opt/airplanes/current/<rel> -> release-local <rel>
 #   - Otherwise: out of scope (host-installed binary like /usr/bin/apt-get).
 systemd_dir="$RELEASE_DIR/systemd"
 if [[ -d "$systemd_dir" ]]; then

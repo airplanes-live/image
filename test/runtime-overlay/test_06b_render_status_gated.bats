@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
 
-# Tests for stage-airplanes/06b-console-dashboard/00-run.sh's idempotent
-# install of render-status + ASCII assets + motd hook. The block installs
-# image-side UNLESS the runtime-overlay path already placed the files (via
-# stage-airplanes/02-install-runtime-overlay running ahead of 06b). The
-# dashboard service unit and getty@tty1 override stay unconditional.
+# Tests for stage-airplanes/06b-console-dashboard/00-run.sh. render-status, the
+# ASCII assets, and the motd hook are delivered by the runtime overlay (laid by
+# stage-airplanes/02-install-runtime-overlay under /opt/airplanes/current), so
+# 06b installs ONLY the image-owned dashboard service unit and the getty@tty1
+# override. It must not write anything under /usr/local or /etc/update-motd.d.
 
 bats_require_minimum_version 1.5.0
 
@@ -24,57 +24,22 @@ run_06b() {
         bash -c "cd \"$REPO_ROOT/stage-airplanes/06b-console-dashboard\" && ./00-run.sh"
 }
 
-@test "render-status absent: 06b installs the image-owned fallback" {
+@test "06b installs the dashboard service unit and the getty override" {
     run run_06b
     [ "$status" -eq 0 ]
-    [ -x "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" ]
-    [ -f "$ROOTFS_DIR/usr/local/share/airplanes/logo.txt" ]
-    [ -f "$ROOTFS_DIR/usr/local/share/airplanes/banner.txt" ]
-    [ -f "$ROOTFS_DIR/usr/local/share/airplanes/banner-narrow.txt" ]
-    [ -f "$ROOTFS_DIR/usr/local/share/airplanes/icon.txt" ]
-    [ -x "$ROOTFS_DIR/etc/update-motd.d/10-airplanes-status" ]
-
-    # Dashboard service + getty override are always image-owned.
     [ -f "$ROOTFS_DIR/etc/systemd/system/airplanes-dashboard.service" ]
     [ -f "$ROOTFS_DIR/etc/systemd/system/getty@tty1.service.d/override.conf" ]
 }
 
-@test "render-status already symlinked into runtime overlay: 06b skips it" {
-    # Simulate 02-install-runtime-overlay having run ahead of 06b.
-    install -d -m 755 "$ROOTFS_DIR/usr/local/lib/airplanes"
-    install -d -m 755 "$ROOTFS_DIR/opt/airplanes-runtime/current/lib/airplanes"
-    : > "$ROOTFS_DIR/opt/airplanes-runtime/current/lib/airplanes/render-status"
-    chmod 0755 "$ROOTFS_DIR/opt/airplanes-runtime/current/lib/airplanes/render-status"
-    ln -sf /opt/airplanes-runtime/current/lib/airplanes/render-status \
-        "$ROOTFS_DIR/usr/local/lib/airplanes/render-status"
-
+@test "06b writes nothing under /usr/local or the motd hook (overlay-delivered)" {
     run run_06b
     [ "$status" -eq 0 ]
-
-    # 06b should NOT have replaced the symlink with a regular file.
-    [ -L "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" ]
-    [ "$(readlink "$ROOTFS_DIR/usr/local/lib/airplanes/render-status")" \
-      = "/opt/airplanes-runtime/current/lib/airplanes/render-status" ]
-
-    # 06b should NOT have installed the image-owned ASCII assets either.
+    # render-status + artwork are overlay-only now; 06b must not re-create the
+    # old /usr/local fallback nor the image-owned motd hook.
+    [ ! -e "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" ]
     [ ! -e "$ROOTFS_DIR/usr/local/share/airplanes/logo.txt" ]
+    [ ! -e "$ROOTFS_DIR/usr/local/share/airplanes/banner.txt" ]
+    [ ! -e "$ROOTFS_DIR/usr/local/share/airplanes/banner-narrow.txt" ]
+    [ ! -e "$ROOTFS_DIR/usr/local/share/airplanes/icon.txt" ]
     [ ! -e "$ROOTFS_DIR/etc/update-motd.d/10-airplanes-status" ]
-
-    # Dashboard service + getty override still land unconditionally.
-    [ -f "$ROOTFS_DIR/etc/systemd/system/airplanes-dashboard.service" ]
-    [ -f "$ROOTFS_DIR/etc/systemd/system/getty@tty1.service.d/override.conf" ]
-}
-
-@test "render-status as plain file already present: 06b leaves it alone" {
-    # Defensive case: prior stage (not the overlay) put a real file there.
-    install -d -m 755 "$ROOTFS_DIR/usr/local/lib/airplanes"
-    printf '#!/bin/bash\necho prior\n' > "$ROOTFS_DIR/usr/local/lib/airplanes/render-status"
-    chmod 0755 "$ROOTFS_DIR/usr/local/lib/airplanes/render-status"
-    prior_sha=$(sha256sum "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" | cut -d' ' -f1)
-
-    run run_06b
-    [ "$status" -eq 0 ]
-
-    new_sha=$(sha256sum "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" | cut -d' ' -f1)
-    [ "$prior_sha" = "$new_sha" ]
 }

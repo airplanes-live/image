@@ -49,12 +49,12 @@ setup() {
     [ "$(read_state "$TARGET_ROOT")" = "FAILED_PRE_MUTATION" ]
     # failure_reason captured in the state file.
     grep -E '^failure_reason=download_failed$' \
-        "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state"
+        "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state"
 
     # Critical: NO release dir or current symlink were created (no
     # mutation happened).
-    [ ! -L "$TARGET_ROOT/opt/airplanes-runtime/current" ]
-    run find "$TARGET_ROOT/opt/airplanes-runtime/releases" -mindepth 1 -maxdepth 1 -type d
+    [ ! -L "$TARGET_ROOT/opt/airplanes/current" ]
+    run find "$TARGET_ROOT/opt/airplanes/releases" -mindepth 1 -maxdepth 1 -type d
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
@@ -137,5 +137,5 @@ srv.serve_forever()
 
     [ "$status" -ne 0 ]
     [ "$(read_state "$TARGET_ROOT")" = "FAILED_PRE_MUTATION" ]
-    [ ! -L "$TARGET_ROOT/opt/airplanes-runtime/current" ]
+    [ ! -L "$TARGET_ROOT/opt/airplanes/current" ]
 }

@@ -14,20 +14,34 @@ adduser --system --no-create-home --group airplanes-webconfig
 # overlay-shipped airplanes-aggregator@<id>.service template (enabled
 # per-instance by apl-aggregator when a user opts in) declares
 # User=airplanes-aggregator and runs vendor feeder code (e.g. fr24feed) under
-# this unprivileged account, never root. Its StateDirectory= provisions
-# /var/lib/airplanes-aggregators at start, so only the account is created here.
+# this unprivileged account, never root. Its StateDirectory= provisions the
+# account-owned /var/lib/airplanes/aggregators/state at start; the root-owned
+# install root and shared dirs are created below.
 # Mirrored on the overlay self-update path by runtime-overlay migration 0001.
 adduser --system --no-create-home --group airplanes-aggregator
 
-# Per-user state dirs. The overlay rootfs ships only the files webconfig owns
-# at install time, not these state directories, so create them here at mode
-# 0700 with the right owner.
-install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /var/lib/airplanes-webconfig
+# Shared first-party state root. Created root:root 0755 here so every
+# per-service subdir below — and the runtime/aggregator dirs other stages and
+# the overlay create — nests under a parent we own, never an account-owned one.
+install -d -m 0755 /var/lib/airplanes
+
+# webconfig daemon state (account-owned, 0700). The overlay rootfs ships only
+# the files webconfig owns at install time, not these state directories.
+install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /var/lib/airplanes/webconfig
 install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /etc/airplanes/webconfig
-# Upgrade-state marker dir written by the runtime-overlay update path; the
-# overlay rootfs ships an empty placeholder dir but the on-image state dir
-# must exist with the right owner before the service runs.
-install -d -m 0700 -o airplanes-webconfig -g airplanes-webconfig /var/lib/airplanes-webconfig-upgrade
+# Upgrade-state marker dir written by the runtime-overlay update path. Root-owned
+# (0755) and deliberately a sibling of webconfig/, not a child: the unprivileged
+# daemon reads the marker but must not be able to forge it, and it has to survive
+# independently of the account-owned state dir.
+install -d -m 0755 /var/lib/airplanes/webconfig-upgrade
+
+# Aggregator install root for the on-demand vendor binaries (e.g. fr24feed).
+# Root-owned (0755) and OUTSIDE the airplanes-aggregator account's
+# StateDirectory (/var/lib/airplanes/aggregators/state, provisioned per-instance
+# by airplanes-aggregator@.service) so the unprivileged account execs binaries
+# it cannot replace.
+install -d -m 0755 /var/lib/airplanes/aggregators
+install -d -m 0755 /var/lib/airplanes/aggregators/bin
 
 # /api/log/{unit} streams journalctl as the webconfig user. Adding it to
 # systemd-journal grants read access to the system journal without sudo.

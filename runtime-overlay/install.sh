@@ -9,7 +9,7 @@
 #       produced earlier in the product-release workflow. Local builds may set
 #       AIRPLANES_RUNTIME_OVERLAY_TAG to install from a published product release.
 #       Downloads/copies and verifies the release, extracts it under
-#       ${ROOTFS_DIR}/opt/airplanes-runtime/releases/v<version>/, flips
+#       ${ROOTFS_DIR}/opt/airplanes/releases/v<version>/, flips
 #       current, relinks decoder binaries, lays managed_paths. Skips
 #       systemd ops (handled by the chroot stage) and health gates (no
 #       running system to probe).
@@ -92,16 +92,16 @@ fi
 # is canonical (and so a `dev-latest` floating tag still lands under its
 # concrete v<X.Y.Z-dev-...> dir).
 RELEASE_VERSION="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$MANIFEST")"
-RELEASE_DIR_ABS="${TARGET_ROOT}/opt/airplanes-runtime/releases/v${RELEASE_VERSION}"
+RELEASE_DIR_ABS="${TARGET_ROOT}/opt/airplanes/releases/v${RELEASE_VERSION}"
 
 # Compute PREV_RELEASE_DIR from the pre-flip current symlink. Empty if
 # there's no current yet (first install). The link target is always an
-# on-device-canonical path (`/opt/airplanes-runtime/releases/v<X>/`); for
+# on-device-canonical path (`/opt/airplanes/releases/v<X>/`); for
 # downstream consumers under a build-mode rebase we surface it rebased so
 # shell migrations can stat it under TARGET_ROOT, while we compare the
 # link's literal target against the on-device equivalent of the new
 # release path.
-CURRENT_LINK="${TARGET_ROOT}/opt/airplanes-runtime/current"
+CURRENT_LINK="${TARGET_ROOT}/opt/airplanes/current"
 PREV_RELEASE_LINK_TARGET=""
 PREV_RELEASE_DIR=""
 if [[ -L "$CURRENT_LINK" ]]; then

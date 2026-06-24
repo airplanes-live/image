@@ -48,7 +48,7 @@ setup() {
 
     # The state file must NOT exist beforehand — the contending invocation
     # writing one would corrupt this assertion.
-    [ ! -e "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state" ]
+    [ ! -e "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state" ]
 
     run env \
         AIRPLANES_BUILD_MODE=0 \
@@ -61,7 +61,7 @@ setup() {
     [ "$status" -eq 75 ]
     [[ "$output" == *"another runtime-overlay update is in progress"* ]]
     # Critical: no state file written by the losing invocation.
-    [ ! -e "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state" ]
+    [ ! -e "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state" ]
 
     # Release the holder.
     rm -f "$BATS_TEST_TMPDIR/keep-holding"

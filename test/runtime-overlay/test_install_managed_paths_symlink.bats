@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 # Tests symlink-mode managed_paths application.
-# - link points at an absolute /opt/airplanes-runtime/current/... target
+# - link points at an absolute /opt/airplanes/current/... target
 # - the on-disk link target string MUST be the absolute manifest value, not
 #   a relative one
 # - the apply is atomic (the link is created via tmp + mv -Tf, never via
@@ -27,9 +27,9 @@ write_manifest() {
     "channel": "stable",
     "managed_paths": [
         { "mode": "symlink", "link": "/etc/systemd/system/readsb.service",
-          "target": "/opt/airplanes-runtime/current/systemd/readsb.service" },
+          "target": "/opt/airplanes/current/systemd/readsb.service" },
         { "mode": "symlink", "link": "/usr/bin/airplanes-978",
-          "target": "/opt/airplanes-runtime/current/bin/readsb" }
+          "target": "/opt/airplanes/current/bin/readsb" }
     ]
 }
 JSON
@@ -45,11 +45,11 @@ JSON
 
     run readlink "$TARGET_ROOT/etc/systemd/system/readsb.service"
     [ "$status" -eq 0 ]
-    [ "$output" = "/opt/airplanes-runtime/current/systemd/readsb.service" ]
+    [ "$output" = "/opt/airplanes/current/systemd/readsb.service" ]
 
     run readlink "$TARGET_ROOT/usr/bin/airplanes-978"
     [ "$status" -eq 0 ]
-    [ "$output" = "/opt/airplanes-runtime/current/bin/readsb" ]
+    [ "$output" = "/opt/airplanes/current/bin/readsb" ]
 }
 
 @test "second apply atomically replaces an existing link" {
@@ -64,7 +64,7 @@ JSON
     [ "$status" -eq 0 ]
     run readlink "$TARGET_ROOT/etc/systemd/system/readsb.service"
     [ "$status" -eq 0 ]
-    [ "$output" = "/opt/airplanes-runtime/current/systemd/readsb.service" ]
+    [ "$output" = "/opt/airplanes/current/systemd/readsb.service" ]
 }
 
 @test "relative target string in manifest is rejected" {
@@ -102,7 +102,7 @@ JSON
     [ "$status" -eq 0 ]
     [ -L "$TARGET_ROOT/etc/systemd/system/readsb.service" ]
     [ "$(readlink "$TARGET_ROOT/etc/systemd/system/readsb.service")" = \
-      "/opt/airplanes-runtime/current/systemd/readsb.service" ]
+      "/opt/airplanes/current/systemd/readsb.service" ]
 }
 
 @test "apply replaces a pre-existing regular file at the link path" {
@@ -128,7 +128,7 @@ JSON
     [ "$status" -ne 0 ]
 
     # The overlay's own release tree is off-limits as a managed destination.
-    run _airplanes_runtime_assert_safe_managed_path "/opt/airplanes-runtime/releases/v1.0.0"
+    run _airplanes_runtime_assert_safe_managed_path "/opt/airplanes/releases/v1.0.0"
     [ "$status" -ne 0 ]
 
     # A relative path is refused.

@@ -72,8 +72,8 @@ srv.serve_forever()
     # Pre-stage the UAT state files with valid (state, reason) so those
     # gates pass — we're testing readsb today; the UAT gate has its own
     # bats file.
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/dump978-fa/state"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes-978/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/dump978-fa/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/978/state"
 
     run airplanes_runtime_run_health_gates "$TARGET_ROOT"
     kill "$HTTPD_PID" 2>/dev/null || true
@@ -100,8 +100,8 @@ srv.serve_forever()
     # No HTTP fixture — point probe URL at a closed port. curl returns
     # connection-refused; the gate must fail before its deadline.
     export AIRPLANES_RUNTIME_PROBE_URL_BASE="http://127.0.0.1:1"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/dump978-fa/state"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes-978/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/dump978-fa/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/978/state"
 
     run airplanes_runtime_run_health_gates "$TARGET_ROOT"
     [ "$status" -ne 0 ]

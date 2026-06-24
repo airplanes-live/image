@@ -73,19 +73,13 @@ setup() {
     "managed_paths": [
         { "mode": "symlink",
           "link": "/etc/systemd/system/readsb.service",
-          "target": "/opt/airplanes-runtime/current/systemd/readsb.service" },
+          "target": "/opt/airplanes/current/systemd/readsb.service" },
         { "mode": "symlink",
           "link": "/etc/systemd/system/airplanes-runtime-update-recover.service",
-          "target": "/opt/airplanes-runtime/current/systemd/airplanes-runtime-update-recover.service" },
-        { "mode": "symlink",
-          "link": "/usr/local/lib/airplanes/render-status",
-          "target": "/opt/airplanes-runtime/current/lib/airplanes/render-status" },
+          "target": "/opt/airplanes/current/systemd/airplanes-runtime-update-recover.service" },
         { "mode": "symlink",
           "link": "/etc/lighttpd/conf-available/89-airplanes-978.conf",
-          "target": "/opt/airplanes-runtime/current/etc/lighttpd/conf-available/89-airplanes-978.conf" },
-        { "mode": "symlink",
-          "link": "/usr/bin/dump978-fa",
-          "target": "/opt/airplanes-runtime/current/bin/dump978-fa" }
+          "target": "/opt/airplanes/current/etc/lighttpd/conf-available/89-airplanes-978.conf" }
     ],
     "mutable_paths": [],
     "systemd": { "enable": [], "daemon_reload": true },
@@ -155,28 +149,29 @@ teardown() {
     fi
 
     # Release tree exists.
-    [ -d "$ROOTFS_DIR/opt/airplanes-runtime/releases/v$REL_VER" ]
-    [ -f "$ROOTFS_DIR/opt/airplanes-runtime/releases/v$REL_VER/manifest.json" ]
-    [ -L "$ROOTFS_DIR/opt/airplanes-runtime/current" ]
-    [ "$(readlink "$ROOTFS_DIR/opt/airplanes-runtime/current")" = "/opt/airplanes-runtime/releases/v$REL_VER" ]
+    [ -d "$ROOTFS_DIR/opt/airplanes/releases/v$REL_VER" ]
+    [ -f "$ROOTFS_DIR/opt/airplanes/releases/v$REL_VER/manifest.json" ]
+    [ -L "$ROOTFS_DIR/opt/airplanes/current" ]
+    [ "$(readlink "$ROOTFS_DIR/opt/airplanes/current")" = "/opt/airplanes/releases/v$REL_VER" ]
 
     # managed_paths landed under ROOTFS_DIR with absolute on-device targets.
     [ -L "$ROOTFS_DIR/etc/systemd/system/readsb.service" ]
-    [ "$(readlink "$ROOTFS_DIR/etc/systemd/system/readsb.service")" = "/opt/airplanes-runtime/current/systemd/readsb.service" ]
+    [ "$(readlink "$ROOTFS_DIR/etc/systemd/system/readsb.service")" = "/opt/airplanes/current/systemd/readsb.service" ]
 
     [ -L "$ROOTFS_DIR/etc/systemd/system/airplanes-runtime-update-recover.service" ]
-    [ "$(readlink "$ROOTFS_DIR/etc/systemd/system/airplanes-runtime-update-recover.service")" = "/opt/airplanes-runtime/current/systemd/airplanes-runtime-update-recover.service" ]
+    [ "$(readlink "$ROOTFS_DIR/etc/systemd/system/airplanes-runtime-update-recover.service")" = "/opt/airplanes/current/systemd/airplanes-runtime-update-recover.service" ]
 
-    [ -L "$ROOTFS_DIR/usr/local/lib/airplanes/render-status" ]
     [ -L "$ROOTFS_DIR/etc/lighttpd/conf-available/89-airplanes-978.conf" ]
 
-    # Decoder binary symlinks created post-flip by install.sh.
-    [ -L "$ROOTFS_DIR/usr/bin/readsb" ]
-    [ "$(readlink "$ROOTFS_DIR/usr/bin/readsb")" = "/opt/airplanes-runtime/current/bin/readsb" ]
-    [ -L "$ROOTFS_DIR/usr/bin/airplanes-978" ]
-    [ "$(readlink "$ROOTFS_DIR/usr/bin/airplanes-978")" = "/opt/airplanes-runtime/current/bin/readsb" ]
-    [ -L "$ROOTFS_DIR/usr/bin/dump978-fa" ]
-    [ "$(readlink "$ROOTFS_DIR/usr/bin/dump978-fa")" = "/opt/airplanes-runtime/current/bin/dump978-fa" ]
+    # Decoder operator shims created post-flip by install.sh under /usr/local/bin
+    # (FHS-correct; /usr/bin is no longer squatted).
+    [ -L "$ROOTFS_DIR/usr/local/bin/readsb" ]
+    [ "$(readlink "$ROOTFS_DIR/usr/local/bin/readsb")" = "/opt/airplanes/current/bin/readsb" ]
+    [ -L "$ROOTFS_DIR/usr/local/bin/dump978-fa" ]
+    [ "$(readlink "$ROOTFS_DIR/usr/local/bin/dump978-fa")" = "/opt/airplanes/current/bin/dump978-fa" ]
+    # The old /usr/bin squats must not be created.
+    [ ! -e "$ROOTFS_DIR/usr/bin/readsb" ]
+    [ ! -e "$ROOTFS_DIR/usr/bin/airplanes-978" ]
 
     # Runtime-manifest pointer is a regular file copy in build mode so
     # host-side consumers (scripts/manifest-generator.sh in stage 07) can
@@ -209,7 +204,7 @@ teardown() {
 @test "stage 02-install-runtime-overlay refuses when host pubkey is missing" {
     # Move the in-repo pubkey aside so the stage's host-path check fails. The
     # worktree is shared with the rest of the suite, so restore on exit.
-    local pub="$REPO_ROOT/stage-airplanes/00-prep/files/usr/share/airplanes/runtime-release.pub"
+    local pub="$REPO_ROOT/stage-airplanes/00-prep/files/opt/airplanes/libexec/runtime-release.pub"
     local bk="$BATS_TEST_TMPDIR/runtime-release.pub.bak"
     if [[ ! -f "$pub" ]]; then
         skip "pubkey not committed yet"

@@ -2,7 +2,7 @@
 # Wrapper for dump978-fa (978 MHz UAT receiver). Reads UAT_INPUT and
 # DUMP978_SDR_SERIAL from the EnvironmentFile-loaded environment, runs a
 # non-mutating USB-serial probe so the daemon does not thrash on hardware
-# without a 978 dongle, and publishes the decision to /run/dump978-fa/state
+# without a 978 dongle, and publishes the decision to /run/airplanes/dump978-fa/state
 # for consumers (apl-feed status, render-status, webconfig dashboard).
 #
 # Decision matrix (state, reason):
@@ -43,9 +43,9 @@ DUMP978_RAW_BIND="${DUMP978_RAW_BIND:-127.0.0.1}"
 DUMP978_JSON_BIND="${DUMP978_JSON_BIND:-127.0.0.1}"
 
 # Test hooks. Bats overrides these to skip real /run paths and stub the binary.
-: "${DUMP978_FA_RUNTIME_DIR:=/run/dump978-fa}"
-: "${DUMP978_FA_BIN:=/usr/bin/dump978-fa}"
-: "${STATE_WRITER_LIB:=/usr/local/share/airplanes/lib/state-writer.sh}"
+: "${DUMP978_FA_RUNTIME_DIR:=/run/airplanes/dump978-fa}"
+: "${DUMP978_FA_BIN:=/opt/airplanes/current/bin/dump978-fa}"
+: "${STATE_WRITER_LIB:=/opt/airplanes/current/share/airplanes/lib/state-writer.sh}"
 # Probe override: glob expanded for USB serial files. Tests point this at a
 # temp dir; production reads /sys/bus/usb/devices/*/serial.
 : "${DUMP978_FA_USB_SERIAL_GLOB:=/sys/bus/usb/devices/*/serial}"

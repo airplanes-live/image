@@ -15,7 +15,7 @@
 #   share/graphs1090/                            $ipath tree install.sh produces
 #   share/graphs1090/978-symlink/.gitkeep        directory placeholder; the
 #                                                inner data symlink to
-#                                                /run/airplanes-978 is
+#                                                /run/airplanes/978 is
 #                                                runtime-only
 #   systemd/graphs1090.service                   the unit (paths are
 #                                                /usr/share/graphs1090, which
@@ -252,7 +252,7 @@ if [[ ! -d "$OUTPUT_DIR/share/graphs1090/978-symlink" ]]; then
     # Defensive fallback: if install.sh skipped the mkdir for some reason,
     # create it so the runtime install.sh's symlink-target check has a
     # stable parent. The on-device install creates the inner `data` link
-    # pointing at /run/airplanes-978.
+    # pointing at /run/airplanes/978.
     install -d -m 0755 "$OUTPUT_DIR/share/graphs1090/978-symlink"
     # Non-hidden placeholder so actions/upload-artifact (which drops
     # hidden files by default) retains the otherwise-empty directory.

@@ -7,7 +7,7 @@
 # POSIX sh, base-OS tools only — this must work even when the overlay is
 # broken (the whole point of the recovery shim).
 
-STATUS_FILE="/var/lib/airplanes-runtime-upgrade/recovery-status"
+STATUS_FILE="/var/lib/airplanes/runtime-upgrade/recovery-status"
 
 [ -r "$STATUS_FILE" ] || exit 0
 

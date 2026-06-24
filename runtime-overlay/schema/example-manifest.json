@@ -5,7 +5,9 @@
   "channel": "stable",
   "commit_sha": "0123456789abcdef0123456789abcdef01234567",
   "build_date": "2026-05-19T12:34:56Z",
-  "arches": ["arm64"],
+  "arches": [
+    "arm64"
+  ],
   "compat": {
     "base_os_codename": "trixie",
     "mlat_python_abi": "cp313",
@@ -31,111 +33,54 @@
   "managed_paths": [
     {
       "mode": "symlink",
-      "link": "/usr/bin/readsb",
-      "target": "/opt/airplanes-runtime/current/bin/readsb"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/bin/airplanes-978",
-      "target": "/opt/airplanes-runtime/current/bin/readsb"
-    },
-    {
-      "mode": "symlink",
       "link": "/etc/systemd/system/readsb.service",
-      "target": "/opt/airplanes-runtime/current/systemd/readsb.service"
+      "target": "/opt/airplanes/current/systemd/readsb.service"
     },
     {
       "mode": "symlink",
       "link": "/etc/systemd/system/airplanes-978.service",
-      "target": "/opt/airplanes-runtime/current/systemd/airplanes-978.service"
+      "target": "/opt/airplanes/current/systemd/airplanes-978.service"
     },
     {
       "mode": "symlink",
       "link": "/etc/systemd/system/dump978-fa.service",
-      "target": "/opt/airplanes-runtime/current/systemd/dump978-fa.service"
+      "target": "/opt/airplanes/current/systemd/dump978-fa.service"
     },
     {
       "mode": "symlink",
       "link": "/etc/systemd/system/airplanes-tar1090-uat-sync.service",
-      "target": "/opt/airplanes-runtime/current/systemd/airplanes-tar1090-uat-sync.service"
+      "target": "/opt/airplanes/current/systemd/airplanes-tar1090-uat-sync.service"
     },
     {
       "mode": "symlink",
       "link": "/etc/systemd/system/airplanes-tar1090-uat-sync.path",
-      "target": "/opt/airplanes-runtime/current/systemd/airplanes-tar1090-uat-sync.path"
+      "target": "/opt/airplanes/current/systemd/airplanes-tar1090-uat-sync.path"
     },
     {
       "mode": "symlink",
       "link": "/usr/local/share/tar1090",
-      "target": "/opt/airplanes-runtime/current/share/tar1090"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/lib/airplanes/render-status",
-      "target": "/opt/airplanes-runtime/current/lib/airplanes/render-status"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/share/airplanes/readsb.sh",
-      "target": "/opt/airplanes-runtime/current/share/airplanes/readsb.sh"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/share/airplanes/venv",
-      "target": "/opt/airplanes-runtime/current/share/airplanes/venv"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/share/airplanes/airplanes-978.sh",
-      "target": "/opt/airplanes-runtime/current/share/airplanes/airplanes-978.sh"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/share/airplanes/dump978-fa.sh",
-      "target": "/opt/airplanes-runtime/current/share/airplanes/dump978-fa.sh"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/share/airplanes/tar1090-uat-sync.sh",
-      "target": "/opt/airplanes-runtime/current/share/airplanes/tar1090-uat-sync.sh"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/share/airplanes/logo.txt",
-      "target": "/opt/airplanes-runtime/current/share/airplanes/logo.txt"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/share/airplanes/banner.txt",
-      "target": "/opt/airplanes-runtime/current/share/airplanes/banner.txt"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/share/airplanes/banner-narrow.txt",
-      "target": "/opt/airplanes-runtime/current/share/airplanes/banner-narrow.txt"
-    },
-    {
-      "mode": "symlink",
-      "link": "/usr/local/share/airplanes/icon.txt",
-      "target": "/opt/airplanes-runtime/current/share/airplanes/icon.txt"
+      "target": "/opt/airplanes/current/share/tar1090"
     },
     {
       "mode": "symlink",
       "link": "/etc/update-motd.d/10-airplanes-status",
-      "target": "/opt/airplanes-runtime/current/etc/update-motd.d/10-airplanes-status"
+      "target": "/opt/airplanes/current/etc/update-motd.d/10-airplanes-status"
     },
     {
       "mode": "symlink",
       "link": "/etc/lighttpd/conf-available/89-airplanes-978.conf",
-      "target": "/opt/airplanes-runtime/current/etc/lighttpd/conf-available/89-airplanes-978.conf"
+      "target": "/opt/airplanes/current/etc/lighttpd/conf-available/89-airplanes-978.conf"
     },
     {
       "mode": "copy",
-      "path": "/etc/sudoers.d/090_airplanes-runtime",
-      "from": "etc/sudoers.d/090_airplanes-runtime",
+      "path": "/etc/sudoers.d/010_airplanes-webconfig",
+      "from": "etc/sudoers.d/010_airplanes-webconfig",
       "owner": "root:root",
       "perm": "0440",
-      "post_install": ["/usr/sbin/visudo", "-c"]
+      "post_install": [
+        "/usr/sbin/visudo",
+        "-c"
+      ]
     }
   ],
   "mutable_paths": [
@@ -150,7 +95,9 @@
       "airplanes-tar1090-uat-sync.path"
     ],
     "disable": [],
-    "reload_or_restart": ["lighttpd.service"],
+    "reload_or_restart": [
+      "lighttpd.service"
+    ],
     "daemon_reload": true
   },
   "migrations": [
@@ -159,7 +106,10 @@
       "type": "group_membership",
       "run_when": "every_install",
       "user": "readsb",
-      "groups": ["plugdev", "dialout"]
+      "groups": [
+        "plugdev",
+        "dialout"
+      ]
     },
     {
       "id": "tar1090-defaults-uat-key",

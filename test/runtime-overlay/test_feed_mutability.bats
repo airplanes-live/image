@@ -2,13 +2,13 @@
 
 # Feed mutability audit: asserts the feed daemon wrappers, apl-feed CLI, and
 # runtime lib helpers never write under the immutable release directory
-# (/opt/airplanes-runtime/current or /usr/local/share/airplanes when it is
+# (/opt/airplanes/current or /opt/airplanes/current/share/airplanes when it is
 # a symlink into the release tree). The feed stack writes to:
 #   - /run/<service>/state (tmpfs, fine)
 #   - /etc/airplanes/feed.env (mutable config, fine)
-#   - /var/lib/airplanes-webconfig (webconfig state, fine)
+#   - /var/lib/airplanes/webconfig (webconfig state, fine)
 # but must NOT mutate its own install directory (which is the release tree
-# once managed_paths-symlinked through /opt/airplanes-runtime/current/).
+# once managed_paths-symlinked through /opt/airplanes/current/).
 #
 # Static-analysis approach: grep the staged share/airplanes scripts (daemon
 # wrappers, apl-feed subcommands, runtime libs) for shell redirect operators
@@ -33,7 +33,7 @@ setup() {
 }
 
 # Grep all feed runtime scripts for writes targeting the install directory.
-# We look for patterns that would write under /usr/local/share/airplanes/
+# We look for patterns that would write under /opt/airplanes/current/share/airplanes/
 # (the IPATH on a standard install, symlinked into the overlay release tree)
 # or under $IPATH itself. The daemon wrappers must only write to /run/ (state
 # files) and /etc/airplanes/ (feed.env). Anything else is a mutability leak.
@@ -69,7 +69,7 @@ _feed_runtime_scripts() {
     local hits=""
     while IFS= read -r script; do
         local matches
-        matches="$(grep -nE '(>|>>)\s*/usr/local/share/airplanes/' "$script" \
+        matches="$(grep -nE '(>|>>)\s*/opt/airplanes/current/share/airplanes/' "$script" \
             | grep -v '^\s*#' \
             | grep -v 'state-writer' || true)"
         if [[ -n "$matches" ]]; then
@@ -83,7 +83,7 @@ _feed_runtime_scripts() {
     local hits=""
     while IFS= read -r script; do
         local matches
-        matches="$(grep -nE '(install |cp |mkdir ).*/usr/local/share/airplanes/' "$script" \
+        matches="$(grep -nE '(install |cp |mkdir ).*/opt/airplanes/current/share/airplanes/' "$script" \
             | grep -v '^\s*#' || true)"
         if [[ -n "$matches" ]]; then
             hits+="$script: $matches"$'\n'

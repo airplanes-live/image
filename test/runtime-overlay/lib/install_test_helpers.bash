@@ -54,16 +54,16 @@ mk_target_root() {
     local work="$1"
     local r="$work/root"
     install -d -m 755 \
-        "$r/opt/airplanes-runtime/releases" \
-        "$r/opt/airplanes-runtime" \
+        "$r/opt/airplanes/releases" \
+        "$r/opt/airplanes" \
         "$r/etc/airplanes" \
         "$r/etc/systemd/system" \
         "$r/usr/bin" \
         "$r/run/readsb" \
-        "$r/run/airplanes-978" \
-        "$r/run/dump978-fa" \
-        "$r/var/lib/airplanes-runtime-upgrade" \
-        "$r/var/lib/airplanes-runtime" \
+        "$r/run/airplanes/978" \
+        "$r/run/airplanes/dump978-fa" \
+        "$r/var/lib/airplanes/runtime-upgrade" \
+        "$r/var/lib/airplanes/runtime" \
         "$r/run/airplanes"
     printf '%s' "$r"
 }
@@ -74,7 +74,7 @@ mk_target_root() {
 # synthesise each row of the recovery matrix.
 mk_state_file() {
     local target_root="$1" state="$2"; shift 2
-    local dir="$target_root/var/lib/airplanes-runtime-upgrade"
+    local dir="$target_root/var/lib/airplanes/runtime-upgrade"
     install -d -m 755 "$dir"
     {
         printf 'state=%s\n' "$state"
@@ -89,17 +89,17 @@ mk_state_file() {
 # Read the `state=` value from <target_root>'s upgrade-state file.
 read_state() {
     local target_root="$1"
-    local f="$target_root/var/lib/airplanes-runtime-upgrade/upgrade-state"
+    local f="$target_root/var/lib/airplanes/runtime-upgrade/upgrade-state"
     [[ -r "$f" ]] || { printf ''; return 0; }
     awk -F= '/^state=/ { sub(/^state=/, ""); print; exit }' "$f"
 }
 
 # Stage a synthetic release directory tree under <target_root> at
-# /opt/airplanes-runtime/releases/v<version>/. Writes a minimal manifest
+# /opt/airplanes/releases/v<version>/. Writes a minimal manifest
 # the recovery + rollback paths can read. Echoes the absolute release dir.
 mk_target_release() {
     local target_root="$1" version="$2"
-    local d="$target_root/opt/airplanes-runtime/releases/v$version"
+    local d="$target_root/opt/airplanes/releases/v$version"
     install -d -m 755 \
         "$d/bin" \
         "$d/lib" \

@@ -13,7 +13,7 @@ bats_require_minimum_version 1.5.0
 
 load lib/install_test_helpers
 
-SHIM_PATH="$REPO_ROOT/stage-airplanes/02-install-runtime-overlay/files/usr/local/lib/airplanes-runtime/recover-shim"
+SHIM_PATH="$REPO_ROOT/stage-airplanes/02-install-runtime-overlay/files/opt/airplanes/libexec/recover-shim"
 
 setup() {
     TARGET_ROOT="$(mk_target_root "$BATS_TEST_TMPDIR")"
@@ -23,7 +23,7 @@ setup() {
 # Helper: write a state file for the shim (uses the shim's own path layout).
 shim_state() {
     local state="$1"; shift
-    local dir="$TARGET_ROOT/var/lib/airplanes-runtime-upgrade"
+    local dir="$TARGET_ROOT/var/lib/airplanes/runtime-upgrade"
     install -d -m 755 "$dir"
     {
         printf 'state=%s\n' "$state"
@@ -37,16 +37,16 @@ shim_state() {
 # Helper: create a valid release tree at a device-canonical path.
 shim_release() {
     local version="$1"
-    local d="$TARGET_ROOT/opt/airplanes-runtime/releases/v$version"
+    local d="$TARGET_ROOT/opt/airplanes/releases/v$version"
     install -d -m 755 "$d"
     printf '{"version":"%s"}\n' "$version" > "$d/manifest.json"
-    printf '%s' "/opt/airplanes-runtime/releases/v$version"
+    printf '%s' "/opt/airplanes/releases/v$version"
 }
 
 # Helper: point current at a device-canonical release path.
 shim_current() {
     local dev_path="$1"
-    local link="$TARGET_ROOT/opt/airplanes-runtime/current"
+    local link="$TARGET_ROOT/opt/airplanes/current"
     install -d -m 755 "$(dirname "$link")"
     rm -f "$link"
     ln -s "$dev_path" "$link"
@@ -54,12 +54,12 @@ shim_current() {
 
 # Helper: read the state token from the state file.
 shim_read_state() {
-    sed -n 's/^state=//p' "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state" 2>/dev/null | head -n1
+    sed -n 's/^state=//p' "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state" 2>/dev/null | head -n1
 }
 
 # Helper: read the recovery-status token.
 shim_read_status() {
-    sed -n 's/^status=//p' "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/recovery-status" 2>/dev/null | head -n1
+    sed -n 's/^status=//p' "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/recovery-status" 2>/dev/null | head -n1
 }
 
 # ---------------------------------------------------------------------------
@@ -69,17 +69,17 @@ shim_read_status() {
     local prev new
     prev="$(shim_release 1.0.0)"
     new="$(shim_release 1.1.0)"
-    shim_current "/opt/airplanes-runtime/releases/v1.1.0"
+    shim_current "/opt/airplanes/releases/v1.1.0"
     shim_state HEALTH_PASSED \
-        "prev_release=/opt/airplanes-runtime/releases/v1.0.0" \
-        "new_release=/opt/airplanes-runtime/releases/v1.1.0"
+        "prev_release=/opt/airplanes/releases/v1.0.0" \
+        "new_release=/opt/airplanes/releases/v1.1.0"
 
     run sh "$SHIM_PATH"
     [ "$status" -eq 0 ]
     # current must NOT have changed — still points at 1.1.0.
     local cur
-    cur="$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")"
-    [ "$cur" = "/opt/airplanes-runtime/releases/v1.1.0" ]
+    cur="$(readlink "$TARGET_ROOT/opt/airplanes/current")"
+    [ "$cur" = "/opt/airplanes/releases/v1.1.0" ]
     [ "$(shim_read_status)" = "ok" ]
 }
 
@@ -90,16 +90,16 @@ shim_read_status() {
     local prev new
     prev="$(shim_release 1.0.0)"
     new="$(shim_release 1.1.0)"
-    shim_current "/opt/airplanes-runtime/releases/v1.1.0"
+    shim_current "/opt/airplanes/releases/v1.1.0"
     shim_state SYMLINK_FLIPPED \
-        "prev_release=/opt/airplanes-runtime/releases/v1.0.0" \
-        "new_release=/opt/airplanes-runtime/releases/v1.1.0"
+        "prev_release=/opt/airplanes/releases/v1.0.0" \
+        "new_release=/opt/airplanes/releases/v1.1.0"
 
     run sh "$SHIM_PATH"
     [ "$status" -eq 0 ]
     local cur
-    cur="$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")"
-    [ "$cur" = "/opt/airplanes-runtime/releases/v1.0.0" ]
+    cur="$(readlink "$TARGET_ROOT/opt/airplanes/current")"
+    [ "$cur" = "/opt/airplanes/releases/v1.0.0" ]
     [[ "$(shim_read_state)" == ROLLED_BACK_SHIM_ONLY_FROM_SYMLINK_FLIPPED ]]
     [ "$(shim_read_status)" = "rolled_back" ]
 }
@@ -109,19 +109,19 @@ shim_read_status() {
 # ---------------------------------------------------------------------------
 @test "shim: missing prev_release falls back to last-good-release" {
     shim_release 0.9.0
-    shim_current "/opt/airplanes-runtime/releases/v1.1.0"
+    shim_current "/opt/airplanes/releases/v1.1.0"
     shim_state SYMLINK_FLIPPED \
-        "prev_release=/opt/airplanes-runtime/releases/v_GONE" \
-        "new_release=/opt/airplanes-runtime/releases/v1.1.0"
+        "prev_release=/opt/airplanes/releases/v_GONE" \
+        "new_release=/opt/airplanes/releases/v1.1.0"
     # Write last-good pointing at 0.9.0
-    printf '/opt/airplanes-runtime/releases/v0.9.0\n' \
-        > "$TARGET_ROOT/var/lib/airplanes-runtime/last-good-release"
+    printf '/opt/airplanes/releases/v0.9.0\n' \
+        > "$TARGET_ROOT/var/lib/airplanes/runtime/last-good-release"
 
     run sh "$SHIM_PATH"
     [ "$status" -eq 0 ]
     local cur
-    cur="$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")"
-    [ "$cur" = "/opt/airplanes-runtime/releases/v0.9.0" ]
+    cur="$(readlink "$TARGET_ROOT/opt/airplanes/current")"
+    [ "$cur" = "/opt/airplanes/releases/v0.9.0" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -129,10 +129,10 @@ shim_read_status() {
 # ---------------------------------------------------------------------------
 @test "shim: 3 failed recovery attempts triggers needs_ssh" {
     # No valid prev and no valid last-good → every attempt fails.
-    shim_current "/opt/airplanes-runtime/releases/v_BROKEN"
+    shim_current "/opt/airplanes/releases/v_BROKEN"
     shim_state SYMLINK_FLIPPED \
-        "prev_release=/opt/airplanes-runtime/releases/v_GONE" \
-        "new_release=/opt/airplanes-runtime/releases/v_BROKEN"
+        "prev_release=/opt/airplanes/releases/v_GONE" \
+        "new_release=/opt/airplanes/releases/v_BROKEN"
 
     # Run 3 times.
     sh "$SHIM_PATH" 2>/dev/null || true
@@ -152,17 +152,17 @@ shim_read_status() {
     local prev
     prev="$(shim_release 1.0.0)"
     shim_release 1.1.0
-    shim_current "/opt/airplanes-runtime/releases/v1.1.0"
+    shim_current "/opt/airplanes/releases/v1.1.0"
     shim_state HEALTH_RUNNING \
-        "prev_release=/opt/airplanes-runtime/releases/v1.0.0" \
-        "new_release=/opt/airplanes-runtime/releases/v1.1.0"
+        "prev_release=/opt/airplanes/releases/v1.0.0" \
+        "new_release=/opt/airplanes/releases/v1.1.0"
 
     # Deliberately do NOT have install-common.sh present.
     run sh "$SHIM_PATH"
     [ "$status" -eq 0 ]
     local cur
-    cur="$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")"
-    [ "$cur" = "/opt/airplanes-runtime/releases/v1.0.0" ]
+    cur="$(readlink "$TARGET_ROOT/opt/airplanes/current")"
+    [ "$cur" = "/opt/airplanes/releases/v1.0.0" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -190,14 +190,14 @@ shim_read_status() {
 # ---------------------------------------------------------------------------
 @test "shim: STARTED clears state without rollback" {
     shim_release 1.0.0
-    shim_current "/opt/airplanes-runtime/releases/v1.0.0"
+    shim_current "/opt/airplanes/releases/v1.0.0"
     shim_state STARTED \
-        "prev_release=/opt/airplanes-runtime/releases/v1.0.0"
+        "prev_release=/opt/airplanes/releases/v1.0.0"
 
     run sh "$SHIM_PATH"
     [ "$status" -eq 0 ]
     # State file should be gone (cleared).
-    [ ! -e "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state" ]
+    [ ! -e "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -206,16 +206,16 @@ shim_read_status() {
 @test "shim: SYSTEMD_OPS_DONE flips current back to prev_release" {
     shim_release 1.0.0
     shim_release 1.1.0
-    shim_current "/opt/airplanes-runtime/releases/v1.1.0"
+    shim_current "/opt/airplanes/releases/v1.1.0"
     shim_state SYSTEMD_OPS_DONE \
-        "prev_release=/opt/airplanes-runtime/releases/v1.0.0" \
-        "new_release=/opt/airplanes-runtime/releases/v1.1.0"
+        "prev_release=/opt/airplanes/releases/v1.0.0" \
+        "new_release=/opt/airplanes/releases/v1.1.0"
 
     run sh "$SHIM_PATH"
     [ "$status" -eq 0 ]
     local cur
-    cur="$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")"
-    [ "$cur" = "/opt/airplanes-runtime/releases/v1.0.0" ]
+    cur="$(readlink "$TARGET_ROOT/opt/airplanes/current")"
+    [ "$cur" = "/opt/airplanes/releases/v1.0.0" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -223,8 +223,8 @@ shim_read_status() {
 # ---------------------------------------------------------------------------
 @test "shim: valid_release rejects ../traversal" {
     shim_state SYMLINK_FLIPPED \
-        "prev_release=/opt/airplanes-runtime/releases/v1.0.0/../../etc/shadow" \
-        "new_release=/opt/airplanes-runtime/releases/v1.1.0"
+        "prev_release=/opt/airplanes/releases/v1.0.0/../../etc/shadow" \
+        "new_release=/opt/airplanes/releases/v1.1.0"
 
     run sh "$SHIM_PATH"
     # Should fail (no valid target → retrying/needs_ssh depending on attempts)

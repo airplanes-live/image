@@ -3,9 +3,9 @@
 # Lay down the resize script + its systemd unit + the /run/collectd
 # mount unit. Both units are enabled via the chroot step (next file)
 # so systemctl-stub captures the operation.
-install -d -m 755 "${ROOTFS_DIR}/usr/local/lib/airplanes"
-install -m 755 files/usr/local/lib/airplanes/run-resize.sh \
-    "${ROOTFS_DIR}/usr/local/lib/airplanes/run-resize.sh"
+install -d -m 755 "${ROOTFS_DIR}/opt/airplanes/libexec"
+install -m 755 files/opt/airplanes/libexec/run-resize.sh \
+    "${ROOTFS_DIR}/opt/airplanes/libexec/run-resize.sh"
 
 install -d -m 755 "${ROOTFS_DIR}/etc/systemd/system"
 install -m 644 files/etc/systemd/system/airplanes-run-resize.service \

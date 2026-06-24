@@ -44,12 +44,12 @@ EOF
     # Pre-stage a prior release dir + a current symlink pointing at it
     # so the rollback path has somewhere to flip back to.
     PREV_VER="0.0.0"
-    PREV_DIR="$TARGET_ROOT/opt/airplanes-runtime/releases/v$PREV_VER"
+    PREV_DIR="$TARGET_ROOT/opt/airplanes/releases/v$PREV_VER"
     install -d -m 755 "$PREV_DIR/bin" "$PREV_DIR/lib" "$PREV_DIR/systemd"
     : > "$PREV_DIR/bin/readsb"
     chmod 755 "$PREV_DIR/bin/readsb"
-    ln -s "/opt/airplanes-runtime/releases/v$PREV_VER" \
-        "$TARGET_ROOT/opt/airplanes-runtime/current"
+    ln -s "/opt/airplanes/releases/v$PREV_VER" \
+        "$TARGET_ROOT/opt/airplanes/current"
 
     KEY_DIR="$BATS_TEST_TMPDIR/keys"
     install -d -m 700 "$KEY_DIR"
@@ -91,8 +91,8 @@ JSON
     printf 'ok' > "$HTTPD_DOC/graphs1090/index.html"
 
     : > "$TARGET_ROOT/run/readsb/aircraft.json"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/dump978-fa/state"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes-978/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/dump978-fa/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/978/state"
 
     HTTPD_LOG="$BATS_TEST_TMPDIR/httpd.log"
     PORT_FILE="$BATS_TEST_TMPDIR/httpd.port"
@@ -161,11 +161,11 @@ run_self_update() {
     state="$(read_state "$TARGET_ROOT")"
     [[ "$state" == ROLLED_BACK_* ]]
     # current symlink reverted to prior release.
-    [ -L "$TARGET_ROOT/opt/airplanes-runtime/current" ]
-    [ "$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")" \
-        = "/opt/airplanes-runtime/releases/v$PREV_VER" ]
+    [ -L "$TARGET_ROOT/opt/airplanes/current" ]
+    [ "$(readlink "$TARGET_ROOT/opt/airplanes/current")" \
+        = "/opt/airplanes/releases/v$PREV_VER" ]
     # new release dir cleaned up.
-    [ ! -d "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]
+    [ ! -d "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER" ]
 }
 
 @test "health gate failure rolls back from HEALTH_RUNNING" {
@@ -180,9 +180,9 @@ run_self_update() {
     state="$(read_state "$TARGET_ROOT")"
     [[ "$state" == ROLLED_BACK_* ]]
     # Confirm rolled-back symlink + dropped new release dir.
-    [ "$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")" \
-        = "/opt/airplanes-runtime/releases/v$PREV_VER" ]
-    [ ! -d "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]
+    [ "$(readlink "$TARGET_ROOT/opt/airplanes/current")" \
+        = "/opt/airplanes/releases/v$PREV_VER" ]
+    [ ! -d "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER" ]
     # Systemctl observed restart-of-readsb followed by the rollback's
     # stop-services pass — confirms we routed through the service-stop step
     # before reverting the symlink. The stop is a single multi-arg invocation
@@ -195,7 +195,7 @@ run_self_update() {
     run run_self_update
     [ "$status" -ne 0 ]
     grep -E '^failure_reason=' \
-        "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state"
+        "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state"
 }
 
 @test "rollback walks back to a clean state with no current pointing at new" {
@@ -204,7 +204,7 @@ run_self_update() {
     [ "$status" -ne 0 ]
     # After rollback, current must NOT point at the new release.
     local current
-    current="$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")"
-    [[ "$current" != "/opt/airplanes-runtime/releases/v$REL_VER" ]]
-    [[ "$current" != "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]]
+    current="$(readlink "$TARGET_ROOT/opt/airplanes/current")"
+    [[ "$current" != "/opt/airplanes/releases/v$REL_VER" ]]
+    [[ "$current" != "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER" ]]
 }

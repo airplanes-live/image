@@ -18,10 +18,10 @@ setup() {
 
 @test "write_last_good_release records the device-canonical path" {
     airplanes_runtime_write_last_good_release "$TARGET_ROOT" \
-        "/opt/airplanes-runtime/releases/v1.2.3"
-    local f="$TARGET_ROOT/var/lib/airplanes-runtime/last-good-release"
+        "/opt/airplanes/releases/v1.2.3"
+    local f="$TARGET_ROOT/var/lib/airplanes/runtime/last-good-release"
     [ -f "$f" ]
-    [ "$(head -n1 "$f")" = "/opt/airplanes-runtime/releases/v1.2.3" ]
+    [ "$(head -n1 "$f")" = "/opt/airplanes/releases/v1.2.3" ]
 }
 
 @test "write_last_good_release rejects a relative path" {
@@ -34,9 +34,9 @@ setup() {
     # resolve the manifest.
     local rel
     rel="$(mk_target_release "$TARGET_ROOT" 1.0.0)"
-    rm -f "$TARGET_ROOT/opt/airplanes-runtime/current"
-    ln -s "/opt/airplanes-runtime/releases/v1.0.0" \
-        "$TARGET_ROOT/opt/airplanes-runtime/current"
+    rm -f "$TARGET_ROOT/opt/airplanes/current"
+    ln -s "/opt/airplanes/releases/v1.0.0" \
+        "$TARGET_ROOT/opt/airplanes/current"
 
     # Runtime mode (not build mode) so a symlink pointer is written.
     AIRPLANES_BUILD_MODE=0 \
@@ -52,7 +52,7 @@ _mk_resume_manifest() {
     local entries="" first=1 link
     for link in "$@"; do
         [[ $first -eq 0 ]] && entries="$entries,"
-        entries="$entries {\"mode\":\"symlink\",\"link\":\"$link\",\"target\":\"/opt/airplanes-runtime/current/bin/dummy\"}"
+        entries="$entries {\"mode\":\"symlink\",\"link\":\"$link\",\"target\":\"/opt/airplanes/current/bin/dummy\"}"
         first=0
     done
     cat > "$dir/manifest.json" <<JSON
@@ -79,7 +79,7 @@ JSON
     # retired links when the next invocation finalizes. finalize derives the
     # prev/new release dirs from the persisted state file, NOT from forward-walk
     # shell vars (which are absent on a fresh resume invocation).
-    local rel_dir="$TARGET_ROOT/opt/airplanes-runtime/releases"
+    local rel_dir="$TARGET_ROOT/opt/airplanes/releases"
     local prev_dir="$rel_dir/v1.0.0"
     local new_dir="$rel_dir/v1.1.0"
     install -d "$prev_dir" "$new_dir"
@@ -91,13 +91,13 @@ JSON
 
     # The FHS links as the prior install left them.
     install -d -m 755 "$TARGET_ROOT/usr/bin"
-    ln -s /opt/airplanes-runtime/current/bin/dummy "$TARGET_ROOT/usr/bin/old-tool"
-    ln -s /opt/airplanes-runtime/current/bin/dummy "$TARGET_ROOT/usr/bin/shared-tool"
+    ln -s /opt/airplanes/current/bin/dummy "$TARGET_ROOT/usr/bin/old-tool"
+    ln -s /opt/airplanes/current/bin/dummy "$TARGET_ROOT/usr/bin/shared-tool"
 
     # current points at the new (known-good) release.
-    rm -f "$TARGET_ROOT/opt/airplanes-runtime/current"
-    ln -s "/opt/airplanes-runtime/releases/v1.1.0" \
-        "$TARGET_ROOT/opt/airplanes-runtime/current"
+    rm -f "$TARGET_ROOT/opt/airplanes/current"
+    ln -s "/opt/airplanes/releases/v1.1.0" \
+        "$TARGET_ROOT/opt/airplanes/current"
 
     # The interrupted attempt's persisted state: HEALTH_PASSED with prev/new
     # pinned (absolute, target_root-prefixed — as the forward walk records).

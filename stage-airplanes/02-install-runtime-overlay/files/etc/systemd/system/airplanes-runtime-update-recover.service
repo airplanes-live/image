@@ -13,13 +13,13 @@ Before=airplanes-tar1090-uat-sync.service airplanes-tar1090-uat-sync.path
 Before=tar1090.service graphs1090.service
 Before=collectd.service lighttpd.service
 Before=airplanes-webconfig.service airplanes-feed.service airplanes-mlat.service
-RequiresMountsFor=/opt /var/lib/airplanes-runtime-upgrade
-ConditionPathExists=/usr/local/lib/airplanes-runtime/recover-shim
+RequiresMountsFor=/opt /var/lib/airplanes/runtime-upgrade
+ConditionPathExists=/opt/airplanes/libexec/recover-shim
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/lib/airplanes-runtime/recover-shim
+ExecStart=/opt/airplanes/libexec/recover-shim
 
 [Install]
 WantedBy=multi-user.target

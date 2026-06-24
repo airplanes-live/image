@@ -75,10 +75,10 @@ srv.serve_forever()
     PORT="$(tr -d '[:space:]' < "$PORT_FILE")"
 
     ROOTFS_DIR="$BATS_TEST_TMPDIR/rootfs"
-    install -d -m 755 "$ROOTFS_DIR/opt/airplanes-runtime/releases/v$REL_VER"
-    : > "$ROOTFS_DIR/opt/airplanes-runtime/releases/v$REL_VER/sentinel"
+    install -d -m 755 "$ROOTFS_DIR/opt/airplanes/releases/v$REL_VER"
+    : > "$ROOTFS_DIR/opt/airplanes/releases/v$REL_VER/sentinel"
     # Wire up `current` to point AT the same dir we're about to extract.
-    ln -s "/opt/airplanes-runtime/releases/v$REL_VER" "$ROOTFS_DIR/opt/airplanes-runtime/current"
+    ln -s "/opt/airplanes/releases/v$REL_VER" "$ROOTFS_DIR/opt/airplanes/current"
 }
 
 teardown() {
@@ -103,5 +103,5 @@ teardown() {
     [[ "$output" == *"active 'current' target"* ]]
     # The sentinel from the prior release MUST still exist — the install
     # did NOT rm -rf the live release.
-    [ -f "$ROOTFS_DIR/opt/airplanes-runtime/releases/v$REL_VER/sentinel" ]
+    [ -f "$ROOTFS_DIR/opt/airplanes/releases/v$REL_VER/sentinel" ]
 }

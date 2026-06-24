@@ -210,8 +210,8 @@ JSON
 
     # Stage a `current` symlink so the runtime-manifest symlink
     # record_runtime_manifest writes points at a realistic post-flip release.
-    ln -s "/opt/airplanes-runtime/releases/v0.0.2" \
-        "$target_root/opt/airplanes-runtime/current"
+    ln -s "/opt/airplanes/releases/v0.0.2" \
+        "$target_root/opt/airplanes/current"
 
     AIRPLANES_BUILD_MODE=0 run airplanes_runtime_finalize_after_health_passed "$target_root"
     [ "$status" -eq 0 ]
