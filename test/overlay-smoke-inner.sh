@@ -7,6 +7,26 @@ set -euo pipefail
 # shellcheck source=lib/overlay-common.sh
 . /image/test/lib/overlay-common.sh
 
+# Emulate the runtime overlay (stage 02) delivery of render-status, the
+# console-dashboard ASCII assets, and the MOTD status hook. This fast smoke
+# deliberately skips stage 02 — it needs signed release downloads — but the
+# 06b block below runs render-status' renderer self-test and asserts these
+# artifacts, so we stage them from runtime-overlay/src/, the very tree the
+# overlay is built from. The MOTD hook goes straight to /etc/update-motd.d/ as
+# a real 0755 file (the 06b assertion stat's its mode, which a managed_paths
+# symlink would report as 777). Delivery fidelity — real overlay paths, modes,
+# and managed_paths symlink wiring — is covered by the release gate
+# (exec-bit-check) and the full boot-smoke; here we only need the renderer's
+# inputs in place.
+install -D -m 0755 /image/runtime-overlay/src/lib/airplanes/render-status \
+    /opt/airplanes/current/lib/airplanes/render-status
+for _asset in logo banner banner-narrow icon; do
+    install -D -m 0644 "/image/runtime-overlay/src/share/airplanes/${_asset}.txt" \
+        "/opt/airplanes/current/share/airplanes/${_asset}.txt"
+done
+install -D -m 0755 /image/runtime-overlay/src/etc/update-motd.d/10-airplanes-status \
+    /etc/update-motd.d/10-airplanes-status
+
 echo "==> stage-airplanes/00-prep/00-run.sh"
 # Run from the stage dir so relative `files/` paths inside 00-run.sh resolve.
 ( cd /image/stage-airplanes/00-prep && bash 00-run.sh )
@@ -68,7 +88,7 @@ id -u airplanes-feed >/dev/null 2>&1 || fail "airplanes-feed user missing (stage
 getent group airplanes-feed >/dev/null 2>&1 || fail "airplanes-feed group missing (stage 01 chroot)"
 [[ ! -f /etc/airplanes/feeder-id ]] || fail "feeder-id should NOT exist in build mode"
 [[ ! -f /etc/airplanes/feeder-claim-secret ]] || fail "feeder-claim-secret should NOT exist in build mode"
-[[ ! -e /usr/local/share/airplanes/airplanes-uuid ]] || fail "airplanes-uuid symlink should NOT exist (new contract)"
+[[ ! -e /opt/airplanes/current/share/airplanes/airplanes-uuid ]] || fail "airplanes-uuid symlink should NOT exist (new contract)"
 
 # enable links helper (reused by stage 06 assertions below).
 have_enable_link() {
@@ -254,9 +274,9 @@ echo "==> stage-airplanes/06a-run-tmpfs/01-run-chroot.sh"
 ( cd /image/stage-airplanes/06a-run-tmpfs && bash 01-run-chroot.sh )
 
 echo "==> 06a post-install assertions"
-[[ -x /usr/local/lib/airplanes/run-resize.sh ]] \
+[[ -x /opt/airplanes/libexec/run-resize.sh ]] \
     || fail "run-resize.sh missing or not executable"
-[[ "$(stat -c %a /usr/local/lib/airplanes/run-resize.sh)" == "755" ]] \
+[[ "$(stat -c %a /opt/airplanes/libexec/run-resize.sh)" == "755" ]] \
     || fail "run-resize.sh mode != 0755"
 [[ -f /etc/systemd/system/airplanes-run-resize.service ]] \
     || fail "airplanes-run-resize.service missing"
@@ -315,17 +335,17 @@ echo "==> stage-airplanes/06b-console-dashboard/01-run-chroot.sh"
 ( cd /image/stage-airplanes/06b-console-dashboard && bash 01-run-chroot.sh )
 
 echo "==> 06b post-install assertions"
-[[ -x /usr/local/lib/airplanes/render-status ]] || fail "render-status missing or not executable"
-[[ "$(stat -c %a /usr/local/lib/airplanes/render-status)" == "755" ]] \
+[[ -x /opt/airplanes/current/lib/airplanes/render-status ]] || fail "render-status missing or not executable"
+[[ "$(stat -c %a /opt/airplanes/current/lib/airplanes/render-status)" == "755" ]] \
     || fail "render-status mode != 0755"
-[[ -s /usr/local/share/airplanes/logo.txt ]] || fail "logo.txt missing or empty"
-[[ "$(stat -c %a /usr/local/share/airplanes/logo.txt)" == "644" ]] \
+[[ -s /opt/airplanes/current/share/airplanes/logo.txt ]] || fail "logo.txt missing or empty"
+[[ "$(stat -c %a /opt/airplanes/current/share/airplanes/logo.txt)" == "644" ]] \
     || fail "logo.txt mode != 0644"
-[[ -s /usr/local/share/airplanes/banner.txt ]] || fail "banner.txt missing or empty"
-[[ "$(stat -c %a /usr/local/share/airplanes/banner.txt)" == "644" ]] \
+[[ -s /opt/airplanes/current/share/airplanes/banner.txt ]] || fail "banner.txt missing or empty"
+[[ "$(stat -c %a /opt/airplanes/current/share/airplanes/banner.txt)" == "644" ]] \
     || fail "banner.txt mode != 0644"
-[[ -s /usr/local/share/airplanes/banner-narrow.txt ]] || fail "banner-narrow.txt missing or empty"
-[[ "$(stat -c %a /usr/local/share/airplanes/banner-narrow.txt)" == "644" ]] \
+[[ -s /opt/airplanes/current/share/airplanes/banner-narrow.txt ]] || fail "banner-narrow.txt missing or empty"
+[[ "$(stat -c %a /opt/airplanes/current/share/airplanes/banner-narrow.txt)" == "644" ]] \
     || fail "banner-narrow.txt mode != 0644"
 [[ -f /etc/systemd/system/airplanes-dashboard.service ]] \
     || fail "airplanes-dashboard.service missing"
@@ -406,11 +426,11 @@ PATHS_CLAIM_PENDING=/nx \
 PATHS_CLAIM_VERSION=/nx \
 PATHS_AIRCRAFT_JSON=/nx \
 PATHS_THERMAL=/nx \
-PATHS_LOGO=/usr/local/share/airplanes/logo.txt \
-PATHS_ICON=/usr/local/share/airplanes/icon.txt \
+PATHS_LOGO=/opt/airplanes/current/share/airplanes/logo.txt \
+PATHS_ICON=/opt/airplanes/current/share/airplanes/icon.txt \
 TERM=dumb \
 AIRPLANES_STATUS_TAGLINE_INDEX=0 \
-    bash /usr/local/lib/airplanes/render-status --snapshot >"$SNAP_OUT" 2>&1 \
+    bash /opt/airplanes/current/lib/airplanes/render-status --snapshot >"$SNAP_OUT" 2>&1 \
     || fail "render-status --snapshot exited non-zero with all sources missing"
 # Banner header (icon + airplanes.live + tagline + version) replaces the
 # old standalone "Build channel=…" line. Section list mirrors the labels
@@ -436,8 +456,8 @@ if grep -q 'dump978-fa' "$SNAP_OUT"; then
     fail "snapshot renders dump978-fa as a standalone row (should fold into uat978)"
 fi
 # Icon artwork must land in the rootfs at the documented path.
-[[ -s /usr/local/share/airplanes/icon.txt ]] \
-    || fail "/usr/local/share/airplanes/icon.txt missing in installed rootfs"
+[[ -s /opt/airplanes/current/share/airplanes/icon.txt ]] \
+    || fail "/opt/airplanes/current/share/airplanes/icon.txt missing in installed rootfs"
 grep -q '(not yet generated)' "$SNAP_OUT" \
     || fail "snapshot did not show '(not yet generated)' for missing feeder-id"
 grep -q 'unclaimed' "$SNAP_OUT" \

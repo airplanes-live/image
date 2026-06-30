@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 
 # The runtime-overlay release public key must ship with the image. Stage
-# 00-prep installs it from files/usr/share/airplanes/runtime-release.pub
-# to /usr/share/airplanes/runtime-release.pub in the rootfs; on-device
+# 00-prep installs it from files/opt/airplanes/libexec/runtime-release.pub
+# to /opt/airplanes/libexec/runtime-release.pub in the rootfs; on-device
 # install.sh verifies SHA256SUMS against the same key.
 #
 # Tests assert the file is committed, has the documented two-line minisign
@@ -12,7 +12,7 @@ bats_require_minimum_version 1.5.0
 
 setup() {
     REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-    PUBKEY="$REPO_ROOT/stage-airplanes/00-prep/files/usr/share/airplanes/runtime-release.pub"
+    PUBKEY="$REPO_ROOT/stage-airplanes/00-prep/files/opt/airplanes/libexec/runtime-release.pub"
 }
 
 @test "pubkey file is committed at the expected path" {

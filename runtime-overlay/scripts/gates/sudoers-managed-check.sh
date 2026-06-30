@@ -17,10 +17,14 @@
 # etc/sudoers.d/* file, the command must be either
 #   - a base-OS binary under /usr/bin, /bin, /usr/sbin, or /sbin
 #     (always present on the Debian rootfs, never the overlay's job), or
+#   - under /opt/airplanes/libexec/ — an image-baked helper that ships at
+#     flash and is never touched by an overlay update (always present, like
+#     a base-OS binary), or
+#   - under /opt/airplanes/current/ — reached directly through the active
+#     release payload; provided iff the file ships in this release tree, or
 #   - provided by a managed_paths entry (an exact .link/.path, or under a
 #     managed directory entry).
-# Anything under /usr/local (or anywhere else) that no managed_paths entry
-# provides fails the build.
+# Anything else that no managed_paths entry provides fails the build.
 #
 # Args:
 #   --release-dir <path>   the v<X> release tree (manifest.json + staged
@@ -63,9 +67,20 @@ mapfile -t MANAGED < <(jq -r '.managed_paths[]? | (.link // .path) // empty' "$m
 # is_provided <cmd-path> — true when the path is provided after an update:
 # a base-OS bin, an exact managed entry, or under a managed directory entry.
 is_provided() {
-    local p="$1" m
+    local p="$1" m rel
     case "$p" in
         /usr/bin/*|/bin/*|/usr/sbin/*|/sbin/*) return 0 ;;
+        # Image-baked helpers under /opt/airplanes/libexec ship at flash and
+        # survive every overlay update untouched (the recover-shim, the
+        # orchestrator trampoline). Treat them like base-OS binaries.
+        /opt/airplanes/libexec/*) return 0 ;;
+        # Anything under the active-release payload is provided iff the file
+        # actually ships in this release tree. `current` resolves to this tree
+        # on-device, so the grant follows the atomic flip.
+        /opt/airplanes/current/*)
+            rel="${p#/opt/airplanes/current/}"
+            [[ -e "$RELEASE_DIR/$rel" ]] && return 0
+            ;;
     esac
     for m in "${MANAGED[@]}"; do
         [[ "$p" == "$m" || "$p" == "$m/"* ]] && return 0

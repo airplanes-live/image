@@ -16,7 +16,7 @@ RuntimeDirectoryMode=0755
 # dir, so a stale aircraft.json/stats.prom doesn't linger until reboot. Mode
 # 0755 keeps the state file readable by the webconfig service user.
 RuntimeDirectoryPreserve=restart
-ExecStart=/usr/local/share/airplanes/readsb.sh
+ExecStart=/opt/airplanes/current/share/airplanes/readsb.sh
 Restart=always
 RestartSec=15
 Nice=-5

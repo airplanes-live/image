@@ -58,7 +58,7 @@ setup() {
     "managed_paths": [
         { "mode": "symlink",
           "link": "/etc/systemd/system/readsb.service",
-          "target": "/opt/airplanes-runtime/current/systemd/readsb.service" }
+          "target": "/opt/airplanes/current/systemd/readsb.service" }
     ],
     "mutable_paths": [],
     "systemd": { "enable": ["readsb.service"], "daemon_reload": true },
@@ -76,8 +76,8 @@ JSON
     printf 'ok' > "$HTTPD_DOC/graphs1090/index.html"
 
     : > "$TARGET_ROOT/run/readsb/aircraft.json"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/dump978-fa/state"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes-978/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/dump978-fa/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/978/state"
 
     HTTPD_LOG="$BATS_TEST_TMPDIR/httpd.log"
     PORT_FILE="$BATS_TEST_TMPDIR/httpd.port"
@@ -138,16 +138,16 @@ run_self_update() {
     fi
 
     [ "$(read_state "$TARGET_ROOT")" = "INSTALLED" ]
-    [ -d "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]
-    [ -L "$TARGET_ROOT/opt/airplanes-runtime/current" ]
+    [ -d "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER" ]
+    [ -L "$TARGET_ROOT/opt/airplanes/current" ]
     [ -L "$TARGET_ROOT/etc/airplanes/runtime-manifest.json" ]
-    [ -L "$TARGET_ROOT/usr/bin/readsb" ]
-    [ -L "$TARGET_ROOT/usr/bin/airplanes-978" ]
+    [ -L "$TARGET_ROOT/usr/local/bin/readsb" ]
+    [ -L "$TARGET_ROOT/usr/local/bin/dump978-fa" ]
 
     # Snapshot of the recorded new_release survives in the state file
     # so a triage shell can inspect what was just installed.
-    grep -E "^new_release=$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER$" \
-        "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state"
+    grep -E "^new_release=$TARGET_ROOT/opt/airplanes/releases/v$REL_VER$" \
+        "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state"
 }
 
 @test "happy path triggers systemctl daemon-reload + enable + restart" {
@@ -164,14 +164,14 @@ run_self_update() {
 @test "happy path clears stale terminal state before starting" {
     # Synthesise an INSTALLED leftover from a prior run.
     mk_state_file "$TARGET_ROOT" INSTALLED \
-        "new_release=$TARGET_ROOT/opt/airplanes-runtime/releases/v0.0.0-old"
+        "new_release=$TARGET_ROOT/opt/airplanes/releases/v0.0.0-old"
 
     run run_self_update
     [ "$status" -eq 0 ]
     [ "$(read_state "$TARGET_ROOT")" = "INSTALLED" ]
     # new_release now reflects the fresh attempt, not the stale leftover.
-    grep -E "^new_release=$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER$" \
-        "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state"
+    grep -E "^new_release=$TARGET_ROOT/opt/airplanes/releases/v$REL_VER$" \
+        "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state"
 }
 
 @test "FAILED_PRE_MUTATION cleared on next attempt" {

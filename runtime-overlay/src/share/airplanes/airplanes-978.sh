@@ -1,7 +1,7 @@
 #!/bin/bash
 # Wrapper for airplanes-978 (UAT relay). Reads UAT_INPUT from the
 # EnvironmentFile-loaded environment to decide whether to run, and
-# publishes that decision to /run/airplanes-978/state for consumers
+# publishes that decision to /run/airplanes/978/state for consumers
 # (apl-feed status, render-status, webconfig dashboard).
 #
 # Decision matrix (state, reason):
@@ -41,11 +41,11 @@ LONGITUDE="${LONGITUDE:-0}"
 UAT_INPUT="${UAT_INPUT-}"
 
 # Test hooks. Bats overrides these to skip real /run paths and stub the binary.
-: "${AIRPLANES_978_RUNTIME_DIR:=/run/airplanes-978}"
-: "${AIRPLANES_978_BIN:=/usr/bin/airplanes-978}"
-: "${STATE_WRITER_LIB:=/usr/local/share/airplanes/lib/state-writer.sh}"
-: "${STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
-: "${DUMP978_FA_STATE_FILE:=/run/dump978-fa/state}"
+: "${AIRPLANES_978_RUNTIME_DIR:=/run/airplanes/978}"
+: "${AIRPLANES_978_BIN:=/opt/airplanes/current/bin/readsb}"
+: "${STATE_WRITER_LIB:=/opt/airplanes/current/share/airplanes/lib/state-writer.sh}"
+: "${STATE_READER_LIB:=/opt/airplanes/current/share/airplanes/lib/state-reader.sh}"
+: "${DUMP978_FA_STATE_FILE:=/run/airplanes/dump978-fa/state}"
 : "${AIRPLANES_978_FEED_ENV:=/etc/airplanes/feed.env}"
 # Watch poll interval for the disabled branch. Bats sets 0 so wrapper
 # invocations return promptly. Not for feed.env (see header comment).
@@ -174,7 +174,10 @@ esac
 # silent_fail on the connector: dump978-fa restarts or is absent during 978-off
 # state shouldn't spam logs. With Wants=dump978-fa.service (non-blocking),
 # silent_fail is the right safety net.
-exec "$AIRPLANES_978_BIN" \
+# exec -a preserves argv[0]="airplanes-978" now that the binary is the shared
+# readsb under /opt (the old /usr/bin/airplanes-978 name-symlink is gone), so
+# `ps` and any argv[0]-keyed readsb behaviour stay identical to the 1090 path.
+exec -a airplanes-978 "$AIRPLANES_978_BIN" \
 	--net-only \
 	--max-range 460 \
 	--net \

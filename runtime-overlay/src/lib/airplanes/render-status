@@ -41,16 +41,16 @@ LC_ALL=C
 : "${PATHS_AIRCRAFT_JSON:=/run/readsb/aircraft.json}"
 : "${PATHS_READSB_STATS:=/run/readsb/stats.json}"
 : "${PATHS_THERMAL:=/sys/class/thermal/thermal_zone0/temp}"
-: "${PATHS_LOGO:=/usr/local/share/airplanes/logo.txt}"
-: "${PATHS_BANNER:=/usr/local/share/airplanes/banner.txt}"
-: "${PATHS_BANNER_NARROW:=/usr/local/share/airplanes/banner-narrow.txt}"
-: "${PATHS_ICON:=/usr/local/share/airplanes/icon.txt}"
-: "${PATHS_STATE_FILE_MLAT:=/run/airplanes-mlat/state}"
-: "${PATHS_STATE_FILE_FEED:=/run/airplanes-feed/state}"
-: "${PATHS_STATE_FILE_978:=/run/airplanes-978/state}"
-: "${PATHS_STATE_FILE_DUMP978FA:=/run/dump978-fa/state}"
+: "${PATHS_LOGO:=/opt/airplanes/current/share/airplanes/logo.txt}"
+: "${PATHS_BANNER:=/opt/airplanes/current/share/airplanes/banner.txt}"
+: "${PATHS_BANNER_NARROW:=/opt/airplanes/current/share/airplanes/banner-narrow.txt}"
+: "${PATHS_ICON:=/opt/airplanes/current/share/airplanes/icon.txt}"
+: "${PATHS_STATE_FILE_MLAT:=/run/airplanes/mlat/state}"
+: "${PATHS_STATE_FILE_FEED:=/run/airplanes/feed/state}"
+: "${PATHS_STATE_FILE_978:=/run/airplanes/978/state}"
+: "${PATHS_STATE_FILE_DUMP978FA:=/run/airplanes/dump978-fa/state}"
 : "${PATHS_STATE_FILE_READSB:=/run/readsb/state}"
-: "${PATHS_STATE_READER_LIB:=/usr/local/share/airplanes/lib/state-reader.sh}"
+: "${PATHS_STATE_READER_LIB:=/opt/airplanes/current/share/airplanes/lib/state-reader.sh}"
 : "${PATHS_FEED_ENV:=/etc/airplanes/feed.env}"
 : "${PATHS_SYSFS_NET:=/sys/class/net}"
 # Absolute path: the MOTD wrapper deliberately strips /usr/local/bin from
@@ -265,7 +265,7 @@ claim_state() {
 #   state   ∈ { enabled, disabled, misconfigured, failed, inactive, unknown }
 #   reason  is a stable token; "-" when no reason applies.
 #
-# Daemon publishes its decision to /run/airplanes-mlat/state when active or
+# Daemon publishes its decision to /run/airplanes/mlat/state when active or
 # transitioning. For the failed terminal state with ExecMainStatus=64
 # (strict misconfig fail), the file persists across the failure via
 # RuntimeDirectoryPreserve=yes and we surface its reason. Otherwise we
@@ -301,9 +301,9 @@ mlat_config_state() {
 }
 
 # Classify a 978-family daemon's runtime decision. The two units have
-# separate state files (dump978-fa.sh owns /run/dump978-fa/state with the
+# separate state files (dump978-fa.sh owns /run/airplanes/dump978-fa/state with the
 # producer's hardware-probe reasons; airplanes-978.sh owns the existing
-# /run/airplanes-978/state with the consumer's classifier including
+# /run/airplanes/978/state with the consumer's classifier including
 # peer_no_hardware refined from the producer file). Echoes
 # "<state> <reason>" on a single line. The failed-branch consults the
 # unit-specific ExecMainStatus so a self-disable (exit 64) is treated as a
@@ -368,7 +368,7 @@ readsb_config_state() {
 
 # Compute SD_MLAT_NOTE from the airplanes-mlat daemon's published state.
 # Caller passes the unit's ActiveState (typically from _unit_prop). Reads
-# only the daemon-owned /run/airplanes-mlat/state — never feed.env. Empty
+# only the daemon-owned /run/airplanes/mlat/state — never feed.env. Empty
 # note means no message to display (e.g. enabled-ok, or daemon never ran).
 # On a fresh image MLAT_ENABLED defaults to false AND geo is unset; the
 # daemon's classifier reports reason=mlat_enabled_false (MLAT_ENABLED wins
@@ -1096,7 +1096,7 @@ collect_status_data() {
     esac
 
     # MLAT note. Set by _compute_mlat_note from the daemon's published
-    # decision in /run/airplanes-mlat/state — no feed.env reads.
+    # decision in /run/airplanes/mlat/state — no feed.env reads.
     _compute_mlat_note "$(_unit_prop airplanes-mlat.service ActiveState)"
     # SD_MLAT_WARN aliases SD_MLAT_NOTE so the panel renderers below
     # don't need wholesale edits — both names point at the same content.

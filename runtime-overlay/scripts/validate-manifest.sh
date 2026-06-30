@@ -143,4 +143,29 @@ if [[ -n "$overlap_report" ]]; then
     exit 1
 fi
 
+# 5. Cross-field gate: managed destinations must not squat a filesystem tree we
+#    don't own. The device payload lives under /opt/airplanes; a managed symlink
+#    or copy landing in /usr/bin, /usr/local/lib/airplanes*, /usr/local/share/airplanes*,
+#    or /usr/share/airplanes* means the overlay is writing into OS- or
+#    distribution-owned trees. /usr/local/bin launchers and the kept third-party
+#    read-only data dirs (/usr/local/share/tar1090, /usr/share/graphs1090) are fine.
+squat_report="$(jq -r '
+    [ (.managed_paths // [])[]
+      | (if .mode == "symlink" then .link elif .mode == "copy" then .path else empty end) as $d
+      | select($d != null)
+      | select(
+          ($d | startswith("/usr/bin/")) or
+          ($d | startswith("/usr/local/lib/airplanes")) or
+          ($d | startswith("/usr/local/share/airplanes")) or
+          ($d | startswith("/usr/share/airplanes"))
+        )
+      | $d ]
+    | join("; ")
+' "$snapshot")"
+
+if [[ -n "$squat_report" ]]; then
+    echo "validate-manifest: managed destination squats a tree we do not own (FHS): ${squat_report}" >&2
+    exit 1
+fi
+
 exit 0

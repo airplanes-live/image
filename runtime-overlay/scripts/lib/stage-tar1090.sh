@@ -34,7 +34,7 @@
 #   snippet whose HTMLPATH token is replaced with $ipath. Passing $ipath as
 #   /usr/local/share/tar1090 means the produced unit + lighttpd snippet
 #   already carry the on-device absolute paths. The runtime-overlay
-#   install.sh symlinks /usr/local/share/tar1090 → /opt/airplanes-runtime/
+#   install.sh symlinks /usr/local/share/tar1090 → /opt/airplanes/
 #   current/share/tar1090 on-device, so those absolute paths resolve
 #   correctly without a per-release rewrite.
 #

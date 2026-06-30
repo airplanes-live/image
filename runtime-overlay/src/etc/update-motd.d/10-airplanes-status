@@ -11,4 +11,4 @@
 unset "${!PATHS_@}"
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
-exec /usr/local/lib/airplanes/render-status --snapshot
+exec /opt/airplanes/current/lib/airplanes/render-status --snapshot

@@ -83,7 +83,7 @@ JSON
     [ "$status" -eq 0 ]
     run grep -E '^--system --group --home /usr/local/share/readsb --no-create-home --quiet readsb$' "$ADDUSER_LOG"
     [ "$status" -eq 0 ]
-    run grep -E '^--system --ingroup airplanes-feed --home /usr/local/share/airplanes --no-create-home --quiet airplanes-feed$' "$ADDUSER_LOG"
+    run grep -E '^--system --ingroup airplanes-feed --home /opt/airplanes/current/share/airplanes --no-create-home --quiet airplanes-feed$' "$ADDUSER_LOG"
     [ "$status" -eq 0 ]
     run grep -E '^--system --no-create-home --group airplanes-aggregator$' "$ADDUSER_LOG"
     [ "$status" -eq 0 ]

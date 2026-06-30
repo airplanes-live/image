@@ -231,9 +231,9 @@ _check_release_local_path() {
     fi
 }
 
-# managed_paths.target is an absolute /opt/airplanes-runtime/current/... path;
+# managed_paths.target is an absolute /opt/airplanes/current/... path;
 # strip that prefix to get the release-local path.
-CURRENT_PREFIX="/opt/airplanes-runtime/current/"
+CURRENT_PREFIX="/opt/airplanes/current/"
 while IFS= read -r abs_target; do
     [[ -z "$abs_target" ]] && continue
     if [[ "$abs_target" != "$CURRENT_PREFIX"* ]]; then

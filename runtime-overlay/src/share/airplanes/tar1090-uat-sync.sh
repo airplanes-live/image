@@ -1,7 +1,7 @@
 #!/bin/bash
 # Reconcile tar1090's ENABLE_978 with the airplanes-978 + dump978-fa runtime
-# state. Driven by airplanes-tar1090-uat-sync.path (watches /run/airplanes-978/state
-# and /run/dump978-fa/state) and run once at boot via the matching .service.
+# state. Driven by airplanes-tar1090-uat-sync.path (watches /run/airplanes/978/state
+# and /run/airplanes/dump978-fa/state) and run once at boot via the matching .service.
 #
 # tar1090's main loop tries to prune 978.json on every iteration when
 # ENABLE_978=yes and emits "978.json: No such file or directory" through bash's
@@ -27,12 +27,12 @@ set -eu
 
 # Test hooks — bats overrides these to stub paths and the restart command.
 : "${AIRPLANES_TAR1090_DEFAULTS_PATH:=/etc/default/tar1090}"
-: "${AIRPLANES_978_STATE_PATH:=/run/airplanes-978/state}"
-: "${DUMP978_FA_STATE_PATH:=/run/dump978-fa/state}"
+: "${AIRPLANES_978_STATE_PATH:=/run/airplanes/978/state}"
+: "${DUMP978_FA_STATE_PATH:=/run/airplanes/dump978-fa/state}"
 : "${AIRPLANES_TAR1090_SYNC_RESTART_CMD:=systemctl try-restart tar1090.service}"
 
 # State file parser is inline rather than sourced from
-# /usr/local/share/airplanes/lib/state-reader.sh: that library ships from
+# /opt/airplanes/current/share/airplanes/lib/state-reader.sh: that library ships from
 # airplanes-live/feed, and (a) the reconcile only needs two fields, (b)
 # we need to read each file as a single snapshot to avoid mixing fields
 # from different atomic-rename generations, and (c) keeping zero runtime

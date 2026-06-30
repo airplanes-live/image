@@ -9,10 +9,10 @@ set -e
 # the signed runtime assets produced earlier in CI
 # (AIRPLANES_RUNTIME_RELEASE_ASSET_DIR) or the current channel's published
 # product release. install.sh verifies (sha256 + minisign), extracts the tarball under
-# ${ROOTFS_DIR}/opt/airplanes-runtime/releases/v<version>/, flips the
+# ${ROOTFS_DIR}/opt/airplanes/releases/v<version>/, flips the
 # `current` symlink, relinks the /usr/bin/{readsb,airplanes-978,dump978-fa}
 # decoder binaries, and applies every managed_paths entry from the release
-# manifest (the FHS stable-path symlink set into /opt/airplanes-runtime/current/).
+# manifest (the FHS stable-path symlink set into /opt/airplanes/current/).
 #
 # The companion chroot stage handles the readsb service account, /var/globe_history,
 # systemctl enable, and the conf-enabled lighttpd hop — everything that has to
@@ -27,10 +27,10 @@ set -e
 # the image (NOT through the overlay's managed_paths). Copy them in before
 # the overlay install so the unit's ConditionPathExists target exists.
 STAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-install -d -m 755 "${ROOTFS_DIR}/usr/local/lib/airplanes-runtime"
+install -d -m 755 "${ROOTFS_DIR}/opt/airplanes/libexec"
 install -m 0755 \
-	"${STAGE_DIR}/files/usr/local/lib/airplanes-runtime/recover-shim" \
-	"${ROOTFS_DIR}/usr/local/lib/airplanes-runtime/recover-shim"
+	"${STAGE_DIR}/files/opt/airplanes/libexec/recover-shim" \
+	"${ROOTFS_DIR}/opt/airplanes/libexec/recover-shim"
 install -d -m 755 "${ROOTFS_DIR}/etc/systemd/system"
 install -m 0644 \
 	"${STAGE_DIR}/files/etc/systemd/system/airplanes-runtime-update-recover.service" \
@@ -40,8 +40,8 @@ install -m 0755 \
 	"${STAGE_DIR}/files/etc/update-motd.d/09-airplanes-recovery-status" \
 	"${ROOTFS_DIR}/etc/update-motd.d/09-airplanes-recovery-status"
 # State + last-good dirs the shim and updater write into.
-install -d -m 755 "${ROOTFS_DIR}/var/lib/airplanes-runtime-upgrade"
-install -d -m 755 "${ROOTFS_DIR}/var/lib/airplanes-runtime"
+install -d -m 755 "${ROOTFS_DIR}/var/lib/airplanes/runtime-upgrade"
+install -d -m 755 "${ROOTFS_DIR}/var/lib/airplanes/runtime"
 
 # Copy the runtime-overlay source tree into a scratch dir outside the rootfs
 # so install.sh's $_self_dir resolution does not point at a path inside the
@@ -68,7 +68,7 @@ cp -a "${BASE_DIR}/runtime-overlay" "$RUNTIME_OVERLAY_SRC"
 rm -rf -- "$RUNTIME_OVERLAY_SRC/.git"
 
 # Pubkey path. install-common.sh defaults to
-# /usr/share/airplanes/runtime-release.pub which lives in the *target rootfs*,
+# /opt/airplanes/libexec/runtime-release.pub which lives in the *target rootfs*,
 # not on the host where install.sh runs in build mode. Point it at the
 # in-repo copy that stage 00-prep installs into the rootfs from the same
 # file (the two paths are byte-identical — same source file on disk).
@@ -76,7 +76,7 @@ rm -rf -- "$RUNTIME_OVERLAY_SRC/.git"
 # Test fixtures sign releases with a throwaway key and need an escape hatch.
 # Gate that escape hatch behind an explicit opt-in env var so a stray env
 # variable in CI cannot silently downgrade verification to a test key.
-PUBKEY_HOST_PATH="${BASE_DIR}/stage-airplanes/00-prep/files/usr/share/airplanes/runtime-release.pub"
+PUBKEY_HOST_PATH="${BASE_DIR}/stage-airplanes/00-prep/files/opt/airplanes/libexec/runtime-release.pub"
 if [[ "${AIRPLANES_RUNTIME_BUILD_TEST_PUBKEY:-0}" == "1" \
 		&& -n "${AIRPLANES_RUNTIME_MINISIGN_PUBKEY:-}" ]]; then
 	PUBKEY_HOST_PATH="$AIRPLANES_RUNTIME_MINISIGN_PUBKEY"

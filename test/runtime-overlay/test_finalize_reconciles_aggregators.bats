@@ -71,8 +71,8 @@ setup() {
     target_root="$(mk_target_root "$WORK")"
     new_dir="$(mk_target_release "$target_root" "0.0.2")"
     mk_state_file "$target_root" "HEALTH_PASSED" "new_release=$new_dir"
-    ln -s "/opt/airplanes-runtime/releases/v0.0.2" \
-        "$target_root/opt/airplanes-runtime/current"
+    ln -s "/opt/airplanes/releases/v0.0.2" \
+        "$target_root/opt/airplanes/current"
 
     AIRPLANES_BUILD_MODE=0 run airplanes_runtime_finalize_after_health_passed "$target_root"
     [ "$status" -eq 0 ]

@@ -47,7 +47,7 @@ echo "==> stage-airplanes/01-install-feed/01-run-chroot.sh (service account + st
 # install it directly from the bind-mounted checkout below.
 ( cd /image/stage-airplanes/01-install-feed && bash 01-run-chroot.sh )
 
-echo "==> feed install.sh --build-mode (lays /usr/local/share/airplanes + update.sh)"
+echo "==> feed install.sh --build-mode (lays /opt/airplanes/current/share/airplanes + update.sh)"
 # AIRPLANES_FEED_REPO=file:///feed (overlay-common) clones the bind-mounted
 # checkout; AIRPLANES_READSB_* come from config-dev. The lat/lon/altitude/MLAT
 # placeholders mirror what the deleted stage-01 chroot passed: build mode runs
@@ -86,25 +86,25 @@ echo "==> stage-airplanes/06-firstboot/00-run.sh"
 # Catches `rm -rf $dir/*` regressions that leave dirs intact but wipe
 # contents — directory mode/owner alone wouldn't drift in that case.
 echo "==> seeding webconfig-owned sentinels"
-printf 'regression-sentinel\n' > /var/lib/airplanes-webconfig/.update-regression-sentinel
+printf 'regression-sentinel\n' > /var/lib/airplanes/webconfig/.update-regression-sentinel
 printf 'regression-sentinel\n' > /etc/airplanes/webconfig/.update-regression-sentinel
 chown airplanes-webconfig:airplanes-webconfig \
-    /var/lib/airplanes-webconfig/.update-regression-sentinel \
+    /var/lib/airplanes/webconfig/.update-regression-sentinel \
     /etc/airplanes/webconfig/.update-regression-sentinel
 chmod 0600 \
-    /var/lib/airplanes-webconfig/.update-regression-sentinel \
+    /var/lib/airplanes/webconfig/.update-regression-sentinel \
     /etc/airplanes/webconfig/.update-regression-sentinel
 
 # ---- Force the self-replace path of update.sh to fire --------------------
-# Stage 01 leaves $GIT/update.sh and /usr/local/share/airplanes/update.sh
+# Stage 01 leaves $GIT/update.sh and /opt/airplanes/current/share/airplanes/update.sh
 # byte-identical, so update.sh's diff check at the top of main() would skip
 # the self-replace path. Overwriting the installed copy with a stub forces
 # the diff to differ; the runtime run will then exercise the install + mv -fT
 # self-replace and we fingerprint mode/sha post-update.
 echo "==> seeding stale installed updater"
 printf '#!/bin/bash\necho "stale stub" >&2\nexit 0\n' \
-    > /usr/local/share/airplanes/update.sh
-chmod 0755 /usr/local/share/airplanes/update.sh
+    > /opt/airplanes/current/share/airplanes/update.sh
+chmod 0755 /opt/airplanes/current/share/airplanes/update.sh
 
 # ---- Capture pre-update fingerprint --------------------------------------
 echo "==> capturing pre-update fingerprint"
@@ -157,11 +157,11 @@ ln -sfn "$SYSTEMCTL_REGRESSION_SHIM" "$SYSTEMCTL_LINK"
 #   (returns 0, ignores args). Avoids needing live cloud connectivity.
 # - AIRPLANES_FEED_REPO is already file:///feed via the common prelude.
 # - No --build-mode flag — this exercises the same path real feeders run
-#   when webconfig kicks `systemd-run /usr/local/share/airplanes/update.sh`.
+#   when webconfig kicks `systemd-run /opt/airplanes/current/share/airplanes/update.sh`.
 echo "==> running runtime-mode update.sh"
 set +e
 APL_FEED_BIN=/bin/true \
-    /usr/local/share/airplanes/update.sh \
+    /opt/airplanes/current/share/airplanes/update.sh \
     > "$ARTIFACT_DIR/update.log" 2>&1
 update_rc=$?
 set -e

@@ -59,7 +59,7 @@ setup() {
     "managed_paths": [
         { "mode": "symlink",
           "link": "/etc/systemd/system/readsb.service",
-          "target": "/opt/airplanes-runtime/current/systemd/readsb.service" }
+          "target": "/opt/airplanes/current/systemd/readsb.service" }
     ],
     "mutable_paths": [],
     "systemd": { "enable": ["readsb.service"], "daemon_reload": true },
@@ -79,8 +79,8 @@ JSON
 
     # Pre-stage the on-device gate inputs:
     : > "$TARGET_ROOT/run/readsb/aircraft.json"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/dump978-fa/state"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes-978/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/dump978-fa/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/978/state"
 
     # Spawn http.server.
     HTTPD_LOG="$BATS_TEST_TMPDIR/httpd.log"
@@ -139,16 +139,17 @@ run_install_runtime() {
         echo "$output"
         return 1
     fi
-    [ -d "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]
-    [ -L "$TARGET_ROOT/opt/airplanes-runtime/current" ]
+    [ -d "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER" ]
+    [ -L "$TARGET_ROOT/opt/airplanes/current" ]
     # In runtime mode the link target is the absolute release-dir path
     # the install pipeline operated against. In production that's
-    # /opt/airplanes-runtime/releases/v<X>/; in tests TARGET_ROOT is a
+    # /opt/airplanes/releases/v<X>/; in tests TARGET_ROOT is a
     # tmpdir so the link string contains the rebase.
-    [ "$(readlink "$TARGET_ROOT/opt/airplanes-runtime/current")" = "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]
+    [ "$(readlink "$TARGET_ROOT/opt/airplanes/current")" = "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER" ]
     [ -L "$TARGET_ROOT/etc/systemd/system/readsb.service" ]
-    [ -L "$TARGET_ROOT/usr/bin/readsb" ]
-    [ -L "$TARGET_ROOT/usr/bin/airplanes-978" ]
+    [ -L "$TARGET_ROOT/usr/local/bin/readsb" ]
+    [ -L "$TARGET_ROOT/usr/local/bin/dump978-fa" ]
+    [ ! -e "$TARGET_ROOT/usr/bin/readsb" ]
     # systemd ops shimmed: daemon-reload + enable + restart all logged.
     run grep -F 'daemon-reload' "$SYSCTL_LOG"
     [ "$status" -eq 0 ]
@@ -158,7 +159,7 @@ run_install_runtime() {
     [ "$status" -eq 0 ]
     # Runtime-manifest pointer was recorded.
     [ -L "$TARGET_ROOT/etc/airplanes/runtime-manifest.json" ]
-    [ "$(readlink "$TARGET_ROOT/etc/airplanes/runtime-manifest.json")" = "/opt/airplanes-runtime/current/manifest.json" ]
+    [ "$(readlink "$TARGET_ROOT/etc/airplanes/runtime-manifest.json")" = "/opt/airplanes/current/manifest.json" ]
 }
 
 @test "runtime install fails closed when health gate trips" {

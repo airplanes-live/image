@@ -4,12 +4,12 @@ After=airplanes-first-run.service network.target
 
 [Service]
 Type=oneshot
-# Reads /run/airplanes-978/state + /run/dump978-fa/state + /etc/default/tar1090.
+# Reads /run/airplanes/978/state + /run/airplanes/dump978-fa/state + /etc/default/tar1090.
 # Rewrites /etc/default/tar1090 (preserving mode/owner) and invokes
 # `systemctl try-restart tar1090.service` only when ENABLE_978 actually
 # changes. Idempotent — safe to fire repeatedly from the matching .path
 # unit.
-ExecStart=/usr/local/share/airplanes/tar1090-uat-sync.sh
+ExecStart=/opt/airplanes/current/share/airplanes/tar1090-uat-sync.sh
 
 [Install]
 WantedBy=multi-user.target

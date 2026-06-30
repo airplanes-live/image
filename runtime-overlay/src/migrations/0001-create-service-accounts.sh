@@ -52,14 +52,14 @@ if ! getent group airplanes-feed >/dev/null; then
 fi
 if ! getent passwd airplanes-feed >/dev/null; then
 	adduser --system --ingroup airplanes-feed \
-		--home /usr/local/share/airplanes --no-create-home --quiet airplanes-feed
+		--home /opt/airplanes/current/share/airplanes --no-create-home --quiet airplanes-feed
 fi
 
 # airplanes-aggregator: the airplanes-aggregator@<id>.service template runs
 # vendor third-party feeder code under this account (never root). Parity with
 # stage-airplanes/05-install-webconfig/01-run-chroot.sh. The unit's
-# StateDirectory= provisions /var/lib/airplanes-aggregators at start, so only
-# the account (with its private group) is created here.
+# StateDirectory= provisions /var/lib/airplanes/aggregators/state at start, so
+# only the account (with its private group) is created here.
 if ! getent passwd airplanes-aggregator >/dev/null; then
 	adduser --system --no-create-home --group airplanes-aggregator
 fi

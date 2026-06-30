@@ -53,7 +53,7 @@ jobs:
                    runtime-overlay/scripts/release-workflow/*.sh \
                    runtime-overlay/src/etc/update-motd.d/10-airplanes-status \
                    runtime-overlay/src/share/airplanes/*.sh \
-                   stage-airplanes/02-install-runtime-overlay/files/usr/local/lib/airplanes-runtime/recover-shim \
+                   stage-airplanes/02-install-runtime-overlay/files/opt/airplanes/libexec/recover-shim \
                    stage-airplanes/02-install-runtime-overlay/files/etc/update-motd.d/09-airplanes-recovery-status \
                    .github/scripts/*.sh \
                    test/*.sh; do
@@ -562,7 +562,6 @@ jobs:
           mkdir -p "$ROOT/etc/systemd/system" \
                    "$ROOT/usr/local/sbin" \
                    "$ROOT/usr/local/bin" \
-                   "$ROOT/usr/local/share/airplanes" \
                    "$ROOT/usr/local/share/tar1090" \
                    "$ROOT/usr/share/graphs1090" \
                    "$ROOT/usr/bin" \
@@ -585,10 +584,10 @@ jobs:
           install -m 0644 \
               stage-airplanes/02-install-runtime-overlay/files/etc/systemd/system/airplanes-runtime-update-recover.service \
               "$ROOT/etc/systemd/system/"
-          mkdir -p "$ROOT/usr/local/lib/airplanes-runtime"
+          mkdir -p "$ROOT/opt/airplanes/libexec"
           install -m 0755 \
-              stage-airplanes/02-install-runtime-overlay/files/usr/local/lib/airplanes-runtime/recover-shim \
-              "$ROOT/usr/local/lib/airplanes-runtime/recover-shim"
+              stage-airplanes/02-install-runtime-overlay/files/opt/airplanes/libexec/recover-shim \
+              "$ROOT/opt/airplanes/libexec/recover-shim"
           install -m 0644 image-webconfig/files/etc/systemd/system/*.service \
               "$ROOT/etc/systemd/system/"
           install -m 0644 stage-airplanes/06c-grant-sudo/files/etc/systemd/system/*.service \
@@ -601,14 +600,15 @@ jobs:
           install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-first-run"
           install -m 0755 /dev/null "$ROOT/usr/local/sbin/airplanes-grant-sudo"
           install -m 0755 /dev/null "$ROOT/usr/local/bin/apl-feed"
-          install -m 0755 /dev/null "$ROOT/usr/local/bin/airplanes-webconfig"
-          mkdir -p "$ROOT/usr/local/lib/airplanes-webconfig" "$ROOT/usr/local/lib/airplanes"
-          install -m 0755 /dev/null "$ROOT/usr/local/lib/airplanes-webconfig/reset"
-          install -m 0755 /dev/null "$ROOT/usr/local/lib/airplanes/render-status"
-          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/readsb.sh"
-          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/airplanes-978.sh"
-          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/dump978-fa.sh"
-          install -m 0755 /dev/null "$ROOT/usr/local/share/airplanes/tar1090-uat-sync.sh"
+          # Decoder + webconfig payload now lives under the overlay at
+          # /opt/airplanes/current; stub the units' ExecStart targets there.
+          install -D -m 0755 /dev/null "$ROOT/opt/airplanes/current/bin/airplanes-webconfig"
+          install -D -m 0755 /dev/null "$ROOT/opt/airplanes/current/lib/airplanes-webconfig/reset"
+          install -D -m 0755 /dev/null "$ROOT/opt/airplanes/current/lib/airplanes/render-status"
+          install -D -m 0755 /dev/null "$ROOT/opt/airplanes/current/share/airplanes/readsb.sh"
+          install -D -m 0755 /dev/null "$ROOT/opt/airplanes/current/share/airplanes/airplanes-978.sh"
+          install -D -m 0755 /dev/null "$ROOT/opt/airplanes/current/share/airplanes/dump978-fa.sh"
+          install -D -m 0755 /dev/null "$ROOT/opt/airplanes/current/share/airplanes/tar1090-uat-sync.sh"
           # tar1090 + graphs1090 ExecStart targets (placeholder shell scripts the
           # upstream installers normally drop in)
           install -m 0755 /dev/null "$ROOT/usr/local/share/tar1090/tar1090.sh"

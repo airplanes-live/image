@@ -32,7 +32,7 @@ run_self_update() {
 @test "refuses entry when state is STARTED" {
     mk_state_file "$TARGET_ROOT" STARTED \
         "prev_release=" \
-        "new_release=$TARGET_ROOT/opt/airplanes-runtime/releases/v1.0.0"
+        "new_release=$TARGET_ROOT/opt/airplanes/releases/v1.0.0"
     run run_self_update
     [ "$status" -ne 0 ]
     [[ "$output" == *"non-terminal state"* ]]
@@ -77,9 +77,9 @@ run_self_update() {
 }
 
 @test "refuses entry when state file is malformed (UNKNOWN)" {
-    install -d -m 755 "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade"
+    install -d -m 755 "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade"
     printf 'this is corrupted\n' \
-        > "$TARGET_ROOT/var/lib/airplanes-runtime-upgrade/upgrade-state"
+        > "$TARGET_ROOT/var/lib/airplanes/runtime-upgrade/upgrade-state"
     run run_self_update
     [ "$status" -ne 0 ]
     [[ "$output" == *"malformed"* ]]

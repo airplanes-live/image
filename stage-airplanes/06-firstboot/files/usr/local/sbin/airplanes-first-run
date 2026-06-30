@@ -39,9 +39,10 @@ SSH_MIN_PASSWORD_LEN="${SSH_MIN_PASSWORD_LEN:-12}"
 # Shared Wi-Fi predicate + keyfile-writer libraries, also consumed by
 # /usr/local/bin/apl-wifi (webconfig flow). The libs ship from
 # airplanes-live/image-webconfig via the runtime overlay; production install
-# location is /usr/local/lib/airplanes. Bats tests point APL_WIFI_LIB_DIR at the
-# image-webconfig source checkout (AIRPLANES_IMAGE_WEBCONFIG_ROOT in CI).
-APL_WIFI_LIB_DIR="${APL_WIFI_LIB_DIR:-/usr/local/lib/airplanes}"
+# location is /opt/airplanes/current/lib/airplanes. Bats tests point
+# APL_WIFI_LIB_DIR at the image-webconfig source checkout
+# (AIRPLANES_IMAGE_WEBCONFIG_ROOT in CI).
+APL_WIFI_LIB_DIR="${APL_WIFI_LIB_DIR:-/opt/airplanes/current/lib/airplanes}"
 # shellcheck source=/dev/null
 . "$APL_WIFI_LIB_DIR/wifi-validators.sh"
 # shellcheck source=/dev/null

@@ -15,7 +15,7 @@ Conflicts=shutdown.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/lib/airplanes/run-resize.sh
+ExecStart=/opt/airplanes/libexec/run-resize.sh
 StandardOutput=journal+console
 StandardError=journal+console
 

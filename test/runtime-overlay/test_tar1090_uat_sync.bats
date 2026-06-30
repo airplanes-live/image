@@ -303,7 +303,7 @@ EOF
 # ---- snapshot atomicity over racing wrapper rewrites ---------------------
 
 @test "19: producer state + reason come from the same generation" {
-    # The wrapper atomic-renames /run/dump978-fa/state on every cycle. The
+    # The wrapper atomic-renames /run/airplanes/dump978-fa/state on every cycle. The
     # reconcile reads producer.state and producer.reason; if those land on
     # different generations the decision can be wrong. Read snapshots from
     # a single capture to avoid that. We assert by handing the script a

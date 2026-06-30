@@ -53,8 +53,8 @@ setup() {
     printf 'ok' > "$HTTPD_DOC/graphs1090/index.html"
 
     : > "$TARGET_ROOT/run/readsb/aircraft.json"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/dump978-fa/state"
-    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes-978/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/dump978-fa/state"
+    printf 'state=enabled\nreason=ok\n' > "$TARGET_ROOT/run/airplanes/978/state"
 }
 
 teardown() {
@@ -83,7 +83,7 @@ write_manifest() {
     "managed_paths": [
         { "mode": "symlink",
           "link": "/etc/systemd/system/readsb.service",
-          "target": "/opt/airplanes-runtime/current/systemd/readsb.service" }
+          "target": "/opt/airplanes/current/systemd/readsb.service" }
     ],
     "mutable_paths": [],
     "systemd": { "enable": ["readsb.service"], "daemon_reload": true },
@@ -142,12 +142,12 @@ run_install() {
         echo "$output"
         return 1
     fi
-    [ -d "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]
-    [ -L "$TARGET_ROOT/opt/airplanes-runtime/current" ]
+    [ -d "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER" ]
+    [ -L "$TARGET_ROOT/opt/airplanes/current" ]
     [ -L "$TARGET_ROOT/etc/systemd/system/readsb.service" ]
     # Component-object pin was accepted (no schema rejection).
     run jq -e '.components.readsb_wiedehopf.version == "9.9.9"' \
-        "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER/manifest.json"
+        "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER/manifest.json"
     [ "$status" -eq 0 ]
 }
 
@@ -157,7 +157,7 @@ run_install() {
     run run_install
     [ "$status" -ne 0 ]
     # No release dir laid down — refused before extraction.
-    [ ! -d "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]
+    [ ! -d "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER" ]
 }
 
 @test "bridge: release with a newer schema version is refused pre-mutation" {
@@ -165,5 +165,5 @@ run_install() {
     start_httpd
     run run_install
     [ "$status" -ne 0 ]
-    [ ! -d "$TARGET_ROOT/opt/airplanes-runtime/releases/v$REL_VER" ]
+    [ ! -d "$TARGET_ROOT/opt/airplanes/releases/v$REL_VER" ]
 }

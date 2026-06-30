@@ -29,7 +29,7 @@ ExecStartPre=/usr/bin/sleep 6
 # so the serial console on serial0,115200 is unaffected). A failure here
 # does not block the dashboard from starting.
 ExecStartPre=-/usr/bin/setterm --term linux --clear all --msg off
-ExecStart=/usr/local/lib/airplanes/render-status --live
+ExecStart=/opt/airplanes/current/lib/airplanes/render-status --live
 Restart=on-failure
 RestartSec=10s
 

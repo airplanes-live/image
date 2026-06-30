@@ -28,10 +28,10 @@ WEBCONFIG_REGULAR_FILES=(
     /etc/lighttpd/conf-available/40-airplanes-webconfig.conf
     /usr/lib/tmpfiles.d/airplanes-webconfig.conf
     /usr/local/bin/airplanes-webconfig
-    /usr/local/lib/airplanes-webconfig/reset
-    /usr/local/share/airplanes/update.sh
+    /opt/airplanes/current/lib/airplanes-webconfig/reset
+    /opt/airplanes/current/share/airplanes/update.sh
     /etc/airplanes/feed.env
-    /var/lib/airplanes-webconfig/.update-regression-sentinel
+    /var/lib/airplanes/webconfig/.update-regression-sentinel
     /etc/airplanes/webconfig/.update-regression-sentinel
 )
 
@@ -46,17 +46,17 @@ WEBCONFIG_DIRS=(
     /etc/airplanes
     /etc/airplanes/webconfig
     /etc/sudoers.d
-    /var/lib/airplanes-webconfig
-    /usr/local/lib/airplanes-webconfig
+    /var/lib/airplanes/webconfig
+    /opt/airplanes/current/lib/airplanes-webconfig
 )
 
 # Dirs whose contents are recursively fingerprinted to catch unexpected
 # files added by update.sh beyond the explicit lists above.
 WEBCONFIG_RECURSIVE_DIRS=(
-    /var/lib/airplanes-webconfig
+    /var/lib/airplanes/webconfig
     /etc/airplanes/webconfig
     /etc/sudoers.d
-    /usr/local/lib/airplanes-webconfig
+    /opt/airplanes/current/lib/airplanes-webconfig
 )
 
 webconfig_fingerprint() {

@@ -2,7 +2,7 @@
 # update.sh — thin on-device update entrypoint for the runtime overlay.
 #
 # Called by the sudoers-pinned self-update helper at
-# /opt/airplanes-runtime/current/lib/runtime-self-update.sh. The helper
+# /opt/airplanes/current/lib/runtime-self-update.sh. The helper
 # is the canonical entry point and owns the upgrade flock at
 # /run/airplanes/runtime-update.lock for the entire upgrade protocol
 # (state read/write, backups, installer, restart, health gates,

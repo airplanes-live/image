@@ -29,8 +29,8 @@
 # intact via the kernel's mount table even if _orch_restore never runs:
 #
 #   /usr/bin/apt-get
-#   /usr/local/share/airplanes/update.sh
-#   /opt/airplanes-runtime/current/lib/runtime-self-update.sh
+#   /opt/airplanes/current/share/airplanes/update.sh
+#   /opt/airplanes/current/lib/runtime-self-update.sh
 #
 # Each stub writes a marker file under
 # /run/airplanes/test-orchestrator-markers/<step>.ok and sleeps briefly
@@ -51,14 +51,14 @@
 # and always present on both channels — its absence is independently
 # asserted earlier in this probe at line ~329 — so we only use it as
 # a defensive belt-and-braces check here.
-_orch_trampoline=/usr/local/lib/airplanes-webconfig/start-orchestrator.sh
-_orch_binary=/opt/airplanes-runtime/current/lib/airplanes-update-orchestrator
+_orch_trampoline=/opt/airplanes/libexec/start-orchestrator.sh
+_orch_binary=/opt/airplanes/current/lib/airplanes-update-orchestrator
 
 # Absolute paths the orchestrator invokes for each step. Kept in sync with
 # the script's defaults block.
 _orch_apt_get=/usr/bin/apt-get
 # _orch_feed_update removed — the orchestrator no longer has a feed step.
-_orch_runtime_update=/opt/airplanes-runtime/current/lib/runtime-self-update.sh
+_orch_runtime_update=/opt/airplanes/current/lib/runtime-self-update.sh
 
 _orch_state_file=/run/airplanes/orchestrator.state
 # Per-run tmpfs paths assigned by _orch_run_probe via mktemp -d so a
@@ -361,8 +361,8 @@ _orch_dump_diagnostics() {
                 echo "ns/mnt: $(readlink /proc/self/ns/mnt)"
                 echo "id: uid=$(id -u) gid=$(id -g) euid=$EUID"
                 for t in /usr/bin/apt-get \
-                         /usr/local/share/airplanes/update.sh \
-                         /opt/airplanes-runtime/current/lib/runtime-self-update.sh; do
+                         /opt/airplanes/current/share/airplanes/update.sh \
+                         /opt/airplanes/current/lib/runtime-self-update.sh; do
                     if [[ -x "$t" ]]; then xflag=x; else xflag=NOT-EXECUTABLE; fi
                     if [[ -e "$t" ]]; then eflag=exists; else eflag=MISSING; fi
                     echo "$t [$eflag $xflag]"
@@ -1055,12 +1055,12 @@ _runtime_drive_update() {
     AIRPLANES_RUNTIME_OVERLAY_TAG="local-assets" \
     AIRPLANES_RUNTIME_MIN_FREE_BYTES=0 \
     AIRPLANES_RUNTIME_HEALTH_DEADLINE=90 \
-        /opt/airplanes-runtime/current/lib/runtime-self-update.sh
+        /opt/airplanes/current/lib/runtime-self-update.sh
 }
 
 _runtime_current_version() {
     local cur
-    cur="$(readlink -f /opt/airplanes-runtime/current 2>/dev/null || true)"
+    cur="$(readlink -f /opt/airplanes/current 2>/dev/null || true)"
     printf '%s' "${cur##*/v}"
 }
 
@@ -1114,7 +1114,7 @@ _runtime_upgrade_probe() {
     # --- GOOD vN+1 : expect convergence -------------------------------------
     echo "image-probe: driving runtime-self-update to GOOD release"
     if ! _runtime_drive_update "$asset_base/good"; then
-        cat /var/lib/airplanes-runtime-upgrade/upgrade-state 2>/dev/null >&2 || true
+        cat /var/lib/airplanes/runtime-upgrade/upgrade-state 2>/dev/null >&2 || true
         journalctl -u readsb.service --no-pager -n 50 2>/dev/null >&2 || true
         fail "runtime-upgrade: GOOD update did not converge (helper exited non-zero)"
     fi
@@ -1123,7 +1123,7 @@ _runtime_upgrade_probe() {
         || fail "runtime-upgrade: current did not flip after GOOD update (still v$baseline_ver)"
     local upg_state
     upg_state="$(awk -F= '/^state=/{sub(/^state=/,"");print;exit}' \
-        /var/lib/airplanes-runtime-upgrade/upgrade-state 2>/dev/null || true)"
+        /var/lib/airplanes/runtime-upgrade/upgrade-state 2>/dev/null || true)"
     [[ "$upg_state" == "INSTALLED" ]] \
         || fail "runtime-upgrade: GOOD update state=$upg_state, expected INSTALLED"
     # Consumer services restarted on the new release and healthy.
@@ -1148,7 +1148,7 @@ _runtime_upgrade_probe() {
     [[ "$post_broken_ver" == "$pre_broken_ver" ]] \
         || fail "runtime-upgrade: after BROKEN update current=v$post_broken_ver, expected rollback to v$pre_broken_ver"
     upg_state="$(awk -F= '/^state=/{sub(/^state=/,"");print;exit}' \
-        /var/lib/airplanes-runtime-upgrade/upgrade-state 2>/dev/null || true)"
+        /var/lib/airplanes/runtime-upgrade/upgrade-state 2>/dev/null || true)"
     [[ "$upg_state" == ROLLED_BACK_* ]] \
         || fail "runtime-upgrade: BROKEN update state=$upg_state, expected ROLLED_BACK_*"
     # Prior (good) release's services restored and healthy.
@@ -1176,8 +1176,8 @@ _runtime_upgrade_probe() {
     # the persistence reboot — so the comparison is against the correct baseline.
     if [[ -f /var/lib/airplanes-boot-smoke/snapshot-mtimes ]]; then
         stat -c '%Y %n' \
-            /usr/local/share/airplanes/feed-airplanes \
-            /usr/local/share/airplanes/venv/bin/mlat-client \
+            /opt/airplanes/current/bin/feed-airplanes \
+            /opt/airplanes/current/share/airplanes/venv/bin/mlat-client \
             > /var/lib/airplanes-boot-smoke/snapshot-mtimes
         echo "image-probe: re-baselined feed idempotency snapshot after rollback"
     fi
@@ -1212,10 +1212,10 @@ echo "image-probe: starting image-side assertions"
 # Runtime-overlay symlink chain assertions. The decoder units,
 # render-status, decoder binaries, tar1090/graphs1090 surfaces and
 # lighttpd conf-available snippets all resolve through
-# /opt/airplanes-runtime/current/ → versioned release dir.
-if [[ -d /opt/airplanes-runtime ]]; then
+# /opt/airplanes/current/ → versioned release dir.
+if [[ -d /opt/airplanes ]]; then
     _runtime_link="$(readlink /etc/systemd/system/readsb.service 2>/dev/null || true)"
-    [[ "$_runtime_link" == "/opt/airplanes-runtime/current/systemd/readsb.service" ]] \
+    [[ "$_runtime_link" == "/opt/airplanes/current/systemd/readsb.service" ]] \
         || fail "readsb.service symlink unexpected: $_runtime_link"
 
     # Boot recovery is now an IMAGE-OWNED shim (it must survive a fully
@@ -1225,7 +1225,7 @@ if [[ -d /opt/airplanes-runtime ]]; then
             || ! -f /etc/systemd/system/airplanes-runtime-update-recover.service ]]; then
         fail "airplanes-runtime-update-recover.service should be an image-owned regular file, not an overlay symlink"
     fi
-    [[ -x /usr/local/lib/airplanes-runtime/recover-shim ]] \
+    [[ -x /opt/airplanes/libexec/recover-shim ]] \
         || fail "recover-shim missing or not executable"
     systemctl is-enabled airplanes-runtime-update-recover.service >/dev/null \
         || fail "airplanes-runtime-update-recover.service not enabled"
@@ -1240,20 +1240,23 @@ if [[ -d /opt/airplanes-runtime ]]; then
     [[ -e /etc/lighttpd/conf-enabled/88-graphs1090.conf ]] \
         || fail "lighttpd conf-enabled 88-graphs1090.conf does not resolve through overlay"
 
-    # decoder binary symlinks (both → readsb; airplanes-978 is a symlink,
-    # not a hardlink, per the v1 layout).
-    [[ "$(readlink /usr/bin/readsb 2>/dev/null)" == "/opt/airplanes-runtime/current/bin/readsb" ]] \
-        || fail "/usr/bin/readsb symlink unexpected"
-    [[ "$(readlink /usr/bin/airplanes-978 2>/dev/null)" == "/opt/airplanes-runtime/current/bin/readsb" ]] \
-        || fail "/usr/bin/airplanes-978 should symlink to current/bin/readsb"
-    [[ "$(readlink /usr/bin/dump978-fa 2>/dev/null)" == "/opt/airplanes-runtime/current/bin/dump978-fa" ]] \
-        || fail "/usr/bin/dump978-fa symlink unexpected"
+    # decoder operator shims under /usr/local/bin (FHS — /usr/bin is no longer
+    # squatted). readsb covers both 1090 and 978 consumption; the 978 wrapper
+    # execs it via exec -a, so there is no separate airplanes-978 PATH alias.
+    [[ "$(readlink /usr/local/bin/readsb 2>/dev/null)" == "/opt/airplanes/current/bin/readsb" ]] \
+        || fail "/usr/local/bin/readsb operator shim unexpected"
+    [[ "$(readlink /usr/local/bin/dump978-fa 2>/dev/null)" == "/opt/airplanes/current/bin/dump978-fa" ]] \
+        || fail "/usr/local/bin/dump978-fa operator shim unexpected"
+    # The old /usr/bin decoder squats must be gone.
+    [[ ! -e /usr/bin/readsb ]] || fail "/usr/bin/readsb squat must not exist"
+    [[ ! -e /usr/bin/airplanes-978 ]] || fail "/usr/bin/airplanes-978 squat must not exist"
+    [[ ! -e /usr/bin/dump978-fa ]] || fail "/usr/bin/dump978-fa squat must not exist"
 
     # Runtime manifest pointer. On a fresh-flashed image (before the first
     # runtime self-update has fired) this is a regular-file copy of the
     # baked release's manifest, written by install.sh --build-mode. After
     # the first on-device runtime self-update it gets replaced (mv -Tf) by
-    # a symlink to /opt/airplanes-runtime/current/manifest.json so the
+    # a symlink to /opt/airplanes/current/manifest.json so the
     # pointer auto-follows current. Boot-smoke runs against a fresh image
     # so the regular-file case is what we see here; we just need the file
     # to be present and parseable.
@@ -1263,9 +1266,9 @@ if [[ -d /opt/airplanes-runtime ]]; then
         || fail "/etc/airplanes/runtime-manifest.json is not parseable JSON with .version"
 
     # Public key shipped and well-formed.
-    [[ -r /usr/share/airplanes/runtime-release.pub ]] \
-        || fail "/usr/share/airplanes/runtime-release.pub missing"
-    head -1 /usr/share/airplanes/runtime-release.pub | grep -q "minisign public key" \
+    [[ -r /opt/airplanes/libexec/runtime-release.pub ]] \
+        || fail "/opt/airplanes/libexec/runtime-release.pub missing"
+    head -1 /opt/airplanes/libexec/runtime-release.pub | grep -q "minisign public key" \
         || fail "runtime-release.pub header malformed"
 
     # minisign actually parses the shipped key (no binary surprises).
@@ -1279,7 +1282,7 @@ if [[ -d /opt/airplanes-runtime ]]; then
     # the failing library is visible in the harness log; bare
     # `ldd | grep` under `set -euo pipefail` can mask the real loader
     # error.
-    for _decoder_bin in /usr/bin/readsb /usr/bin/airplanes-978 /usr/bin/dump978-fa; do
+    for _decoder_bin in /opt/airplanes/current/bin/readsb /opt/airplanes/current/bin/dump978-fa; do
         [[ -e "$_decoder_bin" ]] || fail "decoder binary missing: $_decoder_bin"
         _ldd_out="$(ldd "$_decoder_bin" 2>&1)"
         _ldd_rc=$?
@@ -1297,7 +1300,7 @@ if [[ -d /opt/airplanes-runtime ]]; then
 
     # ExecStart targets that resolve into the overlay must be
     # executable on the running system. Stage-airplanes ships these as
-    # symlinks into /opt/airplanes-runtime/current/, and the runtime
+    # symlinks into /opt/airplanes/current/, and the runtime
     # tarball is what owns the mode bits. A `0644` script behind an
     # ExecStart= line fails the unit at boot with `203/EXEC`, which is
     # how airplanes-runtime-update-recover.service broke on the first
@@ -1306,13 +1309,13 @@ if [[ -d /opt/airplanes-runtime ]]; then
     # to the recovery + self-update + decoder-wrapper paths boot-smoke
     # can reach without SDR hardware.
     for _exec_target in \
-        /opt/airplanes-runtime/current/lib/runtime-self-update.sh \
-        /opt/airplanes-runtime/current/lib/airplanes-update-orchestrator \
-        /opt/airplanes-runtime/current/share/airplanes/readsb.sh \
-        /opt/airplanes-runtime/current/share/airplanes/airplanes-978.sh \
-        /opt/airplanes-runtime/current/share/airplanes/dump978-fa.sh \
-        /opt/airplanes-runtime/current/share/airplanes/tar1090-uat-sync.sh \
-        /opt/airplanes-runtime/current/lib/airplanes/render-status \
+        /opt/airplanes/current/lib/runtime-self-update.sh \
+        /opt/airplanes/current/lib/airplanes-update-orchestrator \
+        /opt/airplanes/current/share/airplanes/readsb.sh \
+        /opt/airplanes/current/share/airplanes/airplanes-978.sh \
+        /opt/airplanes/current/share/airplanes/dump978-fa.sh \
+        /opt/airplanes/current/share/airplanes/tar1090-uat-sync.sh \
+        /opt/airplanes/current/lib/airplanes/render-status \
     ; do
         [[ -e "$_exec_target" ]] || fail "overlay file missing: $_exec_target"
         [[ -x "$_exec_target" ]] \
@@ -1357,7 +1360,7 @@ if [[ -d /opt/airplanes-runtime ]]; then
     # checks above already cover provenance. Skip units systemd doesn't load
     # (empty FragmentPath) and DynamicUser units (principal synthesised at
     # runtime).
-    for _unit_file in /opt/airplanes-runtime/current/systemd/*.service; do
+    for _unit_file in /opt/airplanes/current/systemd/*.service; do
         [[ -e "$_unit_file" ]] || continue
         _unit="$(basename "$_unit_file")"
         _frag="$(systemctl show "$_unit" --property=FragmentPath --value 2>/dev/null || true)"
@@ -1428,9 +1431,9 @@ assert_service_healthy ssh.service
 # exist on every image regardless of which runtime-overlay tag is baked
 # in. The trampoline exec()s the overlay-shipped orchestrator binary
 # after a capability check; webconfig's sudoers entry pins this path.
-assert_file /usr/local/lib/airplanes-webconfig/start-orchestrator.sh
-[[ -x /usr/local/lib/airplanes-webconfig/start-orchestrator.sh ]] \
-    || fail "/usr/local/lib/airplanes-webconfig/start-orchestrator.sh is not executable"
+assert_file /opt/airplanes/libexec/start-orchestrator.sh
+[[ -x /opt/airplanes/libexec/start-orchestrator.sh ]] \
+    || fail "/opt/airplanes/libexec/start-orchestrator.sh is not executable"
 
 # RTL-SDR DVB blacklist (stage 00-prep/07-run.sh) ships as a real rootfs file
 # so the kernel DVB-T drivers stay off the SDR dongles and readsb / dump978-fa

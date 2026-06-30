@@ -89,7 +89,7 @@ _unit_needs_enable() {
     local unit expected_link expected_target
     for unit in "${units[@]}"; do
         expected_link="/etc/systemd/system/$unit"
-        expected_target="/opt/airplanes-runtime/current/systemd/$unit"
+        expected_target="/opt/airplanes/current/systemd/$unit"
         if ! jq -e --arg link "$expected_link" --arg target "$expected_target" '
             any(.[]; .mode == "symlink" and .link == $link and .target == $target)
         ' "$MANAGED_PATHS_JSON" >/dev/null; then
@@ -100,7 +100,7 @@ _unit_needs_enable() {
     if (( ${#missing[@]} > 0 )); then
         printf 'managed_paths.json missing symlink for feed unit: %s\n' "${missing[@]}" >&2
         echo "expected entry shape:" >&2
-        echo '  { "mode": "symlink", "link": "/etc/systemd/system/<unit>", "target": "/opt/airplanes-runtime/current/systemd/<unit>" }' >&2
+        echo '  { "mode": "symlink", "link": "/etc/systemd/system/<unit>", "target": "/opt/airplanes/current/systemd/<unit>" }' >&2
         return 1
     fi
 }

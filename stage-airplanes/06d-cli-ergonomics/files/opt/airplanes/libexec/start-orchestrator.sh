@@ -2,7 +2,7 @@
 # start-orchestrator.sh — stable image-owned launch path for
 # airplanes-update-orchestrator. Webconfig's sudoers entry pins this path,
 # so it MUST exist on every image regardless of which runtime-overlay tag
-# is flipped in at /opt/airplanes-runtime/current.
+# is flipped in at /opt/airplanes/current.
 #
 # The orchestrator binary itself lives inside the runtime overlay (which
 # moves with each runtime release). This trampoline exec()s the binary
@@ -13,7 +13,7 @@
 
 set -Eeuo pipefail
 
-target=/opt/airplanes-runtime/current/lib/airplanes-update-orchestrator
+target=/opt/airplanes/current/lib/airplanes-update-orchestrator
 
 if [[ ! -f "$target" ]]; then
     echo "start-orchestrator: target missing or not a regular file: $target" >&2

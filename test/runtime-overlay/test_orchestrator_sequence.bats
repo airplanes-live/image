@@ -68,7 +68,7 @@ run_orchestrator() {
         AIRPLANES_ORCHESTRATOR_STATE_FILE="$STATE_FILE" \
         AIRPLANES_ORCHESTRATOR_LOCK_FILE="$LOCK_FILE" \
         AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE="$TMP/sub/runtime-update.sh" \
-        AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE="$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" \
+        AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE="$TMP/var/lib/airplanes/runtime-upgrade/upgrade-state" \
         AIRPLANES_ORCHESTRATOR_APT_GET="apt-get" \
         bash "$ORCH" "$@"
 }
@@ -207,10 +207,10 @@ EOF
 }
 
 @test "runtime same-version-replay is treated as a no-op success" {
-    install -d -m 0755 "$TMP/var/lib/airplanes-runtime-upgrade"
+    install -d -m 0755 "$TMP/var/lib/airplanes/runtime-upgrade"
     cat > "$TMP/sub/runtime-update.sh" <<EOF
 #!/usr/bin/env bash
-cat > "$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" <<STATE
+cat > "$TMP/var/lib/airplanes/runtime-upgrade/upgrade-state" <<STATE
 state=FAILED_PRE_MUTATION
 failure_reason=same_version_replay_opt_airplanes-runtime_releases_v0.0.1
 STATE
@@ -226,10 +226,10 @@ EOF
 }
 
 @test "runtime non-same-version FAILED_PRE_MUTATION still surfaces" {
-    install -d -m 0755 "$TMP/var/lib/airplanes-runtime-upgrade"
+    install -d -m 0755 "$TMP/var/lib/airplanes/runtime-upgrade"
     cat > "$TMP/sub/runtime-update.sh" <<EOF
 #!/usr/bin/env bash
-cat > "$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" <<STATE
+cat > "$TMP/var/lib/airplanes/runtime-upgrade/upgrade-state" <<STATE
 state=FAILED_PRE_MUTATION
 failure_reason=download_failed
 STATE
@@ -244,8 +244,8 @@ EOF
 }
 
 @test "stale same-version-replay state is NOT misclassified as success" {
-    install -d -m 0755 "$TMP/var/lib/airplanes-runtime-upgrade"
-    cat > "$TMP/var/lib/airplanes-runtime-upgrade/upgrade-state" <<STATE
+    install -d -m 0755 "$TMP/var/lib/airplanes/runtime-upgrade"
+    cat > "$TMP/var/lib/airplanes/runtime-upgrade/upgrade-state" <<STATE
 state=FAILED_PRE_MUTATION
 failure_reason=same_version_replay_opt_airplanes-runtime_releases_v0.0.1
 STATE

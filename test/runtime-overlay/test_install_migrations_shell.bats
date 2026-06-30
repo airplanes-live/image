@@ -75,10 +75,10 @@ JSON
     # Simulate a flip having occurred: point current at a different dir, but
     # still pass the original RELEASE_DIR to the rollback. The rollback
     # should resolve scripts from RELEASE_DIR (the new release), not from
-    # /opt/airplanes-runtime/current/.
-    install -d -m 755 "$TARGET_ROOT/opt/airplanes-runtime"
-    rm -f "$TARGET_ROOT/opt/airplanes-runtime/current"
-    ln -s "$BATS_TEST_TMPDIR/somewhere-else" "$TARGET_ROOT/opt/airplanes-runtime/current"
+    # /opt/airplanes/current/.
+    install -d -m 755 "$TARGET_ROOT/opt/airplanes"
+    rm -f "$TARGET_ROOT/opt/airplanes/current"
+    ln -s "$BATS_TEST_TMPDIR/somewhere-else" "$TARGET_ROOT/opt/airplanes/current"
 
     run airplanes_runtime_run_migrations_rollback "$BATS_TEST_TMPDIR/manifest.json" "$RELEASE_DIR" "$TARGET_ROOT"
     [ "$status" -eq 0 ]
