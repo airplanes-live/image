@@ -168,12 +168,15 @@ echo "stage-feed: cloning feed scripts from $FEED_REPO @ $FEED_REF"
 fetch_repo "$FEED_SRC" "$FEED_REPO" "$FEED_REF"
 FEED_SHA="$(git -C "$FEED_SRC" rev-parse HEAD)"
 
-# Daemon wrappers → share/airplanes/
+# Daemon wrappers → share/airplanes/. Glob airplanes-*.sh so a wrapper added
+# in feed is staged automatically, mirroring the airplanes-*.{service,timer}
+# unit glob below. The prior hardcoded list silently dropped airplanes-stats.sh
+# when feed added it — its airplanes-stats.service then referenced a script the
+# overlay never shipped, which the exec-bit-check release gate rejects.
 install -d -m 0755 "$OUTPUT_DIR/share/airplanes"
-for wrapper in airplanes-feed.sh airplanes-mlat.sh airplanes-diagnostics.sh; do
-    if [[ -f "$FEED_SRC/scripts/$wrapper" ]]; then
-        install -m 0755 "$FEED_SRC/scripts/$wrapper" "$OUTPUT_DIR/share/airplanes/$wrapper"
-    fi
+for wrapper in "$FEED_SRC"/scripts/airplanes-*.sh; do
+    [[ -f "$wrapper" ]] || continue
+    install -m 0755 "$wrapper" "$OUTPUT_DIR/share/airplanes/$(basename "$wrapper")"
 done
 
 # apl-feed CLI entry point → bin/
