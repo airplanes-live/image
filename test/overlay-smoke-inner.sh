@@ -7,6 +7,26 @@ set -euo pipefail
 # shellcheck source=lib/overlay-common.sh
 . /image/test/lib/overlay-common.sh
 
+# Emulate the runtime overlay (stage 02) delivery of render-status, the
+# console-dashboard ASCII assets, and the MOTD status hook. This fast smoke
+# deliberately skips stage 02 — it needs signed release downloads — but the
+# 06b block below runs render-status' renderer self-test and asserts these
+# artifacts, so we stage them from runtime-overlay/src/, the very tree the
+# overlay is built from. The MOTD hook goes straight to /etc/update-motd.d/ as
+# a real 0755 file (the 06b assertion stat's its mode, which a managed_paths
+# symlink would report as 777). Delivery fidelity — real overlay paths, modes,
+# and managed_paths symlink wiring — is covered by the release gate
+# (exec-bit-check) and the full boot-smoke; here we only need the renderer's
+# inputs in place.
+install -D -m 0755 /image/runtime-overlay/src/lib/airplanes/render-status \
+    /opt/airplanes/current/lib/airplanes/render-status
+for _asset in logo banner banner-narrow icon; do
+    install -D -m 0644 "/image/runtime-overlay/src/share/airplanes/${_asset}.txt" \
+        "/opt/airplanes/current/share/airplanes/${_asset}.txt"
+done
+install -D -m 0755 /image/runtime-overlay/src/etc/update-motd.d/10-airplanes-status \
+    /etc/update-motd.d/10-airplanes-status
+
 echo "==> stage-airplanes/00-prep/00-run.sh"
 # Run from the stage dir so relative `files/` paths inside 00-run.sh resolve.
 ( cd /image/stage-airplanes/00-prep && bash 00-run.sh )
