@@ -13,7 +13,8 @@
     "airplanes-feed.service",
     "airplanes-mlat.service",
     "airplanes-diagnostics.timer",
-    "airplanes-config-sync.timer"
+    "airplanes-config-sync.timer",
+    "airplanes-stats.timer"
   ],
   "disable": [],
   "reload_or_restart": [
