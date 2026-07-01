@@ -78,11 +78,12 @@ echo "==> contract assertions"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 # Stage 01 is setup-only now (service account + state dirs). Feed artifacts
 # (feed-airplanes binary, apl-feed CLI, daemon wrappers, systemd units, runtime
-# libs, mlat-client venv, feed.env, image-install marker, enable links) arrive
-# through the runtime overlay at stage 02 (managed_paths + migrations), which
-# this fast smoke does NOT run. Assertions below cover only what stages 00 + 01
-# + 06 produce, not the overlay-delivered feed surface. The full image build +
-# boot-smoke cover the feed overlay path end to end.
+# libs, mlat-client venv, feed.env, enable links) arrive through the runtime
+# overlay at stage 02 (managed_paths + migrations), which this fast smoke does
+# NOT run. Assertions below cover only what stages 00 + 01 + 06 produce, not the
+# overlay-delivered feed surface. The full image build + boot-smoke cover the
+# feed overlay path end to end. (The /etc/airplanes/image-install provenance
+# marker is baked by stage 06, not the overlay, so it IS asserted below.)
 [[ -d /etc/airplanes ]] || fail "/etc/airplanes dir missing (stage 01 chroot)"
 id -u airplanes-feed >/dev/null 2>&1 || fail "airplanes-feed user missing (stage 01 chroot)"
 getent group airplanes-feed >/dev/null 2>&1 || fail "airplanes-feed group missing (stage 01 chroot)"
@@ -263,6 +264,14 @@ case "$release_channel_content" in
 esac
 [[ "$release_channel_content" == "$AIRPLANES_FEED_UPDATE_CHANNEL" ]] \
     || fail "release-channel content '$release_channel_content' does not match AIRPLANES_FEED_UPDATE_CHANNEL='$AIRPLANES_FEED_UPDATE_CHANNEL'"
+
+# image-install marker: stage 06 bakes it so the feed daemons detect an
+# overlay-image feeder (airplanes-feed.sh sets IMAGE_INSTALL=1 on presence).
+# Baked into /etc rather than overlay-delivered so it survives overlay updates,
+# rollbacks, or removal.
+[[ -f /etc/airplanes/image-install ]] || fail "image-install marker missing"
+[[ "$(stat -c %a /etc/airplanes/image-install)" == "644" ]] \
+    || fail "image-install marker mode != 0644"
 
 # Build-manifest sentinel written by stage 00.
 [[ -s /etc/airplanes/.build-pi-gen-sha ]] || fail ".build-pi-gen-sha missing or empty"
