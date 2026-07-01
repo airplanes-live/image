@@ -150,5 +150,15 @@
     "mode": "symlink",
     "link": "/etc/systemd/system/airplanes-config-sync.timer",
     "target": "/opt/airplanes/current/systemd/airplanes-config-sync.timer"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-stats.service",
+    "target": "/opt/airplanes/current/systemd/airplanes-stats.service"
+  },
+  {
+    "mode": "symlink",
+    "link": "/etc/systemd/system/airplanes-stats.timer",
+    "target": "/opt/airplanes/current/systemd/airplanes-stats.timer"
   }
 ]
