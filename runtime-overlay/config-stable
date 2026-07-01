@@ -36,12 +36,12 @@ export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.co
 export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889de2a8f63f2b40133ea72a08537ce}"
 
 # Webconfig — downloaded as a prebuilt release, not compiled in the overlay.
-# Pinned to a concrete stable release (post-self-update-removal; the v0.1.x
-# tags up to v0.1.2 still carried the removed self-update surface). COMMIT_SHA
-# must equal the release manifest's commit_sha — stage-webconfig.sh hard-fails
-# the build on mismatch.
-export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.3.0}"
-export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-30448fe56d121268bb91fada04d48611d3fc2156}"
+# Pinned to a concrete stable release. v0.4.0 is the first release carrying the
+# /opt/airplanes FHS on-device layout, matching the overlay this channel builds.
+# COMMIT_SHA must equal the release manifest's commit_sha — stage-webconfig.sh
+# hard-fails the build on mismatch.
+export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.4.0}"
+export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-7ed56223b1e8d844d5dde1c31690f6c03a9e139f}"
 
 # Feed scripts — overlay-built. The feed repo's only tag (v0.0.1) lags the dev
 # head, so the stable pin is the current feed dev HEAD SHA as of this pin date
