@@ -1506,6 +1506,36 @@ systemctl list-timers --all --no-pager 2>/dev/null | grep -q airplanes-claim \
 # missing-timer bug (`systemctl is-enabled` fails on a missing unit).
 _assert_feed_activators_armed fresh-flash
 
+# Privileged helper CLIs end-to-end: apl-wifi and apl-ssh source their shared
+# libs from the overlay at /opt/airplanes/current/lib/airplanes. A stale
+# lib-dir default inside a helper (or an overlay that stops shipping the libs)
+# breaks every Wi-Fi/SSH API call and backup export on a real device, while
+# the helpers' unit suites stay green because they override the lib-dir env
+# seam — only an image-level probe catches it. The failure mode is a sourcing
+# error on stderr with empty stdout, so assert exit 0 AND parseable JSON.
+# Read-only verbs; safe on both boot-smoke passes.
+_helper_probe_json() {
+    local label="$1"; shift
+    local out err
+    err="$(mktemp)"
+    if ! out="$("$@" 2>"$err")"; then
+        fail "helper probe: $label exited non-zero; stderr: $(head -c 300 "$err")"
+    fi
+    if ! printf '%s' "$out" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+        fail "helper probe: $label stdout is not valid JSON; stdout: $(printf '%s' "$out" | head -c 200); stderr: $(head -c 300 "$err")"
+    fi
+    rm -f "$err"
+}
+
+echo "image-probe: privileged helper CLIs (apl-wifi, apl-ssh)"
+[[ -x /usr/local/bin/apl-wifi ]] \
+    || fail "helper probe: /usr/local/bin/apl-wifi missing or not executable"
+[[ -x /usr/local/bin/apl-ssh ]] \
+    || fail "helper probe: /usr/local/bin/apl-ssh missing or not executable"
+_helper_probe_json "apl-wifi list --json" /usr/local/bin/apl-wifi list --json
+_helper_probe_json "apl-ssh status --json" /usr/local/bin/apl-ssh status --json
+echo "image-probe: helper CLIs passed"
+
 # End-to-end SSE probe: real lighttpd -> real webconfig -> real journald.
 # Catches three regressions in one shot:
 #   * Go-side http.Server.WriteTimeout cutting the SSE stream off (the
