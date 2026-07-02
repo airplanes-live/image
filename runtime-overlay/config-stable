@@ -36,20 +36,21 @@ export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.co
 export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889de2a8f63f2b40133ea72a08537ce}"
 
 # Webconfig — downloaded as a prebuilt release, not compiled in the overlay.
-# Pinned to a concrete stable release. v0.4.0 is the first release carrying the
-# /opt/airplanes FHS on-device layout, matching the overlay this channel builds.
+# Pinned to a concrete stable release. v0.5.0 carries the /opt/airplanes FHS
+# on-device layout plus the fixed Wi-Fi/SSH helper library path, matching the
+# overlay this channel builds.
 # COMMIT_SHA must equal the release manifest's commit_sha — stage-webconfig.sh
 # hard-fails the build on mismatch.
-export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.4.0}"
-export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-7ed56223b1e8d844d5dde1c31690f6c03a9e139f}"
+export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.5.0}"
+export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-634e7edcfab1bfa16712e8d5777be96ede0cc506}"
 
 # Feed scripts — overlay-built. The feed repo's semver tags are reserved for
 # launch, so the stable pin is a concrete feed dev SHA (must be 40-hex per
-# test_channel_configs.bats). Pinned to the FHS commit (feed #144), which
+# test_channel_configs.bats). Pinned to the feed dev head (feed #145), which
 # carries the /opt/airplanes layout and the airplanes-stats units so the stable
 # overlay's feed payload matches this channel and the dev channel.
 export AIRPLANES_FEED_OVERLAY_REPO="${AIRPLANES_FEED_OVERLAY_REPO:-https://github.com/airplanes-live/feed.git}"
-export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-481adbf91478c4f1ad035a858d502584214edcc0}"
+export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-430651d67d045639b84ad5e3438ba5302d33bcfb}"
 
 # Feeder readsb fork (outbound airplanes-feed binary). The repo's version tags
 # mirror upstream wiedehopf and lag the fork's dev head by hundreds of commits,
