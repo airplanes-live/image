@@ -54,6 +54,19 @@ printf '%s\n' "${AIRPLANES_FEED_UPDATE_CHANNEL}" \
 	> "${ROOTFS_DIR}/etc/airplanes/release-channel"
 chmod 0644 "${ROOTFS_DIR}/etc/airplanes/release-channel"
 
+# Image-install provenance marker. Its presence tells the feed daemons this is
+# an overlay-image feeder, distinguishing it from a standalone feed install
+# (which has neither marker nor binary) and from a legacy image (detected
+# instead by the baked /usr/bin/airplanes-feeder binary the marker post-dates).
+# Only presence is contractual: feed reads it with `-f` and never sources it,
+# so the body is a shell-safe comment for anyone who cats the file. Baked here
+# rather than delivered by the runtime overlay so the flag stays permanent
+# across overlay updates, rollbacks, or removal — the same reason
+# release-channel is baked.
+printf '%s\n' '# airplanes.live image-install marker; presence signals an overlay-image feeder.' \
+	> "${ROOTFS_DIR}/etc/airplanes/image-install"
+chmod 0644 "${ROOTFS_DIR}/etc/airplanes/image-install"
+
 # pi-gen's export-image stage copies ${ROOTFS_DIR}/boot/firmware/* onto the
 # FAT partition during image assembly, so writing the template here lands it
 # on partition 1 where SD-card editors can reach it.

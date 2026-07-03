@@ -36,18 +36,21 @@ export AIRPLANES_GRAPHS1090_REPO="${AIRPLANES_GRAPHS1090_REPO:-https://github.co
 export AIRPLANES_GRAPHS1090_BRANCH="${AIRPLANES_GRAPHS1090_BRANCH:-426c70c61889de2a8f63f2b40133ea72a08537ce}"
 
 # Webconfig — downloaded as a prebuilt release, not compiled in the overlay.
-# Pinned to a concrete stable release (post-self-update-removal; the v0.1.x
-# tags up to v0.1.2 still carried the removed self-update surface). COMMIT_SHA
-# must equal the release manifest's commit_sha — stage-webconfig.sh hard-fails
-# the build on mismatch.
-export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.3.0}"
-export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-30448fe56d121268bb91fada04d48611d3fc2156}"
+# Pinned to a concrete stable release. v0.5.0 carries the /opt/airplanes FHS
+# on-device layout plus the fixed Wi-Fi/SSH helper library path, matching the
+# overlay this channel builds.
+# COMMIT_SHA must equal the release manifest's commit_sha — stage-webconfig.sh
+# hard-fails the build on mismatch.
+export AIRPLANES_WEBCONFIG_RELEASE_TAG="${AIRPLANES_WEBCONFIG_RELEASE_TAG:-v0.5.0}"
+export AIRPLANES_WEBCONFIG_COMMIT_SHA="${AIRPLANES_WEBCONFIG_COMMIT_SHA:-634e7edcfab1bfa16712e8d5777be96ede0cc506}"
 
-# Feed scripts — overlay-built. The feed repo's only tag (v0.0.1) lags the dev
-# head, so the stable pin is the current feed dev HEAD SHA as of this pin date
-# (the pin must be a 40-hex SHA per test_channel_configs.bats).
+# Feed scripts — overlay-built. The feed repo's semver tags are reserved for
+# launch, so the stable pin is a concrete feed dev SHA (must be 40-hex per
+# test_channel_configs.bats). Pinned to the feed dev head (feed #145), which
+# carries the /opt/airplanes layout and the airplanes-stats units so the stable
+# overlay's feed payload matches this channel and the dev channel.
 export AIRPLANES_FEED_OVERLAY_REPO="${AIRPLANES_FEED_OVERLAY_REPO:-https://github.com/airplanes-live/feed.git}"
-export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-18a07314a49f483e545d00da2532c72ccda03e5f}"
+export AIRPLANES_FEED_OVERLAY_BRANCH="${AIRPLANES_FEED_OVERLAY_BRANCH:-430651d67d045639b84ad5e3438ba5302d33bcfb}"
 
 # Feeder readsb fork (outbound airplanes-feed binary). The repo's version tags
 # mirror upstream wiedehopf and lag the fork's dev head by hundreds of commits,

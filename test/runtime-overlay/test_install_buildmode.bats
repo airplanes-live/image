@@ -64,10 +64,10 @@ setup() {
     "managed_paths": [
         { "mode": "symlink",
           "link": "/etc/systemd/system/readsb.service",
-          "target": "/opt/airplanes-runtime/current/systemd/readsb.service" },
+          "target": "/opt/airplanes/current/systemd/readsb.service" },
         { "mode": "symlink",
-          "link": "/usr/local/share/airplanes/readsb.sh",
-          "target": "/opt/airplanes-runtime/current/share/airplanes/readsb.sh" }
+          "link": "/usr/local/bin/apl-feed",
+          "target": "/opt/airplanes/current/bin/apl-feed" }
     ],
     "mutable_paths": [],
     "systemd": { "enable": [], "daemon_reload": true },
@@ -138,21 +138,23 @@ teardown() {
         echo "$output"
         return 1
     fi
-    [ -d "$ROOTFS_DIR/opt/airplanes-runtime/releases/v$REL_VER" ]
-    [ -f "$ROOTFS_DIR/opt/airplanes-runtime/releases/v$REL_VER/manifest.json" ]
-    [ -f "$ROOTFS_DIR/opt/airplanes-runtime/releases/v$REL_VER/bin/readsb" ]
-    [ -L "$ROOTFS_DIR/opt/airplanes-runtime/current" ]
+    [ -d "$ROOTFS_DIR/opt/airplanes/releases/v$REL_VER" ]
+    [ -f "$ROOTFS_DIR/opt/airplanes/releases/v$REL_VER/manifest.json" ]
+    [ -f "$ROOTFS_DIR/opt/airplanes/releases/v$REL_VER/bin/readsb" ]
+    [ -L "$ROOTFS_DIR/opt/airplanes/current" ]
     # The current symlink target string is the on-device-canonical path
     # (NOT rebased through ROOTFS_DIR), because the link lives in the
-    # rootfs but resolves on the real device where /opt/airplanes-runtime
+    # rootfs but resolves on the real device where /opt/airplanes
     # is the actual on-disk root.
-    [ "$(readlink "$ROOTFS_DIR/opt/airplanes-runtime/current")" = "/opt/airplanes-runtime/releases/v$REL_VER" ]
+    [ "$(readlink "$ROOTFS_DIR/opt/airplanes/current")" = "/opt/airplanes/releases/v$REL_VER" ]
     # managed_paths laid down under ROOTFS_DIR.
     [ -L "$ROOTFS_DIR/etc/systemd/system/readsb.service" ]
-    [ "$(readlink "$ROOTFS_DIR/etc/systemd/system/readsb.service")" = "/opt/airplanes-runtime/current/systemd/readsb.service" ]
-    # Decoder binary symlinks created.
-    [ -L "$ROOTFS_DIR/usr/bin/readsb" ]
-    [ -L "$ROOTFS_DIR/usr/bin/airplanes-978" ]
+    [ "$(readlink "$ROOTFS_DIR/etc/systemd/system/readsb.service")" = "/opt/airplanes/current/systemd/readsb.service" ]
+    # Decoder operator shims created under /usr/local/bin (FHS; /usr/bin unsquatted).
+    [ -L "$ROOTFS_DIR/usr/local/bin/readsb" ]
+    [ -L "$ROOTFS_DIR/usr/local/bin/dump978-fa" ]
+    [ ! -e "$ROOTFS_DIR/usr/bin/readsb" ]
+    [ ! -e "$ROOTFS_DIR/usr/bin/airplanes-978" ]
 }
 
 @test "build mode rejects a tampered SHA256SUMS" {

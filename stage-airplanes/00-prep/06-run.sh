@@ -5,5 +5,5 @@
 # this key before extracting any release artifact. Build-mode invocations
 # from stage 02-install-runtime-overlay point at the same file inside the
 # repo on the host so the verification path is identical in both modes.
-install -D -m 0644 files/usr/share/airplanes/runtime-release.pub \
-	"${ROOTFS_DIR}/usr/share/airplanes/runtime-release.pub"
+install -D -m 0644 files/opt/airplanes/libexec/runtime-release.pub \
+	"${ROOTFS_DIR}/opt/airplanes/libexec/runtime-release.pub"

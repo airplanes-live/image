@@ -266,7 +266,7 @@ STUB
 # OR calls install_state_reader_stub for a working stub.
 setup_mlat_state_test_env() {
     install_state_reader_stub
-    PATHS_STATE_FILE_MLAT="$TMP/run/airplanes-mlat/state"
+    PATHS_STATE_FILE_MLAT="$TMP/run/airplanes/mlat/state"
 }
 
 @test "mlat_config_state: active + state file present + state=enabled,reason=ok" {
@@ -1389,7 +1389,7 @@ write_978_state() {
     } > "$PATHS_STATE_FILE_978"
 }
 
-# Producer-side fixture: dump978-fa.sh writes /run/dump978-fa/state.
+# Producer-side fixture: dump978-fa.sh writes /run/airplanes/dump978-fa/state.
 # _978_config_state picks this path when the unit is dump978-fa.service.
 write_dump978fa_state() {
     local decision="$1" reason="$2"
@@ -1404,8 +1404,8 @@ write_dump978fa_state() {
 
 setup_978_state_test_env() {
     install_state_reader_stub
-    PATHS_STATE_FILE_978="$TMP/run/airplanes-978/state"
-    PATHS_STATE_FILE_DUMP978FA="$TMP/run/dump978-fa/state"
+    PATHS_STATE_FILE_978="$TMP/run/airplanes/978/state"
+    PATHS_STATE_FILE_DUMP978FA="$TMP/run/airplanes/dump978-fa/state"
 }
 
 # Stub systemctl returning chosen ActiveState/ExecMainStatus for the
@@ -1468,7 +1468,7 @@ STUB
     [ "$output" = 'misconfigured unknown' ]
 }
 
-@test "_978_config_state: dump978-fa reads /run/dump978-fa/state (not airplanes-978's)" {
+@test "_978_config_state: dump978-fa reads /run/airplanes/dump978-fa/state (not airplanes-978's)" {
     setup_978_state_test_env
     # Different states in the two files; the unit-name dispatch must pick
     # the right one so a producer-side decision doesn't mask the consumer
@@ -1480,7 +1480,7 @@ STUB
     [ "$output" = 'disabled no_hardware' ]
 }
 
-@test "_978_config_state: airplanes-978 reads /run/airplanes-978/state (peer_no_hardware refinement)" {
+@test "_978_config_state: airplanes-978 reads /run/airplanes/978/state (peer_no_hardware refinement)" {
     setup_978_state_test_env
     write_978_state         enabled  peer_no_hardware
     write_dump978fa_state   disabled no_hardware
@@ -2157,7 +2157,7 @@ EOF
 
 setup_feed_state_test_env() {
     install_state_reader_stub
-    PATHS_STATE_FILE_FEED="$TMP/run/airplanes-feed/state"
+    PATHS_STATE_FILE_FEED="$TMP/run/airplanes/feed/state"
 }
 
 # write_feed_state_endpoint <host> <port> <is_default>

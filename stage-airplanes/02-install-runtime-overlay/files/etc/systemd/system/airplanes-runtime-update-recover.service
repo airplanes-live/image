@@ -13,13 +13,17 @@ Before=airplanes-tar1090-uat-sync.service airplanes-tar1090-uat-sync.path
 Before=tar1090.service graphs1090.service
 Before=collectd.service lighttpd.service
 Before=airplanes-webconfig.service airplanes-feed.service airplanes-mlat.service
-RequiresMountsFor=/opt /var/lib/airplanes-runtime-upgrade
-ConditionPathExists=/usr/local/lib/airplanes-runtime/recover-shim
+# first-run sources the overlay's wifi-validators.sh and the console dashboard
+# renders via the overlay's render-status, so both must wait for the last-good
+# flip too — otherwise a half-flipped current/ breaks them on a recovery boot.
+Before=airplanes-first-run.service airplanes-dashboard.service
+RequiresMountsFor=/opt /var/lib/airplanes/runtime-upgrade
+ConditionPathExists=/opt/airplanes/libexec/recover-shim
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/lib/airplanes-runtime/recover-shim
+ExecStart=/opt/airplanes/libexec/recover-shim
 
 [Install]
 WantedBy=multi-user.target

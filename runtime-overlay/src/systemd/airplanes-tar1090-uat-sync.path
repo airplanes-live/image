@@ -2,8 +2,8 @@
 Description=Watch airplanes-978 + dump978-fa runtime state for tar1090 sync
 
 [Path]
-PathChanged=/run/airplanes-978/state
-PathChanged=/run/dump978-fa/state
+PathChanged=/run/airplanes/978/state
+PathChanged=/run/airplanes/dump978-fa/state
 Unit=airplanes-tar1090-uat-sync.service
 
 [Install]

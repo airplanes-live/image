@@ -168,12 +168,15 @@ echo "stage-feed: cloning feed scripts from $FEED_REPO @ $FEED_REF"
 fetch_repo "$FEED_SRC" "$FEED_REPO" "$FEED_REF"
 FEED_SHA="$(git -C "$FEED_SRC" rev-parse HEAD)"
 
-# Daemon wrappers → share/airplanes/
+# Daemon wrappers → share/airplanes/. Glob airplanes-*.sh so a wrapper added
+# in feed is staged automatically, mirroring the airplanes-*.{service,timer}
+# unit glob below. The prior hardcoded list silently dropped airplanes-stats.sh
+# when feed added it — its airplanes-stats.service then referenced a script the
+# overlay never shipped, which the exec-bit-check release gate rejects.
 install -d -m 0755 "$OUTPUT_DIR/share/airplanes"
-for wrapper in airplanes-feed.sh airplanes-mlat.sh airplanes-diagnostics.sh; do
-    if [[ -f "$FEED_SRC/scripts/$wrapper" ]]; then
-        install -m 0755 "$FEED_SRC/scripts/$wrapper" "$OUTPUT_DIR/share/airplanes/$wrapper"
-    fi
+for wrapper in "$FEED_SRC"/scripts/airplanes-*.sh; do
+    [[ -f "$wrapper" ]] || continue
+    install -m 0755 "$wrapper" "$OUTPUT_DIR/share/airplanes/$(basename "$wrapper")"
 done
 
 # apl-feed CLI entry point → bin/
@@ -218,8 +221,8 @@ for src in "${feed_units[@]}"; do
 done
 
 # Gate airplanes-mlat.service on the prebuilt venv this overlay ships. The
-# wrapper execs /usr/local/share/airplanes/venv/bin/mlat-client; without the
-# venv the unit would restart-loop on a missing interpreter. ConditionPathExists
+# wrapper execs /opt/airplanes/current/share/airplanes/venv/bin/mlat-client; without
+# the venv the unit would restart-loop on a missing interpreter. ConditionPathExists
 # makes systemd skip the unit cleanly (inactive, condition-failed) on a
 # decoder-only release rather than start-fail it. We inject the condition here
 # (overlay side, where the venv is owned) rather than in the feed repo, whose
@@ -233,7 +236,7 @@ if [[ -f "$mlat_unit" ]] && ! grep -q '^ConditionPathExists=' "$mlat_unit"; then
         /^\[Unit\]/ { print; in_unit = 1; next }
         in_unit && /^Description=/ {
             print
-            print "ConditionPathExists=/usr/local/share/airplanes/venv/bin/mlat-client"
+            print "ConditionPathExists=/opt/airplanes/current/share/airplanes/venv/bin/mlat-client"
             next
         }
         /^\[/ && !/^\[Unit\]/ { in_unit = 0 }
@@ -288,16 +291,16 @@ printf '%s' "${FEED_REF}" > "$OUTPUT_DIR/components.feed_scripts.version"
 #
 # A Python venv embeds the absolute path it was created at into every
 # console-script shebang (and into pyvenv.cfg). The airplanes-mlat wrapper
-# execs /usr/local/share/airplanes/venv/bin/mlat-client, so the venv MUST be
-# built at that exact path inside the container — not at a relative or
+# execs /opt/airplanes/current/share/airplanes/venv/bin/mlat-client, so the venv
+# MUST be built at that exact path inside the container — not at a relative or
 # container-scoped path — or the on-device shebangs would point at a directory
 # that does not exist. We build there, verify the shebangs, then copy the tree
 # verbatim into the overlay staging dir (cp -a does not rewrite shebangs).
 
 # The venv MUST live at the path the airplanes-mlat wrapper execs. Overridable
-# only for tests (which can't write under /usr/local without root); production
-# always builds at the real on-device path so shebangs resolve.
-VENV_TARGET="${AIRPLANES_VENV_TARGET:-/usr/local/share/airplanes/venv}"
+# only for tests (which can't write under /opt without root); production always
+# builds at the real on-device path so shebangs resolve.
+VENV_TARGET="${AIRPLANES_VENV_TARGET:-/opt/airplanes/current/share/airplanes/venv}"
 # Test seam: a local source dir short-circuits the network clone. Production
 # always clones the pinned mlat-client ref.
 MLAT_SRC="${AIRPLANES_MLAT_SRC_DIR:-$SCRATCH_DIR/mlat-src}"

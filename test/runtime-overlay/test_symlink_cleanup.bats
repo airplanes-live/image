@@ -22,7 +22,7 @@ mk_manifest_with_links() {
     local first=1
     for link in "$@"; do
         [[ $first -eq 0 ]] && entries="$entries,"
-        entries="$entries {\"mode\":\"symlink\",\"link\":\"$link\",\"target\":\"/opt/airplanes-runtime/current/bin/dummy\"}"
+        entries="$entries {\"mode\":\"symlink\",\"link\":\"$link\",\"target\":\"/opt/airplanes/current/bin/dummy\"}"
         first=0
     done
     cat > "$dir/manifest.json" <<JSON
@@ -58,8 +58,8 @@ JSON
 
     # Create the "old-tool" symlink on the target root.
     install -d -m 755 "$TARGET_ROOT/usr/bin"
-    ln -s /opt/airplanes-runtime/current/bin/dummy "$TARGET_ROOT/usr/bin/old-tool"
-    ln -s /opt/airplanes-runtime/current/bin/dummy "$TARGET_ROOT/usr/bin/shared-tool"
+    ln -s /opt/airplanes/current/bin/dummy "$TARGET_ROOT/usr/bin/old-tool"
+    ln -s /opt/airplanes/current/bin/dummy "$TARGET_ROOT/usr/bin/shared-tool"
 
     airplanes_runtime_remove_retired_symlinks \
         "$prev_dir/manifest.json" "$new_dir/manifest.json" "$TARGET_ROOT"
@@ -84,8 +84,8 @@ JSON
     # Create the new-only symlink on the target root (it was created by the
     # failed install's managed_paths apply before the rollback fires).
     install -d -m 755 "$TARGET_ROOT/usr/bin"
-    ln -s /opt/airplanes-runtime/current/bin/dummy "$TARGET_ROOT/usr/bin/new-only-tool"
-    ln -s /opt/airplanes-runtime/current/bin/dummy "$TARGET_ROOT/usr/bin/shared-tool"
+    ln -s /opt/airplanes/current/bin/dummy "$TARGET_ROOT/usr/bin/new-only-tool"
+    ln -s /opt/airplanes/current/bin/dummy "$TARGET_ROOT/usr/bin/shared-tool"
 
     airplanes_runtime_remove_new_only_symlinks \
         "$new_dir/manifest.json" "$prev_dir/manifest.json" "$TARGET_ROOT"

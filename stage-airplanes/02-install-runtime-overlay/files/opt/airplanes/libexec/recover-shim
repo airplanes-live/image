@@ -27,11 +27,11 @@
 
 set -u
 
-STATE_DIR="/var/lib/airplanes-runtime-upgrade"
+STATE_DIR="/var/lib/airplanes/runtime-upgrade"
 STATE_FILE="${STATE_DIR}/upgrade-state"
-RELEASES_DIR="/opt/airplanes-runtime/releases"
-CURRENT_LINK="/opt/airplanes-runtime/current"
-LAST_GOOD_FILE="/var/lib/airplanes-runtime/last-good-release"
+RELEASES_DIR="/opt/airplanes/releases"
+CURRENT_LINK="/opt/airplanes/current"
+LAST_GOOD_FILE="/var/lib/airplanes/runtime/last-good-release"
 ATTEMPTS_FILE="${STATE_DIR}/recovery-attempts"
 STATUS_FILE="${STATE_DIR}/recovery-status"
 
@@ -98,16 +98,16 @@ state_get() {
 }
 
 # valid_release: the candidate must be an absolute path under
-# /opt/airplanes-runtime/releases/v*, must exist as a directory, and must
+# /opt/airplanes/releases/v*, must exist as a directory, and must
 # contain a manifest.json (never boot a half-extracted tree). Rejects
 # path traversal by requiring the canonical releases-dir prefix and refusing
 # any `..` segment.
 valid_release() {
     _cand="$1"
     [ -n "$_cand" ] || return 1
-    # Must be absolute (device-canonical path begins with /opt/airplanes-runtime).
+    # Must be absolute (device-canonical path begins with /opt/airplanes).
     case "$_cand" in
-        /opt/airplanes-runtime/releases/v*) ;;
+        /opt/airplanes/releases/v*) ;;
         *) return 1 ;;
     esac
     # Reject traversal.

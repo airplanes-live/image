@@ -9,7 +9,7 @@
 #   - runtime-overlay/src/lib/runtime-self-update.sh          (state-machine wrapper)
 #
 # Boot-time recovery is NOT sourced from here. It is an image-owned POSIX-sh
-# pointer shim (/usr/local/lib/airplanes-runtime/recover-shim) that uses only
+# pointer shim (/opt/airplanes/libexec/recover-shim) that uses only
 # base-OS tools so it survives a fully broken overlay — see the image stage
 # at stage-airplanes/02-install-runtime-overlay/.
 #
@@ -52,9 +52,9 @@ AIRPLANES_RUNTIME_RELEASE_ASSET_DIR="${AIRPLANES_RUNTIME_RELEASE_ASSET_DIR:-}"
 AIRPLANES_RUNTIME_PROBE_URL_BASE="${AIRPLANES_RUNTIME_PROBE_URL_BASE:-http://127.0.0.1}"
 
 # Minisign public key used to verify SHA256SUMS. Ships in the image at
-# /usr/share/airplanes/runtime-release.pub (stage 00). Tests point this at a
+# /opt/airplanes/libexec/runtime-release.pub (stage 00). Tests point this at a
 # tmpdir fixture.
-AIRPLANES_RUNTIME_MINISIGN_PUBKEY="${AIRPLANES_RUNTIME_MINISIGN_PUBKEY:-/usr/share/airplanes/runtime-release.pub}"
+AIRPLANES_RUNTIME_MINISIGN_PUBKEY="${AIRPLANES_RUNTIME_MINISIGN_PUBKEY:-/opt/airplanes/libexec/runtime-release.pub}"
 
 # Filesystem root for the runtime overlay tree. Build mode rebases this under
 # $ROOTFS_DIR; runtime mode uses /. Tests rebase it under a tmpdir so
@@ -64,7 +64,7 @@ AIRPLANES_RUNTIME_ROOT="${AIRPLANES_RUNTIME_ROOT:-/}"
 # Per-check deadline used by the health gates (seconds).
 AIRPLANES_RUNTIME_HEALTH_DEADLINE="${AIRPLANES_RUNTIME_HEALTH_DEADLINE:-120}"
 
-# Number of historical releases to keep under /opt/airplanes-runtime/releases/
+# Number of historical releases to keep under /opt/airplanes/releases/
 # after a successful install (in addition to the new current). 2 = keep one
 # prior release for fast rollback.
 AIRPLANES_RUNTIME_RETAIN_RELEASES="${AIRPLANES_RUNTIME_RETAIN_RELEASES:-2}"
@@ -520,7 +520,7 @@ airplanes_runtime_verify_manifest_sha() {
 # directory is `v<version>/` (build-release.sh's contract). We extract
 # with `--strip-components=1` so the staging target receives the inner
 # tree directly; the caller passes the absolute on-device release dir
-# (`/opt/airplanes-runtime/releases/v<version>/`) so the resulting layout
+# (`/opt/airplanes/releases/v<version>/`) so the resulting layout
 # is the same as a hand-laid release.
 
 airplanes_runtime_extract_release_tarball() {
@@ -545,13 +545,13 @@ airplanes_runtime_extract_release_tarball() {
 # ---------------------------------------------------------------------------
 #
 # Each manifest entry is one of:
-#   { mode: symlink, link: <abs>, target: <abs under /opt/airplanes-runtime/current/...> }
+#   { mode: symlink, link: <abs>, target: <abs under /opt/airplanes/current/...> }
 #   { mode: copy,    path: <abs>, from: <rel-under-release-dir>, owner: u:g, perm: 0XXX,
 #                    post_install: [argv] }
 #
 # Symlink targets are required absolute by the schema (decision 2). We
 # rebase the *link* through TARGET_ROOT for build mode / tests; the symlink
-# target is left literal because /opt/airplanes-runtime/current resolves
+# target is left literal because /opt/airplanes/current resolves
 # inside the final image, not inside the staging tmpdir.
 
 airplanes_runtime_apply_managed_paths() {
@@ -929,7 +929,7 @@ _airplanes_runtime_assert_safe_managed_path() {
     local norm="$p"
     [[ "$norm" != "/" ]] && norm="${norm%/}"
     case "$norm" in
-        ""|"/"|/usr|/etc|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/home|/root|/run|/proc|/sys|/dev|/opt/airplanes-runtime|/opt/airplanes-runtime/*)
+        ""|"/"|/usr|/etc|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/home|/root|/run|/proc|/sys|/dev|/opt/airplanes|/opt/airplanes/*)
             echo "ERROR: refusing to operate on critical system path: '$p'" >&2
             return 1
             ;;
@@ -1486,7 +1486,7 @@ airplanes_runtime_flip_current() {
         echo "ERROR: flip_current: new release dir must be absolute (got: $new_release_dir)" >&2
         return 1
     fi
-    local current_link="${target_root}/opt/airplanes-runtime/current"
+    local current_link="${target_root}/opt/airplanes/current"
     install -d -m 755 "$(dirname "$current_link")"
     local tmp="${current_link}.tmp.$$"
     rm -f -- "$tmp"
@@ -1494,21 +1494,24 @@ airplanes_runtime_flip_current() {
     mv -Tf -- "$tmp" "$current_link"
 }
 
-# Re-create decoder binary symlinks. Both /usr/bin/readsb and
-# /usr/bin/airplanes-978 point at /opt/airplanes-runtime/current/bin/readsb
-# (the same binary handles both 1090 and 978 frame consumption when
-# invoked under either name; decision 14 — both are symlinks, not
-# hardlinks, so the post-flip relink is the canonical refresh).
+# Re-create the decoder operator-convenience shims on PATH. The decode
+# services exec the binaries by absolute /opt path via their wrapper *_BIN
+# defaults; these /usr/local/bin shims exist only so an operator typing
+# `readsb` or `dump978-fa` at a shell finds the active release's binary. We
+# install under /usr/local/bin (FHS: locally-installed binaries) rather than
+# /usr/bin (a tree the OS owns). The shims point through `current`, so they
+# follow the atomic flip on their own; the post-flip relink keeps them
+# canonical even if a shim was clobbered or predates this layout.
 airplanes_runtime_relink_decoder_binaries() {
     local target_root="$1"
-    local current_bin="/opt/airplanes-runtime/current/bin/readsb"
-    local link
-    for link in "/usr/bin/readsb" "/usr/bin/airplanes-978"; do
-        local abs="${target_root}${link}"
+    local current_bin_dir="/opt/airplanes/current/bin"
+    local name
+    for name in readsb dump978-fa; do
+        local abs="${target_root}/usr/local/bin/${name}"
         install -d -m 755 "$(dirname "$abs")"
         local tmp="${abs}.tmp.$$"
         rm -f -- "$tmp"
-        ln -s -- "$current_bin" "$tmp"
+        ln -s -- "${current_bin_dir}/${name}" "$tmp"
         mv -Tf -- "$tmp" "$abs"
     done
 }
@@ -1731,7 +1734,7 @@ PY
 # counts. The unit-active check (caller adds airplanes-feed.service to the
 # aggregate probe) covers "started cleanly"; this function adds the
 # "the running binary is the release's binary" invariant by confirming the
-# managed-path symlink for feed-airplanes points into the active release.
+# feed-airplanes binary under current/ resolves into the active release.
 #
 # Args: <target_root> <expected-feed-readsb-short-sha>
 # The short sha is currently informational only — the binary-identity proof is
@@ -1739,17 +1742,17 @@ PY
 # keep the arg so a future build-stamped feed binary can be version-probed.
 _airplanes_runtime_probe_feed_binary_current() {
     local target_root="$1"
-    local link="${target_root}/usr/local/share/airplanes/feed-airplanes"
-    local current="${target_root}/opt/airplanes-runtime/current"
-    if [[ ! -L "$link" ]]; then
-        echo "ERROR: feed gate: $link is not a symlink (managed_paths not applied?)" >&2
+    local current="${target_root}/opt/airplanes/current"
+    local bin="${current}/bin/feed-airplanes"
+    if [[ ! -e "$bin" ]]; then
+        echo "ERROR: feed gate: $bin missing (overlay not applied?)" >&2
         return 1
     fi
     local resolved current_resolved
-    resolved="$(readlink -f "$link" 2>/dev/null || true)"
+    resolved="$(readlink -f "$bin" 2>/dev/null || true)"
     current_resolved="$(readlink -f "$current" 2>/dev/null || true)"
     if [[ -z "$resolved" || -z "$current_resolved" ]]; then
-        echo "ERROR: feed gate: could not resolve feed-airplanes ($link) or current ($current)" >&2
+        echo "ERROR: feed gate: could not resolve feed-airplanes ($bin) or current ($current)" >&2
         return 1
     fi
     if [[ "$resolved" != "$current_resolved"/* ]]; then
@@ -1913,7 +1916,7 @@ airplanes_runtime_run_health_gates() {
     # (a decoder-only release does not ship the feed binary/unit). Read the
     # active release manifest — `current` already points at the new release at
     # health-gate time.
-    local active_manifest="${target_root}/opt/airplanes-runtime/current/manifest.json"
+    local active_manifest="${target_root}/opt/airplanes/current/manifest.json"
     local feed_short
     feed_short="$(_airplanes_runtime_manifest_feed_readsb_short_sha "$active_manifest")"
 
@@ -1949,10 +1952,10 @@ airplanes_runtime_run_health_gates() {
     fi
 
     # UAT services (978): both produce key-value state files.
-    if ! _airplanes_runtime_probe_uat_state "${target_root}/run/dump978-fa/state" "$deadline"; then
+    if ! _airplanes_runtime_probe_uat_state "${target_root}/run/airplanes/dump978-fa/state" "$deadline"; then
         return 1
     fi
-    if ! _airplanes_runtime_probe_uat_state "${target_root}/run/airplanes-978/state" "$deadline"; then
+    if ! _airplanes_runtime_probe_uat_state "${target_root}/run/airplanes/978/state" "$deadline"; then
         return 1
     fi
 
@@ -2064,7 +2067,7 @@ except Exception:
 _airplanes_runtime_read_installed_feed_contract() {
     local target_root="$1"
     local candidates=(
-        "${target_root}/usr/local/share/airplanes/lib/feed-contract-version"
+        "${target_root}/opt/airplanes/current/share/airplanes/lib/feed-contract-version"
         "${target_root}/etc/airplanes/feed-contract"
     )
     local f
@@ -2146,7 +2149,7 @@ _airplanes_runtime_read_python_abi() {
 # integer byte count, or empty if it can't be determined.
 _airplanes_runtime_free_bytes_for_releases() {
     local target_root="$1"
-    local dir="${target_root}/opt/airplanes-runtime/releases"
+    local dir="${target_root}/opt/airplanes/releases"
     # Walk up to the nearest existing ancestor — the releases dir may not
     # exist yet on a first install.
     while [[ ! -d "$dir" && -n "$dir" && "$dir" != "/" ]]; do
@@ -2301,7 +2304,7 @@ airplanes_runtime_record_runtime_manifest() {
         # Build mode: write a regular file copy so host-side consumers (like
         # scripts/manifest-generator.sh running in stage 07-finalize, outside
         # the chroot) can read the manifest content. The symlink form points
-        # at /opt/airplanes-runtime/current/manifest.json which the host
+        # at /opt/airplanes/current/manifest.json which the host
         # cannot resolve when target_root != /. The first runtime self-update
         # on-device replaces this file with the symlink via `mv -Tf`, so the
         # auto-follow-current semantics take over once the device is live.
@@ -2309,7 +2312,7 @@ airplanes_runtime_record_runtime_manifest() {
         # The `current` symlink target is an absolute path rooted at the
         # device's view of /, so resolve it manually against target_root
         # rather than letting `readlink -f` follow it on the host.
-        local current="${target_root}/opt/airplanes-runtime/current"
+        local current="${target_root}/opt/airplanes/current"
         local current_target
         current_target="$(readlink -- "$current")" || {
             echo "ERROR: ${current} is not a symlink (current pointer missing)" >&2
@@ -2323,7 +2326,7 @@ airplanes_runtime_record_runtime_manifest() {
         cp -- "$manifest_src" "$tmp"
         chmod 0644 "$tmp"
     else
-        ln -s -- "/opt/airplanes-runtime/current/manifest.json" "$tmp"
+        ln -s -- "/opt/airplanes/current/manifest.json" "$tmp"
     fi
 
     mv -Tf -- "$tmp" "$link"
@@ -2333,14 +2336,14 @@ airplanes_runtime_record_runtime_manifest() {
 # Last-good-release pointer
 # ---------------------------------------------------------------------------
 #
-# Image-owned file at /var/lib/airplanes-runtime/last-good-release recording
+# Image-owned file at /var/lib/airplanes/runtime/last-good-release recording
 # the device-canonical path of the most recent release that passed its health
 # gates. The boot recovery shim uses it as the rollback target when the state
 # file's prev_release is missing or invalid. Written at (not after) the
 # HEALTH_PASSED transition so a reboot in the cleanup window cannot leave it
 # stale relative to a known-good release.
 
-AIRPLANES_RUNTIME_LAST_GOOD_REL="${AIRPLANES_RUNTIME_LAST_GOOD_REL:-var/lib/airplanes-runtime/last-good-release}"
+AIRPLANES_RUNTIME_LAST_GOOD_REL="${AIRPLANES_RUNTIME_LAST_GOOD_REL:-var/lib/airplanes/runtime/last-good-release}"
 
 airplanes_runtime_write_last_good_release() {
     local target_root="$1" on_device_release="$2"
@@ -2447,16 +2450,16 @@ airplanes_runtime_finalize_after_health_passed() {
 # ---------------------------------------------------------------------------
 #
 # Keep at most AIRPLANES_RUNTIME_RETAIN_RELEASES under
-# /opt/airplanes-runtime/releases/. The current-pointed release is always
+# /opt/airplanes/releases/. The current-pointed release is always
 # retained even if it would otherwise be GC'd.
 
 airplanes_runtime_gc_old_releases() {
     local target_root="$1"
-    local releases_dir="${target_root}/opt/airplanes-runtime/releases"
+    local releases_dir="${target_root}/opt/airplanes/releases"
     [[ -d "$releases_dir" ]] || return 0
     local current_target=""
-    if [[ -L "${target_root}/opt/airplanes-runtime/current" ]]; then
-        current_target="$(readlink -f "${target_root}/opt/airplanes-runtime/current")"
+    if [[ -L "${target_root}/opt/airplanes/current" ]]; then
+        current_target="$(readlink -f "${target_root}/opt/airplanes/current")"
     fi
     # List release dirs sorted by mtime newest-first, drop the top N.
     local -a victims=()
@@ -2539,7 +2542,7 @@ airplanes_runtime_run_install_steps() {
 #
 # Helpers consumed by the self-update orchestrator and the boot-time recovery
 # oneshot. The state file lives at
-# ${target_root}/var/lib/airplanes-runtime-upgrade/upgrade-state and persists
+# ${target_root}/var/lib/airplanes/runtime-upgrade/upgrade-state and persists
 # the position of an in-flight upgrade across a power loss so the boot-time
 # recovery script can finish or undo whatever the orchestrator started.
 #
@@ -2558,7 +2561,7 @@ airplanes_runtime_run_install_steps() {
 
 # Path constants; uppercase so a caller can override per test (the test
 # fixture rebases STATE_DIR under BATS_TEST_TMPDIR).
-AIRPLANES_RUNTIME_STATE_DIR_REL="${AIRPLANES_RUNTIME_STATE_DIR_REL:-var/lib/airplanes-runtime-upgrade}"
+AIRPLANES_RUNTIME_STATE_DIR_REL="${AIRPLANES_RUNTIME_STATE_DIR_REL:-var/lib/airplanes/runtime-upgrade}"
 AIRPLANES_RUNTIME_STATE_FILE_NAME="${AIRPLANES_RUNTIME_STATE_FILE_NAME:-upgrade-state}"
 AIRPLANES_RUNTIME_LOCK_FILE="${AIRPLANES_RUNTIME_LOCK_FILE:-/run/airplanes/runtime-update.lock}"
 

@@ -2,7 +2,7 @@
 
 # Tests for airplanes-978.sh — the UAT relay wrapper. The wrapper reads
 # UAT_INPUT from the EnvironmentFile-loaded env, classifies into
-# enabled / disabled / misconfigured, writes /run/airplanes-978/state via
+# enabled / disabled / misconfigured, writes /run/airplanes/978/state via
 # state-writer.sh, and either execs the daemon, sleeps (uat_disabled →
 # exit 0, unit stays active), or exits 64 (misconfigured input).
 #

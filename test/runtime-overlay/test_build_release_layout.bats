@@ -212,17 +212,17 @@ setup() {
     # Delete a file the fixture's managed_paths.json references; the
     # cross-check inside the build must catch this before SHA256SUMS or
     # publish.
-    rm "$INPUT_DIR/share/airplanes/readsb.sh"
+    rm "$INPUT_DIR/systemd/readsb.service"
     run "$BUILD" "${GOOD_ARGS[@]}"
     [ "$status" -ne 0 ]
     [[ "$output" == *"managed_paths"* ]]
-    [[ "$output" == *"readsb.sh"* ]]
+    [[ "$output" == *"readsb.service"* ]]
 }
 
 @test "leaves no partial release dir when validation fails" {
     # Same trigger as above. The build must clean up its staging tree
     # rather than leave a half-published v1.4.0 under output-dir.
-    rm "$INPUT_DIR/share/airplanes/readsb.sh"
+    rm "$INPUT_DIR/systemd/readsb.service"
     run "$BUILD" "${GOOD_ARGS[@]}"
     [ "$status" -ne 0 ]
     [ ! -e "$OUTPUT_DIR/v1.4.0" ]

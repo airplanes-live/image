@@ -205,7 +205,7 @@ install_synthetic_runtime_releases() {
     [[ -f "$prebuilt/test.pub" ]] || {
         echo "ERROR: prebuilt dir $prebuilt missing test.pub" >&2; return 1; }
 
-    local staged_in_image=/opt/airplanes-runtime-test-releases
+    local staged_in_image=/opt/airplanes-test-releases
     local staged_host="$root$staged_in_image"
     rm -rf "$staged_host"
     install -d -m 0755 "$staged_host"
@@ -216,7 +216,7 @@ install_synthetic_runtime_releases() {
     # by the throwaway key) verify. The production / PR-test pubkey is replaced
     # entirely; this is a test-only image.
     install -d -m 0755 "$root/usr/share/airplanes"
-    install -m 0644 "$prebuilt/test.pub" "$root/usr/share/airplanes/runtime-release.pub"
+    install -m 0644 "$prebuilt/test.pub" "$root/opt/airplanes/libexec/runtime-release.pub"
 
     # Run readsb net-only on this test image. The runtime-self-update health
     # gate requires readsb.service to reach AND hold active (NRestarts

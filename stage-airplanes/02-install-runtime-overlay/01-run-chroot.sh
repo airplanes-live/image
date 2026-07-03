@@ -41,18 +41,18 @@ install -d -m 0755 -o readsb -g readsb /var/globe_history
 # packaged defaults across.
 if [[ ! -e /etc/default/tar1090 ]]; then
 	install -d -m 0755 /etc/default
-	install -m 0644 /opt/airplanes-runtime/current/share/tar1090/example_config_dont_edit \
+	install -m 0644 /opt/airplanes/current/share/tar1090/example_config_dont_edit \
 		/etc/default/tar1090
 fi
 if [[ ! -e /etc/collectd/collectd.conf ]]; then
 	install -d -m 0755 /etc/collectd
-	install -m 0644 /opt/airplanes-runtime/current/etc/collectd/collectd.conf \
+	install -m 0644 /opt/airplanes/current/etc/collectd/collectd.conf \
 		/etc/collectd/collectd.conf
 fi
 if [[ ! -e /etc/cron.d/collectd_to_disk \
-		&& -e /opt/airplanes-runtime/current/etc/cron.d/collectd_to_disk ]]; then
+		&& -e /opt/airplanes/current/etc/cron.d/collectd_to_disk ]]; then
 	install -d -m 0755 /etc/cron.d
-	install -m 0644 /opt/airplanes-runtime/current/etc/cron.d/collectd_to_disk \
+	install -m 0644 /opt/airplanes/current/etc/cron.d/collectd_to_disk \
 		/etc/cron.d/collectd_to_disk
 fi
 
@@ -64,9 +64,9 @@ fi
 # the operator configures anything. airplanes-first-run later merges boot-config
 # FEED_HOST → MLATSERVER/TARGET into it. Never overwrite an existing feed.env.
 if [[ ! -e /etc/airplanes/feed.env \
-		&& -e /opt/airplanes-runtime/current/share/airplanes/feed.env.default ]]; then
+		&& -e /opt/airplanes/current/share/airplanes/feed.env.default ]]; then
 	install -d -m 0755 /etc/airplanes
-	install -m 0644 /opt/airplanes-runtime/current/share/airplanes/feed.env.default \
+	install -m 0644 /opt/airplanes/current/share/airplanes/feed.env.default \
 		/etc/airplanes/feed.env
 fi
 
@@ -75,11 +75,11 @@ fi
 # manifest is the single source of truth so a future release that adds a unit
 # does not require an image rebuild. collectd.service is apt-managed and the
 # unit ships with collectd-core; the others are overlay-owned via the
-# /etc/systemd/system/ → /opt/airplanes-runtime/current/ symlinks the
+# /etc/systemd/system/ → /opt/airplanes/current/ symlinks the
 # host-side stage laid down. UAT services self-disable cleanly when UAT_INPUT
 # is empty in /etc/airplanes/feed.env (wrappers publish a disabled decision
 # file and sleep so the unit stays active).
-RUNTIME_MANIFEST=/opt/airplanes-runtime/current/manifest.json
+RUNTIME_MANIFEST=/opt/airplanes/current/manifest.json
 if [[ ! -f "$RUNTIME_MANIFEST" ]]; then
 	echo "ERROR: runtime overlay manifest not found at $RUNTIME_MANIFEST" >&2
 	exit 1
@@ -98,9 +98,9 @@ systemctl enable airplanes-runtime-update-recover.service
 # lighttpd conf-enabled stays image-owned; conf-available is overlay-owned
 # via the managed_paths symlinks. The two-hop chain (conf-enabled → image
 # absolute path → overlay current) is asserted in extra-probe.sh.
-ln -sfn /opt/airplanes-runtime/current/etc/lighttpd/conf-available/89-airplanes-978.conf \
+ln -sfn /opt/airplanes/current/etc/lighttpd/conf-available/89-airplanes-978.conf \
 	/etc/lighttpd/conf-enabled/89-airplanes-978.conf
-ln -sfn /opt/airplanes-runtime/current/etc/lighttpd/conf-available/88-tar1090.conf \
+ln -sfn /opt/airplanes/current/etc/lighttpd/conf-available/88-tar1090.conf \
 	/etc/lighttpd/conf-enabled/88-tar1090.conf
-ln -sfn /opt/airplanes-runtime/current/etc/lighttpd/conf-available/88-graphs1090.conf \
+ln -sfn /opt/airplanes/current/etc/lighttpd/conf-available/88-graphs1090.conf \
 	/etc/lighttpd/conf-enabled/88-graphs1090.conf

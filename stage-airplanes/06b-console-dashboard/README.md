@@ -35,22 +35,26 @@ else (besides sshd's own `Last login:` line, which is out of scope).
 
 ## What lands in the rootfs
 
-- `/usr/local/lib/airplanes/render-status` — bash renderer with three
+The renderer and its artwork ship from the runtime overlay (laid by stage 02
+under `/opt/airplanes/current`); 06b installs only the dashboard service unit
+and the getty override. The overlay paths:
+
+- `/opt/airplanes/current/lib/airplanes/render-status` — bash renderer with three
   modes: `--snapshot` (one-shot, no clear; used by the MOTD hook),
   `--live` (loop, double-buffered repaint every 5s; used by the systemd
   unit), `--once` (one-shot with screen clear).
-- `/usr/local/share/airplanes/logo.txt` — 40×22 plane-badge artwork
+- `/opt/airplanes/current/share/airplanes/logo.txt` — 40×22 plane-badge artwork
   used as the last-resort `--live` fallback when even the narrow banner
   won't fit.
-- `/usr/local/share/airplanes/banner.txt` — 135×20 banner artwork
+- `/opt/airplanes/current/share/airplanes/banner.txt` — 135×20 banner artwork
   (badge + "airplanes.live" wordmark) used at the top of the HDMI
   dashboard on wide displays.
-- `/usr/local/share/airplanes/banner-narrow.txt` — 74×11 compact
+- `/opt/airplanes/current/share/airplanes/banner-narrow.txt` — 74×11 compact
   banner (badge + "airplanes.live" wordmark) used at the top of the
   HDMI dashboard when the framebuffer console is too narrow for the
   wide banner. Fits any ≥720p HDMI output at the default 8×16 kernel
   console font.
-- `/usr/local/share/airplanes/icon.txt` — 20×11 small ASCII airplane
+- `/opt/airplanes/current/share/airplanes/icon.txt` — 20×11 small ASCII airplane
   badge used by the snapshot (SSH MOTD / `--once`) layout. Renders to
   the left of a Unicode-box header (title / random tagline / divider /
   feed version) — together they form the top banner, with the

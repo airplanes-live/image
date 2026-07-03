@@ -2,7 +2,7 @@
 
 # Verify the overlay-staged airplanes-mlat.service includes the venv condition
 # gate. The overlay post-processes the unit after staging from the feed repo to
-# add ConditionPathExists=/usr/local/share/airplanes/venv/bin/mlat-client so the
+# add ConditionPathExists=/opt/airplanes/current/share/airplanes/venv/bin/mlat-client so the
 # unit never starts when the venv is absent (e.g. a decoder-only release).
 #
 # This test constructs a minimal feed unit, runs the awk injection from
@@ -24,7 +24,7 @@ _inject_condition() {
             /^\[Unit\]/ { print; in_unit = 1; next }
             in_unit && /^Description=/ {
                 print
-                print "ConditionPathExists=/usr/local/share/airplanes/venv/bin/mlat-client"
+                print "ConditionPathExists=/opt/airplanes/current/share/airplanes/venv/bin/mlat-client"
                 next
             }
             /^\[/ && !/^\[Unit\]/ { in_unit = 0 }
@@ -44,7 +44,7 @@ After=network.target airplanes-first-run.service
 
 [Service]
 User=airplanes-feed
-ExecStart=/usr/local/share/airplanes/airplanes-mlat.sh
+ExecStart=/opt/airplanes/current/share/airplanes/airplanes-mlat.sh
 Type=simple
 Restart=always
 
@@ -56,7 +56,7 @@ EOF
 
     # The condition must appear exactly once.
     local count
-    count="$(grep -c '^ConditionPathExists=/usr/local/share/airplanes/venv/bin/mlat-client$' "$UNIT_DIR/airplanes-mlat.service")"
+    count="$(grep -c '^ConditionPathExists=/opt/airplanes/current/share/airplanes/venv/bin/mlat-client$' "$UNIT_DIR/airplanes-mlat.service")"
     [ "$count" -eq 1 ]
 
     # It must appear in the [Unit] section, after Description.
@@ -77,7 +77,7 @@ Description=airplanes-mlat
 Wants=network.target
 
 [Service]
-ExecStart=/usr/local/share/airplanes/airplanes-mlat.sh
+ExecStart=/opt/airplanes/current/share/airplanes/airplanes-mlat.sh
 
 [Install]
 WantedBy=default.target
@@ -95,11 +95,11 @@ EOF
     cat > "$UNIT_DIR/airplanes-mlat.service" <<'EOF'
 [Unit]
 Description=airplanes-mlat
-ConditionPathExists=/usr/local/share/airplanes/venv/bin/mlat-client
+ConditionPathExists=/opt/airplanes/current/share/airplanes/venv/bin/mlat-client
 Wants=network.target
 
 [Service]
-ExecStart=/usr/local/share/airplanes/airplanes-mlat.sh
+ExecStart=/opt/airplanes/current/share/airplanes/airplanes-mlat.sh
 
 [Install]
 WantedBy=default.target

@@ -36,7 +36,7 @@ READSB_NET_OPTIONS="${READSB_NET_OPTIONS:-"--net-bi-port 30004,30104"}"
 # same limitation as dump978-fa; a pin that collides with the 978 serial is
 # caught earlier by the webconfig validator.
 : "${READSB_RUNTIME_DIR:=/run/readsb}"
-: "${STATE_WRITER_LIB:=/usr/local/share/airplanes/lib/state-writer.sh}"
+: "${STATE_WRITER_LIB:=/opt/airplanes/current/share/airplanes/lib/state-writer.sh}"
 # Probe override: glob expanded for USB serial files. Tests point this at a
 # temp dir; production reads /sys/bus/usb/devices/*/serial.
 : "${READSB_USB_SERIAL_GLOB:=/sys/bus/usb/devices/*/serial}"
@@ -150,5 +150,5 @@ args+=( --write-json /run/readsb --quiet )
 # Test seam — mirrors the ${AIRPLANES_PYTHON_BIN} pattern in feed's
 # scripts/lib/update-builds.sh so bats can intercept the exec without PATH
 # manipulation. Production behavior unchanged when READSB_BIN is unset.
-READSB_BIN="${READSB_BIN:-/usr/bin/readsb}"
+READSB_BIN="${READSB_BIN:-/opt/airplanes/current/bin/readsb}"
 exec "$READSB_BIN" "${args[@]}"

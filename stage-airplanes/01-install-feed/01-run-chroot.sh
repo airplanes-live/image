@@ -29,9 +29,9 @@ if ! getent group airplanes-feed >/dev/null 2>&1; then
 fi
 if ! id -u airplanes-feed >/dev/null 2>&1; then
 	adduser --system --ingroup airplanes-feed \
-		--home /usr/local/share/airplanes --no-create-home --quiet airplanes-feed 2>/dev/null \
+		--home /opt/airplanes/current/share/airplanes --no-create-home --quiet airplanes-feed 2>/dev/null \
 		|| useradd --system --gid airplanes-feed \
-		--home-dir /usr/local/share/airplanes --no-create-home airplanes-feed 2>/dev/null \
+		--home-dir /opt/airplanes/current/share/airplanes --no-create-home airplanes-feed 2>/dev/null \
 		|| { echo "ERROR: failed to create airplanes-feed user" >&2; exit 1; }
 fi
 

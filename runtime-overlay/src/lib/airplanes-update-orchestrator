@@ -48,8 +48,8 @@ readonly _self_dir
 
 : "${AIRPLANES_ORCHESTRATOR_STATE_FILE:=/run/airplanes/orchestrator.state}"
 : "${AIRPLANES_ORCHESTRATOR_LOCK_FILE:=/run/airplanes/orchestrator.lock}"
-: "${AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE:=/opt/airplanes-runtime/current/lib/runtime-self-update.sh}"
-: "${AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE:=/var/lib/airplanes-runtime-upgrade/upgrade-state}"
+: "${AIRPLANES_ORCHESTRATOR_RUNTIME_UPDATE:=/opt/airplanes/current/lib/runtime-self-update.sh}"
+: "${AIRPLANES_ORCHESTRATOR_RUNTIME_UPGRADE_STATE:=/var/lib/airplanes/runtime-upgrade/upgrade-state}"
 : "${AIRPLANES_ORCHESTRATOR_APT_GET:=/usr/bin/apt-get}"
 
 readonly STATE_FILE="$AIRPLANES_ORCHESTRATOR_STATE_FILE"

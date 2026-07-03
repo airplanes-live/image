@@ -1,8 +1,11 @@
 #!/usr/bin/env bats
 
 # Tests airplanes_runtime_relink_decoder_binaries:
-# - Both /usr/bin/readsb and /usr/bin/airplanes-978 end up as symlinks to
-#   /opt/airplanes-runtime/current/bin/readsb (decision 14).
+# - Two operator shims under /usr/local/bin — readsb and dump978-fa — each
+#   point at their OWN binary under /opt/airplanes/current/bin/.
+# - The old /usr/bin/{readsb,airplanes-978} squat aliases are no longer
+#   created (the airplanes-978 PATH alias is dropped; the wrapper uses
+#   exec -a internally).
 # - The relink is atomic (no .tmp leftovers, no race window).
 # - Re-running replaces stale prior targets cleanly.
 
@@ -16,34 +19,40 @@ setup() {
     TARGET_ROOT="$(mk_target_root "$BATS_TEST_TMPDIR")"
 }
 
-@test "creates both symlinks pointing at current/bin/readsb" {
+@test "creates both operator shims under /usr/local/bin pointing at their own current/bin binary" {
     run airplanes_runtime_relink_decoder_binaries "$TARGET_ROOT"
     [ "$status" -eq 0 ]
-    [ -L "$TARGET_ROOT/usr/bin/readsb" ]
-    [ -L "$TARGET_ROOT/usr/bin/airplanes-978" ]
-    [ "$(readlink "$TARGET_ROOT/usr/bin/readsb")" = "/opt/airplanes-runtime/current/bin/readsb" ]
-    [ "$(readlink "$TARGET_ROOT/usr/bin/airplanes-978")" = "/opt/airplanes-runtime/current/bin/readsb" ]
+    [ -L "$TARGET_ROOT/usr/local/bin/readsb" ]
+    [ -L "$TARGET_ROOT/usr/local/bin/dump978-fa" ]
+    [ "$(readlink "$TARGET_ROOT/usr/local/bin/readsb")" = "/opt/airplanes/current/bin/readsb" ]
+    [ "$(readlink "$TARGET_ROOT/usr/local/bin/dump978-fa")" = "/opt/airplanes/current/bin/dump978-fa" ]
+    # The dropped squat aliases must not be created.
+    [ ! -e "$TARGET_ROOT/usr/bin/readsb" ]
+    [ ! -e "$TARGET_ROOT/usr/bin/airplanes-978" ]
 }
 
 @test "atomic-replaces a stale prior target" {
     # Seed with a stale link pointing somewhere else.
-    rm -f "$TARGET_ROOT/usr/bin/readsb"
-    ln -s "/tmp/stale" "$TARGET_ROOT/usr/bin/readsb"
+    install -d -m 755 "$TARGET_ROOT/usr/local/bin"
+    rm -f "$TARGET_ROOT/usr/local/bin/readsb"
+    ln -s "/tmp/stale" "$TARGET_ROOT/usr/local/bin/readsb"
     run airplanes_runtime_relink_decoder_binaries "$TARGET_ROOT"
     [ "$status" -eq 0 ]
-    [ "$(readlink "$TARGET_ROOT/usr/bin/readsb")" = "/opt/airplanes-runtime/current/bin/readsb" ]
+    [ "$(readlink "$TARGET_ROOT/usr/local/bin/readsb")" = "/opt/airplanes/current/bin/readsb" ]
 }
 
-@test "leaves no .tmp leftovers under /usr/bin/" {
+@test "leaves no .tmp leftovers under /usr/local/bin/" {
     airplanes_runtime_relink_decoder_binaries "$TARGET_ROOT"
-    run find "$TARGET_ROOT/usr/bin" -name '*.tmp.*'
+    run find "$TARGET_ROOT/usr/local/bin" -name '*.tmp.*'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
 
-@test "both links share the same physical target after flip" {
+@test "each shim points at its own distinct binary after flip" {
     airplanes_runtime_relink_decoder_binaries "$TARGET_ROOT"
-    # Read the link strings — they're absolute and identical.
-    [ "$(readlink "$TARGET_ROOT/usr/bin/readsb")" = \
-      "$(readlink "$TARGET_ROOT/usr/bin/airplanes-978")" ]
+    # Read the link strings — they're absolute and point at different binaries.
+    [ "$(readlink "$TARGET_ROOT/usr/local/bin/readsb")" = "/opt/airplanes/current/bin/readsb" ]
+    [ "$(readlink "$TARGET_ROOT/usr/local/bin/dump978-fa")" = "/opt/airplanes/current/bin/dump978-fa" ]
+    [ "$(readlink "$TARGET_ROOT/usr/local/bin/readsb")" != \
+      "$(readlink "$TARGET_ROOT/usr/local/bin/dump978-fa")" ]
 }

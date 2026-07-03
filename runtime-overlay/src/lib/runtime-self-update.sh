@@ -4,7 +4,7 @@
 # recoverable. Two recovery actors share the persisted state:
 #   - the rich in-process rollback (roll_back_and_exit) while this script runs;
 #   - an image-owned POSIX-sh pointer shim at boot
-#     (/usr/local/lib/airplanes-runtime/recover-shim), the last-resort floor
+#     (/opt/airplanes/libexec/recover-shim), the last-resort floor
 #     that only flips `current` back to the last-good release using base-OS
 #     tools — it deliberately does NOT run migrations/cleanup.
 # A HEALTH_PASSED interruption (cleanup/GC not finished) is resumed by the
@@ -34,8 +34,8 @@ _lib_candidates=(
     "${AIRPLANES_RUNTIME_INSTALL_COMMON:-}"
     "${_self_dir}/../../scripts/lib/install-common.sh"
     "${_self_dir}/../scripts/lib/install-common.sh"
-    "/opt/airplanes-runtime/current/scripts/lib/install-common.sh"
-    "/usr/local/lib/airplanes-runtime/install-common.sh"
+    "/opt/airplanes/current/scripts/lib/install-common.sh"
+    "/opt/airplanes/libexec/install-common.sh"
 )
 _lib=""
 for _candidate in "${_lib_candidates[@]}"; do
@@ -170,11 +170,11 @@ fi
 
 # Resolve release version → release dir.
 RELEASE_VERSION="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$MANIFEST")"
-RELEASE_DIR_ABS="${TARGET_ROOT}/opt/airplanes-runtime/releases/v${RELEASE_VERSION}"
+RELEASE_DIR_ABS="${TARGET_ROOT}/opt/airplanes/releases/v${RELEASE_VERSION}"
 
 # Snapshot the pre-update current symlink target so rollback knows where
 # to flip back to. Empty if there is no current yet (first install).
-CURRENT_LINK="${TARGET_ROOT}/opt/airplanes-runtime/current"
+CURRENT_LINK="${TARGET_ROOT}/opt/airplanes/current"
 PREV_RELEASE_LINK_TARGET=""
 PREV_RELEASE_DIR=""
 if [[ -L "$CURRENT_LINK" ]]; then
@@ -284,7 +284,7 @@ roll_back_and_exit() {
                 airplanes_runtime_flip_current "$prev_on_device" "$TARGET_ROOT" || true
                 airplanes_runtime_relink_decoder_binaries "$TARGET_ROOT" || true
             else
-                rm -f -- "${TARGET_ROOT}/opt/airplanes-runtime/current"
+                rm -f -- "${TARGET_ROOT}/opt/airplanes/current"
             fi
             ;;
     esac

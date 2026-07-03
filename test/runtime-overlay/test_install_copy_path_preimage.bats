@@ -105,7 +105,7 @@ JSON
     "managed_paths": [
         { "mode": "symlink",
           "link": "/usr/bin/readsb",
-          "target": "/opt/airplanes-runtime/current/bin/readsb" },
+          "target": "/opt/airplanes/current/bin/readsb" },
         { "mode": "copy",
           "path": "/etc/sudoers.d/090_airplanes-runtime",
           "from": "etc/sudoers.d/090_airplanes-runtime",

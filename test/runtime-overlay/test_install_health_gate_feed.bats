@@ -51,49 +51,46 @@ JSON
 # --- feed binary-identity gate ----------------------------------------------
 
 @test "feed binary gate: passes when feed-airplanes resolves into current" {
-    # Build a fake release tree + current symlink with a feed binary, then
-    # symlink the FHS path through current/. All symlinks use absolute paths
+    # Build a fake release tree + current symlink with a feed binary. The gate
+    # checks /opt/airplanes/current/bin/feed-airplanes directly. All paths are
     # under TARGET_ROOT so readlink -f resolves correctly on the host.
-    local rel="$TARGET_ROOT/opt/airplanes-runtime/releases/v1.0.0"
+    local rel="$TARGET_ROOT/opt/airplanes/releases/v1.0.0"
     install -d -m 755 "$rel/bin"
     printf '#!/bin/sh\n' > "$rel/bin/feed-airplanes"
     chmod 0755 "$rel/bin/feed-airplanes"
-    install -d -m 755 "$TARGET_ROOT/opt/airplanes-runtime"
-    ln -sfn "$rel" "$TARGET_ROOT/opt/airplanes-runtime/current"
-    install -d -m 755 "$TARGET_ROOT/usr/local/share/airplanes"
-    ln -sfn "$TARGET_ROOT/opt/airplanes-runtime/current/bin/feed-airplanes" \
-        "$TARGET_ROOT/usr/local/share/airplanes/feed-airplanes"
+    install -d -m 755 "$TARGET_ROOT/opt/airplanes"
+    ln -sfn "$rel" "$TARGET_ROOT/opt/airplanes/current"
 
     run _airplanes_runtime_probe_feed_binary_current "$TARGET_ROOT"
     [ "$status" -eq 0 ]
 }
 
 @test "feed binary gate: fails when feed-airplanes resolves outside current" {
-    # current points at v1.0.0 but the FHS link points at a stale v0.9.0.
-    local rel_new="$TARGET_ROOT/opt/airplanes-runtime/releases/v1.0.0"
-    local rel_old="$TARGET_ROOT/opt/airplanes-runtime/releases/v0.9.0"
+    # current points at v1.0.0 but its feed-airplanes is itself a symlink to a
+    # stale v0.9.0 binary, so the running binary resolves out of the release.
+    local rel_new="$TARGET_ROOT/opt/airplanes/releases/v1.0.0"
+    local rel_old="$TARGET_ROOT/opt/airplanes/releases/v0.9.0"
     install -d -m 755 "$rel_new/bin" "$rel_old/bin"
-    printf '#!/bin/sh\n' > "$rel_new/bin/feed-airplanes"
-    chmod 0755 "$rel_new/bin/feed-airplanes"
     printf '#!/bin/sh\n' > "$rel_old/bin/feed-airplanes"
     chmod 0755 "$rel_old/bin/feed-airplanes"
-    install -d -m 755 "$TARGET_ROOT/opt/airplanes-runtime"
-    ln -sfn "$rel_new" "$TARGET_ROOT/opt/airplanes-runtime/current"
-    install -d -m 755 "$TARGET_ROOT/usr/local/share/airplanes"
-    ln -sfn "$rel_old/bin/feed-airplanes" \
-        "$TARGET_ROOT/usr/local/share/airplanes/feed-airplanes"
+    ln -sfn "$rel_old/bin/feed-airplanes" "$rel_new/bin/feed-airplanes"
+    install -d -m 755 "$TARGET_ROOT/opt/airplanes"
+    ln -sfn "$rel_new" "$TARGET_ROOT/opt/airplanes/current"
 
     run _airplanes_runtime_probe_feed_binary_current "$TARGET_ROOT"
     [ "$status" -ne 0 ]
     [[ "$output" == *"outside active release"* ]]
 }
 
-@test "feed binary gate: fails when feed-airplanes link is missing" {
-    install -d -m 755 "$TARGET_ROOT/opt/airplanes-runtime"
-    install -d -m 755 "$TARGET_ROOT/usr/local/share/airplanes"
+@test "feed binary gate: fails when the feed binary is missing" {
+    # current exists but the active release ships no bin/feed-airplanes.
+    local rel="$TARGET_ROOT/opt/airplanes/releases/v1.0.0"
+    install -d -m 755 "$rel/bin"
+    install -d -m 755 "$TARGET_ROOT/opt/airplanes"
+    ln -sfn "$rel" "$TARGET_ROOT/opt/airplanes/current"
     run _airplanes_runtime_probe_feed_binary_current "$TARGET_ROOT"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"not a symlink"* ]]
+    [[ "$output" == *"missing"* ]]
 }
 
 # --- restart order membership -----------------------------------------------
@@ -120,22 +117,32 @@ JSON
 
 # --- managed_paths + systemd.json declarations ------------------------------
 
-@test "managed_paths.json declares feed binary, apl-feed, and units" {
+@test "managed_paths.json declares apl-feed launcher and feed/mlat units" {
     local mp
     mp="$(cat "$BATS_TEST_DIRNAME/../../runtime-overlay/manifest-inputs/managed_paths.json")"
     local link
-    # The mlat-client venv is intentionally NOT a managed_path yet — its
-    # prebuilt overlay delivery is deferred to a follow-up.
+    # Only the /usr/local/bin launcher shim and the /etc unit symlinks are
+    # managed. The feed binary, the *.sh wrappers, and the mlat-client venv
+    # ride in the overlay payload under /opt/airplanes/current and are reached
+    # by absolute path, not via a managed symlink.
     for link in \
-        /usr/local/share/airplanes/feed-airplanes \
         /usr/local/bin/apl-feed \
-        /usr/local/share/airplanes/airplanes-feed.sh \
-        /usr/local/share/airplanes/airplanes-mlat.sh \
         /etc/systemd/system/airplanes-feed.service \
         /etc/systemd/system/airplanes-mlat.service; do
         local mode
         mode="$(printf '%s' "$mp" | jq -r --arg l "$link" '[.[] | select(.link == $l)][0].mode')"
         [ "$mode" = "symlink" ] || { echo "missing symlink managed_path for $link (got mode=$mode)" >&2; return 1; }
+    done
+    # De-squat: the feed payload must NOT be managed under /usr/local/share/airplanes.
+    local squat
+    for squat in \
+        /usr/local/share/airplanes/feed-airplanes \
+        /usr/local/share/airplanes/airplanes-feed.sh \
+        /usr/local/share/airplanes/airplanes-mlat.sh; do
+        if printf '%s' "$mp" | jq -e --arg l "$squat" 'any(.[]; .link == $l)' >/dev/null; then
+            echo "unexpected managed squat for $squat" >&2
+            return 1
+        fi
     done
 }
 
